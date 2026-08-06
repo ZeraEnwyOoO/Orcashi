@@ -222,7 +222,7 @@ public:
     }
     
     string get_status(int peer_id) {
-        return is_online(peer_id) ? "Online 💚" : "Offline 💔";
+        return is_online(peer_id) ? "Online  " : "Offline  ";
     }
     
     vector<int> get_online_peers() {
