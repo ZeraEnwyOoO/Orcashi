@@ -1,5 +1,5 @@
  // orcashi.cpp
-// ORCASHI v3.0 - P2P Chat for iSH + Linux (TCP Plug Mode - Fixed)
+// ORCASHI v4.0 - P2P Chat with Heartbeat + Online Status + Search
 // Compile: g++ -o orcashi orcashi.cpp -lpthread -std=c++17
 
 #include <iostream>
@@ -40,12 +40,16 @@ const string CYAN = "\033[36m";
 const string GREEN = "\033[32m";
 const string YELLOW = "\033[33m";
 const string RED = "\033[31m";
+const string PURPLE = "\033[35m";
 const string RESET = "\033[0m";
 
 // ==================== CONFIG ====================
 const string ORCASHI_HOME = string(getenv("HOME")) + "/.orcashi/";
 const int PLUG_PORT = 9000;
+const int HEARTBEAT_PORT = 9998;
 const int HEARTBEAT_INTERVAL = 30;
+const int ONLINE_TIMEOUT = 60;
+const int DISCOVERY_PORT = 9999;
 
 // ==================== THREAD-SAFE QUEUE ====================
 template<typename T>
@@ -132,7 +136,195 @@ public:
     }
 };
 
-// ==================== TCP PLUG (FIXED) ====================
+// ==================== HEARTBEAT SYSTEM ====================
+class HeartbeatSystem {
+private:
+    int my_id;
+    map<int, time_t> online_peers;
+    mutex online_mutex;
+    int heartbeat_socket;
+    thread send_thread;
+    thread listen_thread;
+    atomic<bool> running;
+    
+public:
+    HeartbeatSystem(int id) : my_id(id), running(true) {
+        heartbeat_socket = socket(AF_INET, SOCK_DGRAM, 0);
+        if (heartbeat_socket < 0) {
+            cout << RED << "[ERROR] Failed to create heartbeat socket!" << RESET << endl;
+            return;
+        }
+        
+        int broadcast = 1;
+        setsockopt(heartbeat_socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+        
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(HEARTBEAT_PORT);
+        addr.sin_addr.s_addr = INADDR_ANY;
+        bind(heartbeat_socket, (struct sockaddr*)&addr, sizeof(addr));
+        
+        send_thread = thread(&HeartbeatSystem::send_loop, this);
+        listen_thread = thread(&HeartbeatSystem::listen_loop, this);
+    }
+    
+    ~HeartbeatSystem() {
+        running = false;
+        if (send_thread.joinable()) send_thread.join();
+        if (listen_thread.joinable()) listen_thread.join();
+        close(heartbeat_socket);
+    }
+    
+    void send_loop() {
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(HEARTBEAT_PORT);
+        inet_pton(AF_INET, "255.255.255.255", &addr.sin_addr);
+        
+        while (running) {
+            string msg = "HEARTBEAT:" + to_string(my_id);
+            sendto(heartbeat_socket, msg.c_str(), msg.length(), 0,
+                   (struct sockaddr*)&addr, sizeof(addr));
+            this_thread::sleep_for(chrono::seconds(HEARTBEAT_INTERVAL));
+        }
+    }
+    
+    void listen_loop() {
+        while (running) {
+            char buffer[1024];
+            struct sockaddr_in from;
+            socklen_t from_len = sizeof(from);
+            int n = recvfrom(heartbeat_socket, buffer, sizeof(buffer)-1, 0,
+                            (struct sockaddr*)&from, &from_len);
+            if (n > 0) {
+                buffer[n] = '\0';
+                string msg(buffer);
+                if (msg.find("HEARTBEAT:") == 0) {
+                    int peer_id = stoi(msg.substr(10));
+                    lock_guard<mutex> lock(online_mutex);
+                    online_peers[peer_id] = time(0);
+                }
+            }
+        }
+    }
+    
+    bool is_online(int peer_id) {
+        lock_guard<mutex> lock(online_mutex);
+        auto it = online_peers.find(peer_id);
+        if (it != online_peers.end()) {
+            time_t now = time(0);
+            int diff = now - it->second;
+            return diff < ONLINE_TIMEOUT;
+        }
+        return false;
+    }
+    
+    string get_status(int peer_id) {
+        return is_online(peer_id) ? "Online 💚" : "Offline 💔";
+    }
+    
+    vector<int> get_online_peers() {
+        vector<int> result;
+        lock_guard<mutex> lock(online_mutex);
+        time_t now = time(0);
+        for (auto& pair : online_peers) {
+            if (now - pair.second < ONLINE_TIMEOUT) {
+                result.push_back(pair.first);
+            }
+        }
+        return result;
+    }
+};
+
+// ==================== DISCOVERY SYSTEM ====================
+class DiscoverySystem {
+private:
+    int discovery_socket;
+    atomic<bool> running;
+    map<int, string> peer_endpoints;
+    mutex endpoint_mutex;
+    thread listen_thread;
+    
+public:
+    DiscoverySystem() : running(true) {
+        discovery_socket = socket(AF_INET, SOCK_DGRAM, 0);
+        if (discovery_socket < 0) return;
+        
+        int broadcast = 1;
+        setsockopt(discovery_socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+        
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(DISCOVERY_PORT);
+        addr.sin_addr.s_addr = INADDR_ANY;
+        bind(discovery_socket, (struct sockaddr*)&addr, sizeof(addr));
+        
+        listen_thread = thread(&DiscoverySystem::listen_loop, this);
+    }
+    
+    ~DiscoverySystem() {
+        running = false;
+        if (listen_thread.joinable()) listen_thread.join();
+        close(discovery_socket);
+    }
+    
+    void broadcast_endpoint(int my_id, const string& ip, int port) {
+        int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        int broadcast = 1;
+        setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+        
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(DISCOVERY_PORT);
+        inet_pton(AF_INET, "255.255.255.255", &addr.sin_addr);
+        
+        string msg = "ENDPOINT:" + to_string(my_id) + ":" + ip + ":" + to_string(port);
+        sendto(sock, msg.c_str(), msg.length(), 0, (struct sockaddr*)&addr, sizeof(addr));
+        close(sock);
+    }
+    
+    void listen_loop() {
+        while (running) {
+            char buffer[1024];
+            struct sockaddr_in from;
+            socklen_t from_len = sizeof(from);
+            int n = recvfrom(discovery_socket, buffer, sizeof(buffer)-1, 0,
+                            (struct sockaddr*)&from, &from_len);
+            if (n > 0) {
+                buffer[n] = '\0';
+                string msg(buffer);
+                if (msg.find("ENDPOINT:") == 0) {
+                    string data = msg.substr(9);
+                    size_t pos1 = data.find(':');
+                    size_t pos2 = data.find(':', pos1 + 1);
+                    if (pos1 != string::npos && pos2 != string::npos) {
+                        int peer_id = stoi(data.substr(0, pos1));
+                        string ip = data.substr(pos1 + 1, pos2 - pos1 - 1);
+                        int port = stoi(data.substr(pos2 + 1));
+                        
+                        lock_guard<mutex> lock(endpoint_mutex);
+                        peer_endpoints[peer_id] = ip + ":" + to_string(port);
+                    }
+                }
+            }
+        }
+    }
+    
+    string get_endpoint(int peer_id) {
+        lock_guard<mutex> lock(endpoint_mutex);
+        auto it = peer_endpoints.find(peer_id);
+        if (it != peer_endpoints.end()) {
+            return it->second;
+        }
+        return "";
+    }
+};
+
+// ==================== TCP PLUG ====================
 class TCPPlug {
 private:
     int plug_socket;
@@ -186,7 +378,7 @@ public:
         }
         
         cout << GREEN << "[ORCA] TCP Plug is ready on port " << port << "!" << RESET << endl;
-        cout << CYAN << "[ORCA] Waiting for Linux to connect..." << RESET << endl;
+        cout << CYAN << "[ORCA] Waiting for connections..." << RESET << endl;
         
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
@@ -203,9 +395,8 @@ public:
         peer_id = peer_ip;
         connected = true;
         
-        cout << GREEN << "[ORCA] Linux connected from " << peer_ip << "!" << RESET << endl;
+        cout << GREEN << "[ORCA] Connected from " << peer_ip << "!" << RESET << endl;
         
-        // Disable Nagle's algorithm for faster small packets
         int flag = 1;
         setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
         
@@ -238,9 +429,8 @@ public:
         peer_id = target_ip;
         connected = true;
         
-        cout << GREEN << "[ORCA] Connected to plug at " << target_ip << ":" << port << "!" << RESET << endl;
+        cout << GREEN << "[ORCA] Connected to " << target_ip << ":" << port << "!" << RESET << endl;
         
-        // Disable Nagle's algorithm for faster small packets
         int flag = 1;
         setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
         
@@ -259,7 +449,6 @@ public:
                 int n = send(client_socket, msg_with_newline.c_str(), 
                              msg_with_newline.length(), MSG_NOSIGNAL);
                 if (n <= 0) {
-                    cout << YELLOW << "[ORCA] Send failed. Connection may be closed." << RESET << endl;
                     connected = false;
                     break;
                 }
@@ -274,7 +463,6 @@ public:
         while (running && connected) {
             int n = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
             if (n <= 0) {
-                cout << YELLOW << "[ORCA] Connection closed by peer." << RESET << endl;
                 connected = false;
                 break;
             }
@@ -316,20 +504,75 @@ public:
     }
 };
 
+// ==================== SAVED PEERS ====================
+class SavedPeers {
+private:
+    string peers_file;
+    vector<string> saved_peers;
+    mutex peers_mutex;
+    
+public:
+    SavedPeers() {
+        peers_file = ORCASHI_HOME + "saved_peers.txt";
+        load();
+    }
+    
+    void load() {
+        lock_guard<mutex> lock(peers_mutex);
+        saved_peers.clear();
+        ifstream f(peers_file);
+        if (f.is_open()) {
+            string line;
+            while (getline(f, line)) {
+                if (!line.empty()) {
+                    saved_peers.push_back(line);
+                }
+            }
+            f.close();
+        }
+    }
+    
+    void save() {
+        lock_guard<mutex> lock(peers_mutex);
+        ofstream f(peers_file);
+        if (f.is_open()) {
+            for (const string& peer : saved_peers) {
+                f << peer << endl;
+            }
+            f.close();
+        }
+    }
+    
+    void add_peer(const string& peer_id) {
+        lock_guard<mutex> lock(peers_mutex);
+        if (find(saved_peers.begin(), saved_peers.end(), peer_id) == saved_peers.end()) {
+            saved_peers.push_back(peer_id);
+            save();
+        }
+    }
+    
+    vector<string> get_peers() {
+        lock_guard<mutex> lock(peers_mutex);
+        return saved_peers;
+    }
+};
+
 // ==================== ORCASHI MAIN ====================
 class ORCASHI {
 private:
     IDSystem id_system;
+    HeartbeatSystem heartbeat;
+    DiscoverySystem discovery;
     TCPPlug plug;
+    SavedPeers saved_peers;
     atomic<bool> running;
     thread ui_thread;
     bool is_ish_mode;
+    int my_id;
+    string my_ip;
     
     bool detect_ish() {
-        if (access("/sbin/apk", F_OK) == 0) {
-            return true;
-        }
-        
+        if (access("/sbin/apk", F_OK) == 0) return true;
         ifstream f("/etc/os-release");
         if (f.is_open()) {
             string line;
@@ -341,20 +584,25 @@ private:
             }
             f.close();
         }
-        
-        ifstream f2("/proc/version");
-        if (f2.is_open()) {
-            string content;
-            getline(f2, content);
-            if (content.find("iOS") != string::npos || 
-                content.find("iPhone") != string::npos) {
-                f2.close();
-                return true;
-            }
-            f2.close();
-        }
-        
         return false;
+    }
+    
+    string get_local_ip() {
+        int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        struct sockaddr_in dest;
+        dest.sin_family = AF_INET;
+        dest.sin_port = htons(80);
+        inet_pton(AF_INET, "8.8.8.8", &dest.sin_addr);
+        connect(sock, (struct sockaddr*)&dest, sizeof(dest));
+        
+        struct sockaddr_in local;
+        socklen_t addr_len = sizeof(local);
+        getsockname(sock, (struct sockaddr*)&local, &addr_len);
+        
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &local.sin_addr, ip, sizeof(ip));
+        close(sock);
+        return string(ip);
     }
     
     void ui_loop() {
@@ -368,14 +616,12 @@ private:
             cout << id_system.get_display() << "> " << flush;
             
             if (!cin) {
-                cout << "\n[ORCA] Input stream closed." << endl;
                 running = false;
                 break;
             }
             
             if (!getline(cin, input)) {
                 if (cin.eof()) {
-                    cout << "\n[ORCA] EOF detected. Exiting..." << endl;
                     running = false;
                     break;
                 }
@@ -400,20 +646,16 @@ private:
     
     void show_help() {
         cout << "\n" << string(40, '=') << endl;
-        cout << "ORCASHI v3.0 - Reliable P2P Chat" << endl;
+        cout << "ORCASHI v4.0 - P2P Chat" << endl;
         cout << string(40, '=') << endl;
         cout << "Commands:" << endl;
         cout << "  /help    - Show this help" << endl;
         cout << "  /exit    - Disconnect" << endl;
-        cout << "\nFeatures:" << endl;
-        cout << "  ✅ TCP_NODELAY (fast packets)" << endl;
-        cout << "  ✅ Reliable messaging" << endl;
-        cout << "  ✅ No duplicate messages" << endl;
-        if (is_ish_mode) {
-            cout << "\nMode: iSH (TCP Plug)" << endl;
-        } else {
-            cout << "\nMode: Linux (TCP Connect)" << endl;
-        }
+        cout << "\nCommands (outside chat):" << endl;
+        cout << "  ./orcashi create          - Create a room" << endl;
+        cout << "  ./orcashi join <ip>       - Join a room" << endl;
+        cout << "  ./orcashi search          - Search for a peer" << endl;
+        cout << "  ./orcashi peer-list       - Show saved peers" << endl;
         cout << string(40, '=') << endl << endl;
     }
     
@@ -421,11 +663,6 @@ private:
         cout << string(50, '=') << endl;
         cout << "ORCASHI ACTIVE" << endl;
         cout << "Your ID: " << id_system.get_display() << endl;
-        if (is_ish_mode) {
-            cout << "Mode: iSH (TCP Plug)" << endl;
-        } else {
-            cout << "Mode: Linux (TCP Connect)" << endl;
-        }
         cout << "Type /help for commands" << endl;
         cout << string(50, '=') << endl << endl;
         
@@ -447,31 +684,33 @@ private:
     }
     
 public:
-    ORCASHI() : running(true) {
+    ORCASHI() : running(true), heartbeat(id_system.get_id()), my_id(id_system.get_id()) {
         string cmd = "mkdir -p " + ORCASHI_HOME;
         system(cmd.c_str());
         is_ish_mode = detect_ish();
+        my_ip = get_local_ip();
     }
     
     void show_banner() {
-        cout << CYAN << R"(
+        cout << PURPLE << R"(
 ============================================================
-     ____   ____   ____    ____    _    ____
-    / __ \ / __ \ / __ \  / __ \  | |  / __ \
-   / / / // / / // / / / / / / /  | | / / / /
-  / /_/ // /_/ // /_/ / / /_/ /   | |/ /_/ /
- /_____/ \____/ \____/  \____/    |___\____/
+  ██████╗ ██████╗  ██████╗ █████╗ 
+ ██╔═══██╗██╔══██╗██╔════╝██╔══██╗ C
+ ██║   ██║██████╔╝██║     ███████║ H
+ ██║   ██║██╔══██╗██║     ██╔══██║ A
+ ╚██████╔╝██║  ██║╚██████╗██║  ██║ T
+  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
 
-            ORCASHI v3.0 - P2P Chat (TCP Plug)
-        (iSH Plug + Linux Connect)
+            ORCASHI v4.0 - P2P Chat
+   (Heartbeat + Online Status + Search) talk what you want :3
 ============================================================
 )" << RESET << endl;
         
         cout << "\nYour ID: " << id_system.get_display() << endl;
         if (is_ish_mode) {
-            cout << GREEN << "Mode: iSH (TCP Plug)" << RESET << endl;
+            cout << GREEN << "Mode: iSH (Plug)" << RESET << endl;
         } else {
-            cout << GREEN << "Mode: Linux (TCP Connect)" << RESET << endl;
+            cout << GREEN << "Mode: Linux (Connect)" << RESET << endl;
         }
         cout << "Type /help for commands" << endl;
     }
@@ -482,12 +721,16 @@ public:
         cout << string(50, '=') << endl;
         
         if (is_ish_mode) {
-            cout << CYAN << "[ORCA] iSH Mode: Creating TCP plug..." << RESET << endl;
+            cout << CYAN << "[ORCA] Creating TCP plug..." << RESET << endl;
+            
+            // Broadcast endpoint
+            discovery.broadcast_endpoint(my_id, my_ip, PLUG_PORT);
+            cout << CYAN << "[ORCA] Broadcasting endpoint: " << my_ip << ":" << PLUG_PORT << RESET << endl;
             
             if (plug.create_plug(PLUG_PORT)) {
                 cout << GREEN << "[SUCCESS] TCP Plug created!" << RESET << endl;
                 cout << "Your ID: " << id_system.get_display() << endl;
-                cout << "Waiting for Linux to connect..." << endl;
+                cout << "  Waiting for connections..." << endl;
                 start_chat();
             } else {
                 cout << RED << "[ERROR] Failed to create TCP plug!" << RESET << endl;
@@ -505,7 +748,6 @@ public:
         
         if (is_ish_mode) {
             cout << RED << "[ERROR] iSH cannot join. Must create plug!" << RESET << endl;
-            cout << "Use: ./orcashi create" << endl;
             return;
         }
         
@@ -517,22 +759,113 @@ public:
                 cout << "IP address required." << endl;
                 return;
             }
-            cout << CYAN << "[ORCA] Connecting to TCP plug at " << ip_input << ":" << PLUG_PORT << "..." << RESET << endl;
+            cout << CYAN << "[ORCA] Connecting to " << ip_input << ":" << PLUG_PORT << "..." << RESET << endl;
             if (plug.connect_to_plug(ip_input, PLUG_PORT)) {
-                cout << GREEN << "[SUCCESS] Connected to plug!" << RESET << endl;
+                cout << GREEN << "[SUCCESS] Connected!" << RESET << endl;
                 start_chat();
             } else {
                 cout << RED << "Connection failed." << RESET << endl;
             }
         } else {
-            cout << CYAN << "[ORCA] Connecting to TCP plug at " << ip << ":" << PLUG_PORT << "..." << RESET << endl;
+            cout << CYAN << "[ORCA] Connecting to " << ip << ":" << PLUG_PORT << "..." << RESET << endl;
             if (plug.connect_to_plug(ip, PLUG_PORT)) {
-                cout << GREEN << "[SUCCESS] Connected to plug!" << RESET << endl;
+                cout << GREEN << "[SUCCESS] Connected!" << RESET << endl;
                 start_chat();
             } else {
                 cout << RED << "Connection failed." << RESET << endl;
             }
         }
+    }
+    
+    void search_peer() {
+        cout << "\n" << string(50, '=') << endl;
+        cout << "  Hello who you miss today?" << endl;
+        cout << string(50, '=') << endl;
+        
+        cout << "Please type the peer ID~" << endl;
+        cout << "> ";
+        string peer_id_str;
+        getline(cin, peer_id_str);
+        
+        if (peer_id_str.empty()) {
+            cout << "No ID entered~" << endl;
+            return;
+        }
+        
+        int peer_id = stoi(peer_id_str);
+        
+        cout << "\n  Finding " << peer_id << "..." << endl;
+        
+        // Check online status
+        bool online = heartbeat.is_online(peer_id);
+        string status = online ? "Online  " : "Offline ";
+        
+        // Get endpoint
+        string endpoint = discovery.get_endpoint(peer_id);
+        
+        cout << " Found! " << peer_id << endl;
+        cout << " Status: " << status << endl;
+        if (!endpoint.empty()) {
+            cout << "🔗 Endpoint: " << endpoint << endl;
+        }
+        
+        cout << "\nDo you wanna send connect and save this peer ID? (y/n): ";
+        string answer;
+        getline(cin, answer);
+        
+        if (answer == "y" || answer == "Y") {
+            // Save peer
+            saved_peers.add_peer(peer_id_str);
+            cout << "  Saved! Use ./orcashi peer-list to see saved peers~" << endl;
+            
+            if (online && !endpoint.empty()) {
+                cout << " Sending connect request..." << endl;
+                // Connect to peer
+                size_t pos = endpoint.find(':');
+                if (pos != string::npos) {
+                    string ip = endpoint.substr(0, pos);
+                    int port = stoi(endpoint.substr(pos + 1));
+                    if (plug.connect_to_plug(ip, port)) {
+                        cout << GREEN << " Connected!" << RESET << endl;
+                        start_chat();
+                    }
+                }
+            } else {
+                cout << "Request has been send~" << endl;
+                cout << "If you wait too long is depend on your peer~" << endl;
+                cout << "Thank you~ (uwu)" << endl;
+            }
+        }
+    }
+    
+    void show_peer_list() {
+        cout << "\n" << string(50, '=') << endl;
+        cout << " Your saved peers~" << endl;
+        cout << "Here who you miss~" << endl;
+        cout << string(50, '=') << endl;
+        
+        vector<string> peers = saved_peers.get_peers();
+        
+        if (peers.empty()) {
+            cout << "You haven't saved any peers yet~" << endl;
+            cout << "Use ./orcashi search to find someone~" << endl;
+            return;
+        }
+        
+        for (const string& peer_id_str : peers) {
+            int peer_id = stoi(peer_id_str);
+            bool online = heartbeat.is_online(peer_id);
+            string status = online ? "Online " : "Offline ";
+            string endpoint = discovery.get_endpoint(peer_id);
+            
+            cout << "----------------------------------------" << endl;
+            cout << "ID: " << peer_id << endl;
+            cout << "Status: " << status << endl;
+            if (!endpoint.empty()) {
+                cout << "Endpoint: " << endpoint << endl;
+            }
+        }
+        cout << "----------------------------------------" << endl;
     }
 };
 
@@ -545,9 +878,11 @@ int main(int argc, char* argv[]) {
     
     if (argc < 2) {
         cout << "\nUsage:" << endl;
-        cout << "  ./orcashi create              - Create TCP plug (iSH)" << endl;
-        cout << "  ./orcashi join <ip>           - Connect to TCP plug (Linux)" << endl;
-        cout << "  ./orcashi --help              - Show this help" << endl;
+        cout << "  ./orcashi create          - Create a room (iSH)" << endl;
+        cout << "  ./orcashi join <ip>       - Join a room (Linux)" << endl;
+        cout << "  ./orcashi search          - Search for a peer" << endl;
+        cout << "  ./orcashi peer-list       - Show saved peers" << endl;
+        cout << "  ./orcashi --help          - Show this help" << endl;
         return 0;
     }
     
@@ -557,11 +892,17 @@ int main(int argc, char* argv[]) {
         orcashi.create_room();
     } else if (cmd == "join" && argc >= 3) {
         orcashi.join_room(argv[2]);
+    } else if (cmd == "search") {
+        orcashi.search_peer();
+    } else if (cmd == "peer-list") {
+        orcashi.show_peer_list();
     } else if (cmd == "--help" || cmd == "-h") {
         cout << "\nUsage:" << endl;
-        cout << "  ./orcashi create              - Create TCP plug (iSH)" << endl;
-        cout << "  ./orcashi join <ip>           - Connect to TCP plug (Linux)" << endl;
-        cout << "  ./orcashi --help              - Show this help" << endl;
+        cout << "  ./orcashi create          - Create a room (iSH)" << endl;
+        cout << "  ./orcashi join <ip>       - Join a room (Linux)" << endl;
+        cout << "  ./orcashi search          - Search for a peer" << endl;
+        cout << "  ./orcashi peer-list       - Show saved peers" << endl;
+        cout << "  ./orcashi --help          - Show this help" << endl;
     } else {
         cout << "Unknown command: " << cmd << endl;
         cout << "Use ./orcashi --help for usage." << endl;
