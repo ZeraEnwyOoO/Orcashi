@@ -1,4 +1,4 @@
- // orcashi.cpp
+// orcashi.cpp
 // ORCASHI v2.0 - P2P Chat for iSH + Linux (TCP Plug Mode)
 // Compile: g++ -o orcashi orcashi.cpp -lpthread -std=c++17
 
@@ -131,7 +131,7 @@ public:
     }
 };
 
-// ==================== TCP PLUG MODE (iSH) ====================
+// ==================== TCP PLUG MODE (FIXED BUFFERING) ====================
 class TCPPlug {
 private:
     int plug_socket;
@@ -155,18 +155,15 @@ public:
     }
     
     bool create_plug(int port) {
-        // 1. Create TCP socket
         plug_socket = socket(AF_INET, SOCK_STREAM, 0);
         if (plug_socket < 0) {
             cout << RED << "[ERROR] Failed to create socket!" << RESET << endl;
             return false;
         }
         
-        // 2. Set reuse address
         int opt = 1;
         setsockopt(plug_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
         
-        // 3. Bind to port
         struct sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
@@ -179,7 +176,6 @@ public:
             return false;
         }
         
-        // 4. Listen for connections
         if (listen(plug_socket, 5) < 0) {
             cout << RED << "[ERROR] Failed to listen!" << RESET << endl;
             close(plug_socket);
@@ -189,7 +185,6 @@ public:
         cout << GREEN << "[ORCA] TCP Plug is ready on port " << port << "!" << RESET << endl;
         cout << CYAN << "[ORCA] Waiting for Linux to connect..." << RESET << endl;
         
-        // 5. Accept connection
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
         client_socket = accept(plug_socket, (struct sockaddr*)&client_addr, &addr_len);
@@ -199,7 +194,6 @@ public:
             return false;
         }
         
-        // 6. Get client info
         char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
         peer_ip = string(ip);
@@ -208,7 +202,6 @@ public:
         
         cout << GREEN << "[ORCA] Linux connected from " << peer_ip << "!" << RESET << endl;
         
-        // 7. Start threads
         receive_thread = thread(&TCPPlug::receive_loop, this);
         send_thread = thread(&TCPPlug::send_loop, this);
         
@@ -216,14 +209,12 @@ public:
     }
     
     bool connect_to_plug(const string& target_ip, int port) {
-        // 1. Create TCP socket
         client_socket = socket(AF_INET, SOCK_STREAM, 0);
         if (client_socket < 0) {
             cout << RED << "[ERROR] Failed to create socket!" << RESET << endl;
             return false;
         }
         
-        // 2. Connect to plug
         struct sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
@@ -242,15 +233,38 @@ public:
         
         cout << GREEN << "[ORCA] Connected to plug at " << target_ip << ":" << port << "!" << RESET << endl;
         
-        // 3. Start threads
         receive_thread = thread(&TCPPlug::receive_loop, this);
         send_thread = thread(&TCPPlug::send_loop, this);
         
         return true;
     }
     
+    // ===== FIXED: send_loop with newline delimiter =====
+    void send_loop() {
+        while (running && connected) {
+            string msg;
+            if (message_queue.pop(msg, 100)) {
+                // Add newline delimiter so receiver knows message boundary
+                string msg_with_newline = msg + "\n";
+                
+                // Send with MSG_NOSIGNAL to prevent broken pipe crash
+                int n = send(client_socket, msg_with_newline.c_str(), 
+                             msg_with_newline.length(), MSG_NOSIGNAL);
+                
+                if (n <= 0) {
+                    cout << YELLOW << "[ORCA] Send failed. Connection may be closed." << RESET << endl;
+                    connected = false;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // ===== FIXED: receive_loop with newline delimiter =====
     void receive_loop() {
         char buffer[4096];
+        string accumulated;
+        
         while (running && connected) {
             int n = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
             if (n <= 0) {
@@ -258,16 +272,19 @@ public:
                 connected = false;
                 break;
             }
+            
             buffer[n] = '\0';
-            message_queue.push(string(buffer));
-        }
-    }
-    
-    void send_loop() {
-        while (running && connected) {
-            string msg;
-            if (message_queue.pop(msg, 100)) {
-                send(client_socket, msg.c_str(), msg.length(), 0);
+            accumulated += buffer;
+            
+            // Split by newline delimiter
+            size_t pos;
+            while ((pos = accumulated.find('\n')) != string::npos) {
+                string msg = accumulated.substr(0, pos);
+                accumulated.erase(0, pos + 1);
+                
+                if (!msg.empty()) {
+                    message_queue.push(msg);
+                }
             }
         }
     }
@@ -309,12 +326,10 @@ private:
     bool is_ish_mode;
     
     bool detect_ish() {
-        // Check for Alpine package manager (apk)
         if (access("/sbin/apk", F_OK) == 0) {
             return true;
         }
         
-        // Check /etc/os-release
         ifstream f("/etc/os-release");
         if (f.is_open()) {
             string line;
@@ -327,7 +342,6 @@ private:
             f.close();
         }
         
-        // Check /proc/version
         ifstream f2("/proc/version");
         if (f2.is_open()) {
             string content;
@@ -465,7 +479,6 @@ public:
         cout << string(50, '=') << endl;
         
         if (is_ish_mode) {
-            // iSH Mode: TCP Plug
             cout << CYAN << "[ORCA] iSH Mode: Creating TCP plug..." << RESET << endl;
             
             if (plug.create_plug(PLUG_PORT)) {
@@ -477,7 +490,6 @@ public:
                 cout << RED << "[ERROR] Failed to create TCP plug!" << RESET << endl;
             }
         } else {
-            // Linux Mode: Connect to iSH Plug
             cout << RED << "[ERROR] Linux must join, not create!" << RESET << endl;
             cout << "Use: ./orcashi join <ip>" << endl;
         }
@@ -496,21 +508,27 @@ public:
         
         if (ip.empty()) {
             cout << "Enter peer IP address: ";
-            getline(cin, const_cast<string&>(ip));
-        }
-        
-        if (ip.empty()) {
-            cout << "IP address required." << endl;
-            return;
-        }
-        
-        cout << CYAN << "[ORCA] Connecting to TCP plug at " << ip << ":" << PLUG_PORT << "..." << RESET << endl;
-        
-        if (plug.connect_to_plug(ip, PLUG_PORT)) {
-            cout << GREEN << "[SUCCESS] Connected to plug!" << RESET << endl;
-            start_chat();
+            string ip_input;
+            getline(cin, ip_input);
+            if (ip_input.empty()) {
+                cout << "IP address required." << endl;
+                return;
+            }
+            cout << CYAN << "[ORCA] Connecting to TCP plug at " << ip_input << ":" << PLUG_PORT << "..." << RESET << endl;
+            if (plug.connect_to_plug(ip_input, PLUG_PORT)) {
+                cout << GREEN << "[SUCCESS] Connected to plug!" << RESET << endl;
+                start_chat();
+            } else {
+                cout << RED << "Connection failed." << RESET << endl;
+            }
         } else {
-            cout << RED << "Connection failed." << RESET << endl;
+            cout << CYAN << "[ORCA] Connecting to TCP plug at " << ip << ":" << PLUG_PORT << "..." << RESET << endl;
+            if (plug.connect_to_plug(ip, PLUG_PORT)) {
+                cout << GREEN << "[SUCCESS] Connected to plug!" << RESET << endl;
+                start_chat();
+            } else {
+                cout << RED << "Connection failed." << RESET << endl;
+            }
         }
     }
 };
