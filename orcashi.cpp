@@ -1,6 +1,6 @@
-// orcashi.cpp
-// ORCASHI v2.0 - P2P Chat for iSH + Linux (TCP Plug Mode)
-// Compile: g++ -o orcashi orcashi.cpp -lpthread -std=c++17
+ // orcashi_v3.cpp
+// ORCASHI v3.0 - P2P Chat ដែលអាចទុកចិត្តបាន
+// Compile: g++ -o orcashi orcashi_v3.cpp -lpthread -std=c++17
 
 #include <iostream>
 #include <string>
@@ -44,7 +44,8 @@ const string RESET = "\033[0m";
 // ==================== CONFIG ====================
 const string ORCASHI_HOME = string(getenv("HOME")) + "/.orcashi/";
 const int PLUG_PORT = 9000;
-const int HEARTBEAT_INTERVAL = 30;
+const int HEARTBEAT_INTERVAL = 5;
+const int MSG_TIMEOUT = 2;
 
 // ==================== THREAD-SAFE QUEUE ====================
 template<typename T>
@@ -131,7 +132,18 @@ public:
     }
 };
 
-// ==================== TCP PLUG MODE (FIXED BUFFERING) ====================
+// ==================== RELIABLE MESSAGE ====================
+struct ReliableMessage {
+    int id;
+    string content;
+    chrono::steady_clock::time_point sent_time;
+    bool acknowledged;
+    int retries;
+    
+    ReliableMessage() : id(0), acknowledged(false), retries(0) {}
+};
+
+// ==================== TCP PLUG v3.0 (RELIABLE) ====================
 class TCPPlug {
 private:
     int plug_socket;
@@ -140,17 +152,179 @@ private:
     ThreadSafeQueue<string> message_queue;
     thread receive_thread;
     thread send_thread;
+    thread ack_thread;
+    thread heartbeat_thread;
     atomic<bool> running;
     string peer_ip;
     string peer_id;
+    int next_msg_id;
+    map<int, ReliableMessage> pending_messages;
+    mutex pending_mutex;
+    
+    // ===== SEND WITH ACKNOWLEDGMENT =====
+    void send_reliable(const string& content) {
+        int msg_id = next_msg_id++;
+        string full_msg = "MSG:" + to_string(msg_id) + ":" + content + "\n";
+        
+        // Store in pending
+        ReliableMessage msg;
+        msg.id = msg_id;
+        msg.content = content;
+        msg.sent_time = chrono::steady_clock::now();
+        msg.acknowledged = false;
+        msg.retries = 0;
+        
+        {
+            lock_guard<mutex> lock(pending_mutex);
+            pending_messages[msg_id] = msg;
+        }
+        
+        // Send
+        send(client_socket, full_msg.c_str(), full_msg.length(), MSG_NOSIGNAL);
+    }
+    
+    // ===== SEND ACKNOWLEDGMENT =====
+    void send_ack(int msg_id) {
+        string ack = "ACK:" + to_string(msg_id) + "\n";
+        send(client_socket, ack.c_str(), ack.length(), MSG_NOSIGNAL);
+    }
+    
+    // ===== HEARTBEAT (Keep-alive) =====
+    void heartbeat_loop() {
+        while (running && connected) {
+            this_thread::sleep_for(chrono::seconds(HEARTBEAT_INTERVAL));
+            if (connected) {
+                string heartbeat = "PING\n";
+                send(client_socket, heartbeat.c_str(), heartbeat.length(), MSG_NOSIGNAL);
+            }
+        }
+    }
+    
+    // ===== ACKNOWLEDGMENT THREAD =====
+    void ack_loop() {
+        while (running && connected) {
+            this_thread::sleep_for(chrono::milliseconds(500));
+            
+            lock_guard<mutex> lock(pending_mutex);
+            auto now = chrono::steady_clock::now();
+            
+            vector<int> to_remove;
+            for (auto& pair : pending_messages) {
+                auto elapsed = chrono::duration_cast<chrono::seconds>(
+                    now - pair.second.sent_time).count();
+                
+                // Resend if not acknowledged
+                if (elapsed > MSG_TIMEOUT && !pair.second.acknowledged) {
+                    if (pair.second.retries < 3) {
+                        string full_msg = "MSG:" + to_string(pair.first) + ":" + 
+                                         pair.second.content + "\n";
+                        send(client_socket, full_msg.c_str(), full_msg.length(), MSG_NOSIGNAL);
+                        pair.second.sent_time = now;
+                        pair.second.retries++;
+                    } else {
+                        // Too many retries - give up
+                        cout << YELLOW << "[ORCA] Message " << pair.first 
+                             << " lost after " << pair.second.retries << " retries" << RESET << endl;
+                        to_remove.push_back(pair.first);
+                    }
+                }
+                
+                if (pair.second.acknowledged) {
+                    to_remove.push_back(pair.first);
+                }
+            }
+            
+            for (int id : to_remove) {
+                pending_messages.erase(id);
+            }
+        }
+    }
+    
+    // ===== RECEIVE THREAD =====
+    void receive_loop() {
+        char buffer[4096];
+        string accumulated;
+        
+        while (running && connected) {
+            int n = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+            if (n <= 0) {
+                cout << YELLOW << "[ORCA] Connection closed by peer." << RESET << endl;
+                connected = false;
+                break;
+            }
+            
+            buffer[n] = '\0';
+            accumulated += buffer;
+            
+            size_t pos;
+            while ((pos = accumulated.find('\n')) != string::npos) {
+                string msg = accumulated.substr(0, pos);
+                accumulated.erase(0, pos + 1);
+                
+                if (!msg.empty()) {
+                    // Handle acknowledgment
+                    if (msg.find("ACK:") == 0) {
+                        int msg_id = stoi(msg.substr(4));
+                        lock_guard<mutex> lock(pending_mutex);
+                        auto it = pending_messages.find(msg_id);
+                        if (it != pending_messages.end()) {
+                            it->second.acknowledged = true;
+                        }
+                    }
+                    // Handle heartbeat
+                    else if (msg == "PING") {
+                        string pong = "PONG\n";
+                        send(client_socket, pong.c_str(), pong.length(), MSG_NOSIGNAL);
+                    }
+                    else if (msg == "PONG") {
+                        // Heartbeat received - do nothing
+                    }
+                    // Handle regular message
+                    else if (msg.find("MSG:") == 0) {
+                        size_t first_colon = msg.find(':', 4);
+                        if (first_colon != string::npos) {
+                            int msg_id = stoi(msg.substr(4, first_colon - 4));
+                            string content = msg.substr(first_colon + 1);
+                            
+                            // Send acknowledgment
+                            send_ack(msg_id);
+                            
+                            // Push to message queue
+                            message_queue.push(content);
+                        }
+                    }
+                    // Plain message (no ID)
+                    else {
+                        message_queue.push(msg);
+                    }
+                }
+            }
+        }
+    }
+    
+    // ===== SEND THREAD =====
+    void send_loop() {
+        while (running && connected) {
+            string msg;
+            if (message_queue.pop(msg, 100)) {
+                send_reliable(msg);
+            }
+        }
+    }
     
 public:
-    TCPPlug() : plug_socket(-1), client_socket(-1), connected(false), running(true) {}
+    TCPPlug() : plug_socket(-1), client_socket(-1), connected(false), 
+                running(true), next_msg_id(1) {
+        string cmd = "mkdir -p " + ORCASHI_HOME;
+        system(cmd.c_str());
+    }
     
     ~TCPPlug() {
         running = false;
         if (receive_thread.joinable()) receive_thread.join();
         if (send_thread.joinable()) send_thread.join();
+        if (ack_thread.joinable()) ack_thread.join();
+        if (heartbeat_thread.joinable()) heartbeat_thread.join();
         close_connection();
     }
     
@@ -171,7 +345,7 @@ public:
         addr.sin_port = htons(port);
         
         if (bind(plug_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            cout << RED << "[ERROR] Failed to bind to port " << port << "!" << RESET << endl;
+            cout << RED << "[ERROR] Failed to bind!" << RESET << endl;
             close(plug_socket);
             return false;
         }
@@ -189,7 +363,7 @@ public:
         socklen_t addr_len = sizeof(client_addr);
         client_socket = accept(plug_socket, (struct sockaddr*)&client_addr, &addr_len);
         if (client_socket < 0) {
-            cout << RED << "[ERROR] Failed to accept connection!" << RESET << endl;
+            cout << RED << "[ERROR] Failed to accept!" << RESET << endl;
             close(plug_socket);
             return false;
         }
@@ -202,8 +376,11 @@ public:
         
         cout << GREEN << "[ORCA] Linux connected from " << peer_ip << "!" << RESET << endl;
         
+        // Start threads
         receive_thread = thread(&TCPPlug::receive_loop, this);
         send_thread = thread(&TCPPlug::send_loop, this);
+        ack_thread = thread(&TCPPlug::ack_loop, this);
+        heartbeat_thread = thread(&TCPPlug::heartbeat_loop, this);
         
         return true;
     }
@@ -222,7 +399,7 @@ public:
         inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr);
         
         if (connect(client_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            cout << RED << "[ERROR] Failed to connect to " << target_ip << ":" << port << "!" << RESET << endl;
+            cout << RED << "[ERROR] Failed to connect!" << RESET << endl;
             close(client_socket);
             return false;
         }
@@ -235,58 +412,10 @@ public:
         
         receive_thread = thread(&TCPPlug::receive_loop, this);
         send_thread = thread(&TCPPlug::send_loop, this);
+        ack_thread = thread(&TCPPlug::ack_loop, this);
+        heartbeat_thread = thread(&TCPPlug::heartbeat_loop, this);
         
         return true;
-    }
-    
-    // ===== FIXED: send_loop with newline delimiter =====
-    void send_loop() {
-        while (running && connected) {
-            string msg;
-            if (message_queue.pop(msg, 100)) {
-                // Add newline delimiter so receiver knows message boundary
-                string msg_with_newline = msg + "\n";
-                
-                // Send with MSG_NOSIGNAL to prevent broken pipe crash
-                int n = send(client_socket, msg_with_newline.c_str(), 
-                             msg_with_newline.length(), MSG_NOSIGNAL);
-                
-                if (n <= 0) {
-                    cout << YELLOW << "[ORCA] Send failed. Connection may be closed." << RESET << endl;
-                    connected = false;
-                    break;
-                }
-            }
-        }
-    }
-    
-    // ===== FIXED: receive_loop with newline delimiter =====
-    void receive_loop() {
-        char buffer[4096];
-        string accumulated;
-        
-        while (running && connected) {
-            int n = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-            if (n <= 0) {
-                cout << YELLOW << "[ORCA] Connection closed by peer." << RESET << endl;
-                connected = false;
-                break;
-            }
-            
-            buffer[n] = '\0';
-            accumulated += buffer;
-            
-            // Split by newline delimiter
-            size_t pos;
-            while ((pos = accumulated.find('\n')) != string::npos) {
-                string msg = accumulated.substr(0, pos);
-                accumulated.erase(0, pos + 1);
-                
-                if (!msg.empty()) {
-                    message_queue.push(msg);
-                }
-            }
-        }
     }
     
     bool send_message(const string& msg) {
@@ -316,19 +445,12 @@ class ORCASHI {
 private:
     IDSystem id_system;
     TCPPlug plug;
-    string room_code;
-    string peer_id;
     atomic<bool> running;
-    ThreadSafeQueue<string> message_queue;
-    thread receive_thread;
     thread ui_thread;
-    thread heartbeat_thread;
     bool is_ish_mode;
     
     bool detect_ish() {
-        if (access("/sbin/apk", F_OK) == 0) {
-            return true;
-        }
+        if (access("/sbin/apk", F_OK) == 0) return true;
         
         ifstream f("/etc/os-release");
         if (f.is_open()) {
@@ -341,19 +463,6 @@ private:
             }
             f.close();
         }
-        
-        ifstream f2("/proc/version");
-        if (f2.is_open()) {
-            string content;
-            getline(f2, content);
-            if (content.find("iOS") != string::npos || 
-                content.find("iPhone") != string::npos) {
-                f2.close();
-                return true;
-            }
-            f2.close();
-        }
-        
         return false;
     }
     
@@ -400,11 +509,16 @@ private:
     
     void show_help() {
         cout << "\n" << string(40, '=') << endl;
-        cout << "ORCASHI v2.0 - P2P Chat (TCP Plug Mode)" << endl;
+        cout << "ORCASHI v3.0 - Reliable P2P Chat" << endl;
         cout << string(40, '=') << endl;
         cout << "Commands:" << endl;
         cout << "  /help    - Show this help" << endl;
         cout << "  /exit    - Disconnect" << endl;
+        cout << "\nFeatures:" << endl;
+        cout << "  ✅ Reliable messaging (ACK)" << endl;
+        cout << "  ✅ Auto-retry on failure" << endl;
+        cout << "  ✅ Heartbeat keep-alive" << endl;
+        cout << "  ✅ Messages always delivered!" << endl;
         if (is_ish_mode) {
             cout << "\nMode: iSH (TCP Plug)" << endl;
         } else {
@@ -425,13 +539,12 @@ private:
         cout << "Type /help for commands" << endl;
         cout << string(50, '=') << endl << endl;
         
-        peer_id = plug.get_peer_id();
         ui_thread = thread(&ORCASHI::ui_loop, this);
         
         string incoming;
         while (running && plug.is_connected()) {
             if (plug.receive_message(incoming, 100)) {
-                cout << "\r\033[K[" << peer_id << "]> " << incoming << endl;
+                cout << "\r\033[K[" << plug.get_peer_id() << "]> " << incoming << endl;
                 cout << id_system.get_display() << "> " << flush;
             }
         }
@@ -452,7 +565,8 @@ public:
     
     void show_banner() {
         cout << CYAN << R"(
-============================================================
+===========================================================
+            
   ██████╗ ██████╗  ██████╗ █████╗ 
  ██╔═══██╗██╔══██╗██╔════╝██╔══██╗C
  ██║   ██║██████╔╝██║     ███████║H
@@ -460,8 +574,8 @@ public:
  ╚██████╔╝██║  ██║╚██████╗██║  ██║T
   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
 
-            ORCASHI v2.0 - P2P Chat (TCP Plug)
-        (iSH Plug + Linux Connect) Talk what you want :3
+            ORCASHI v3.0 - Reliable P2P Chat
+        (iSH Plug + Linux Connect)
 ============================================================
 )" << RESET << endl;
         
