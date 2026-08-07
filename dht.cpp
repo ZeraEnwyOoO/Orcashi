@@ -1,4 +1,4 @@
-// dht.cpp - IPFS DHT Real Implementation
+ // dht.cpp - IPFS DHT Real Implementation (FIXED)
 #include "dht.hpp"
 #include <iostream>
 #include <cstdlib>
@@ -41,9 +41,10 @@ bool DHT::is_ipfs_installed() {
     return !result.empty();
 }
 
-// ==================== CHECK IPFS NODE ====================
+// ==================== CHECK IPFS NODE (FIXED) ====================
 bool DHT::check_node() {
-    string cmd = "curl -s -m 2 " + ipfs_api_url + "version 2>/dev/null";
+    // Use -X POST for IPFS API
+    string cmd = "curl -s -X POST -m 2 " + ipfs_api_url + "version 2>/dev/null";
     string result = exec(cmd);
     node_running = !result.empty() && result.find("Version") != string::npos;
     return node_running;
@@ -53,7 +54,7 @@ bool DHT::check_node() {
 bool DHT::auto_start() {
     if (!is_ipfs_installed()) {
         cout << "[DHT] IPFS not installed!" << endl;
-        cout << "[DHT] Install: https://ipfs.tech" << endl;
+        cout << "[DHT] Install: sudo pacman -S kubo" << endl;
         return false;
     }
     
@@ -65,9 +66,10 @@ bool DHT::auto_start() {
         return false;
     }
     
-    return wait_for_node(15);
+    return wait_for_node(10);
 }
 
+// ==================== WAIT FOR NODE (FASTER) ====================
 bool DHT::wait_for_node(int max_attempts) {
     cout << "[DHT] Waiting for IPFS node..." << endl;
     for (int i = 0; i < max_attempts; i++) {
@@ -76,12 +78,12 @@ bool DHT::wait_for_node(int max_attempts) {
             return true;
         }
         cout << "[DHT] Attempt " << (i + 1) << "/" << max_attempts << " - IPFS not ready" << endl;
-        this_thread::sleep_for(chrono::seconds(2));
+        this_thread::sleep_for(chrono::milliseconds(500));  // Faster: 0.5s
     }
     return false;
 }
 
-// ==================== INIT ====================
+// ==================== INIT (FIXED) ====================
 bool DHT::init() {
     lock_guard<mutex> lock(mtx);
     
@@ -89,10 +91,11 @@ bool DHT::init() {
     
     if (!is_ipfs_installed()) {
         cout << "[DHT] IPFS not installed!" << endl;
-        cout << "[DHT] Please install IPFS: https://ipfs.tech" << endl;
+        cout << "[DHT] Install: sudo pacman -S kubo" << endl;
         return false;
     }
     
+    // Check if IPFS daemon is already running
     if (check_node()) {
         cout << "[DHT] IPFS node is running!" << endl;
         return true;
@@ -106,7 +109,7 @@ bool DHT::init() {
 
 // ==================== GET IPFS VERSION ====================
 string DHT::get_ipfs_version() {
-    string cmd = "curl -s " + ipfs_api_url + "version 2>/dev/null";
+    string cmd = "curl -s -X POST " + ipfs_api_url + "version 2>/dev/null";
     string result = exec(cmd);
     return parse_json_value(result, "Version");
 }
@@ -184,12 +187,12 @@ string DHT::extract_endpoint(const string& data) {
 
 // ==================== PIN DATA ====================
 bool DHT::pin_data(const string& cid) {
-    string cmd = "curl -s " + ipfs_api_url + "pin/add?arg=" + cid + " 2>/dev/null";
+    string cmd = "curl -s -X POST " + ipfs_api_url + "pin/add?arg=" + cid + " 2>/dev/null";
     string result = exec(cmd);
     return !result.empty() && result.find("Pinned") != string::npos;
 }
 
-// ==================== STORE ====================
+// ==================== STORE (FIXED) ====================
 bool DHT::store(const string& id, const string& endpoint) {
     lock_guard<mutex> lock(mtx);
     
@@ -210,7 +213,7 @@ bool DHT::store(const string& id, const string& endpoint) {
     f << data;
     f.close();
     
-    // Add to IPFS
+    // Add to IPFS (use -X POST)
     string cmd = "curl -s -X POST -F file=@" + temp_file + " " + ipfs_api_url + "add 2>/dev/null";
     string result = exec(cmd);
     
@@ -235,7 +238,7 @@ bool DHT::store(const string& id, const string& endpoint) {
     return true;
 }
 
-// ==================== LOOKUP ====================
+// ==================== LOOKUP (FIXED) ====================
 string DHT::lookup(const string& id) {
     lock_guard<mutex> lock(mtx);
     
@@ -246,8 +249,8 @@ string DHT::lookup(const string& id) {
     
     cout << "[DHT] Searching for " << id << " in IPFS DHT..." << endl;
     
-    // Search for the ID using DHT findprovs
-    string cmd = "curl -s " + ipfs_api_url + "dht/findprovs?arg=" + id + " 2>/dev/null";
+    // Search for the ID using DHT findprovs (use -X POST)
+    string cmd = "curl -s -X POST " + ipfs_api_url + "dht/findprovs?arg=" + id + " 2>/dev/null";
     string result = exec(cmd);
     
     if (result.empty()) {
@@ -280,8 +283,8 @@ string DHT::lookup(const string& id) {
     
     cout << "[DHT] Found CID: " << cid << endl;
     
-    // Get the actual data
-    cmd = "curl -s " + ipfs_api_url + "cat?arg=" + cid + " 2>/dev/null";
+    // Get the actual data (use -X POST)
+    cmd = "curl -s -X POST " + ipfs_api_url + "cat?arg=" + cid + " 2>/dev/null";
     string data = exec(cmd);
     
     if (data.empty()) {
