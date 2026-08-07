@@ -1,11 +1,9 @@
- // registry.cpp - IMPLEMENTATION
-#include "registry.hpp"
+ #include "registry.hpp"
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <sstream>
 
 using namespace std;
 
@@ -16,7 +14,6 @@ Registry::Registry() {
     string dir = registry_file.substr(0, registry_file.find_last_of('/'));
     string cmd = "mkdir -p " + dir;
     system(cmd.c_str());
-    
     load();
 }
 
@@ -32,7 +29,6 @@ bool Registry::register_peer(const string& id, const string& ip, const string& p
     peer.port = port;
     peer.online = true;
     peer.last_seen = time(nullptr);
-    
     peers[id] = peer;
     save();
     return true;
@@ -74,16 +70,6 @@ vector<Peer> Registry::get_all_peers() {
     return result;
 }
 
-vector<Peer> Registry::get_online_peers() {
-    vector<Peer> result;
-    for (auto& pair : peers) {
-        if (pair.second.online) {
-            result.push_back(pair.second);
-        }
-    }
-    return result;
-}
-
 bool Registry::remove_peer(const string& id) {
     auto it = peers.find(id);
     if (it != peers.end()) {
@@ -113,19 +99,16 @@ void Registry::load() {
             peer.id = line.substr(start, end - start);
             in_peer = true;
         }
-        
         if (line.find("\"ip\":\"") != string::npos && in_peer) {
             size_t start = line.find("\"ip\":\"") + 6;
             size_t end = line.find("\"", start);
             peer.ip = line.substr(start, end - start);
         }
-        
         if (line.find("\"port\":\"") != string::npos && in_peer) {
             size_t start = line.find("\"port\":\"") + 8;
             size_t end = line.find("\"", start);
             peer.port = line.substr(start, end - start);
         }
-        
         if (line.find("\"online\":") != string::npos && in_peer) {
             size_t start = line.find("\"online\":") + 9;
             size_t end = line.find(",", start);
@@ -133,7 +116,6 @@ void Registry::load() {
             string val = line.substr(start, end - start);
             peer.online = (val.find("true") != string::npos);
         }
-        
         if (line.find("}") != string::npos && in_peer) {
             if (!peer.id.empty()) {
                 peers[peer.id] = peer;
@@ -142,7 +124,6 @@ void Registry::load() {
             }
         }
     }
-    
     f.close();
 }
 
@@ -151,12 +132,10 @@ void Registry::save() {
     if (!f.is_open()) return;
     
     f << "{\n  \"peers\": [\n";
-    
     bool first = true;
     for (auto& pair : peers) {
         if (!first) f << ",\n";
         first = false;
-        
         Peer& p = pair.second;
         f << "    {\n";
         f << "      \"id\": \"" << p.id << "\",\n";
@@ -166,7 +145,6 @@ void Registry::save() {
         f << "      \"last_seen\": " << p.last_seen << "\n";
         f << "    }";
     }
-    
     f << "\n  ]\n}\n";
     f.close();
 }
