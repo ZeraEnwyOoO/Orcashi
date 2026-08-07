@@ -1,4 +1,4 @@
- // orcashi.cpp - ORCASHI v3.1 with MDNS (Pure C++)
+ // orcashi.cpp - ORCASHI v3.1 with MDNS
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include "request.hpp"
@@ -42,7 +42,6 @@ ORCASHI::~ORCASHI() {
 }
 
 bool ORCASHI::init() {
-    // Initialize MDNS
     if (mdns.init()) {
         cout << "[ORCA] MDNS initialized" << endl;
     }
@@ -230,7 +229,6 @@ bool ORCASHI::register_identity() {
         cout << "  Your ID: " << id << "\n";
         cout << "  Endpoint: " << ip << ":9000\n";
         
-        // ===== PUBLISH MDNS =====
         if (mdns.publish(id, 9000)) {
             cout << "  [MDNS] Published via Pure C++ Multicast!" << endl;
         } else {
@@ -250,13 +248,11 @@ bool ORCASHI::connect_peer(const string& id) {
     Registry registry;
     Peer peer;
     
-    // 1. Check Registry
     if (registry.get_peer(id, peer)) {
         cout << "  [ORCA] Found in registry: " << peer.ip << ":" << peer.port << "\n";
         return join_room(peer.ip);
     }
     
-    // 2. Try MDNS
     cout << "  [ORCA] Looking up " << id << " via MDNS..." << endl;
     string endpoint = mdns.lookup(id);
     if (!endpoint.empty()) {
@@ -369,11 +365,3 @@ void ORCASHI::show_help() {
     cout << "Peer ID: " << get_peer_id() << endl;
     cout << string(40, '=') << endl << endl;
 }
-
-// ==================== UNUSED FUNCTIONS ====================
-string ORCASHI::get_hidden_password() { return ""; }
-string ORCASHI::detect_usb() { return ""; }
-bool ORCASHI::save_to_usb(const Identity& identity, const string& usb_path) { return false; }
-bool ORCASHI::load_from_usb(Identity& identity, const string& usb_path) { return false; }
-bool ORCASHI::register_normal_id() { return false; }
-bool ORCASHI::register_verified_id() { return false; }
