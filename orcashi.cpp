@@ -1,4 +1,4 @@
- // orcashi.cpp - ORCASHI v3.1 with Request System
+ // orcashi.cpp - ORCASHI v3.1 with DHT
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include "request.hpp"
@@ -43,6 +43,8 @@ ORCASHI::~ORCASHI() {
 }
 
 bool ORCASHI::init() {
+    // Initialize DHT
+    init_dht();
     return true;
 }
 
@@ -67,6 +69,31 @@ string ORCASHI::get_local_ip() {
     
     freeifaddrs(ifaddr);
     return "127.0.0.1";
+}
+
+// ==================== DHT FUNCTIONS ====================
+bool ORCASHI::init_dht() {
+    cout << "\n[DHT] Initializing IPFS DHT..." << endl;
+    if (dht.init()) {
+        cout << GREEN << "[DHT] IPFS DHT ready!" << RESET << endl;
+        return true;
+    }
+    cout << YELLOW << "[DHT] IPFS DHT not available. Install IPFS: https://ipfs.tech" << RESET << endl;
+    return false;
+}
+
+bool ORCASHI::store_in_dht(const string& id, const string& endpoint) {
+    if (!dht.is_online()) {
+        return false;
+    }
+    return dht.store(id, endpoint);
+}
+
+string ORCASHI::lookup_in_dht(const string& id) {
+    if (!dht.is_online()) {
+        return "";
+    }
+    return dht.lookup(id);
 }
 
 // ==================== SYSTEM DETECTION ====================
@@ -235,8 +262,21 @@ bool ORCASHI::register_identity() {
         cout << "\n  [SUCCESS] Registered!\n";
         cout << "  Your ID: " << id << "\n";
         cout << "  Endpoint: " << ip << ":9000\n";
+        
+        // ===== STORE IN DHT =====
+        if (dht.is_online()) {
+            string endpoint = ip + ":9000";
+            if (dht.store(id, endpoint)) {
+                cout << "  [DHT] Stored in IPFS DHT!" << endl;
+            } else {
+                cout << "  [DHT] Failed to store in IPFS DHT!" << endl;
+            }
+        } else {
+            cout << "  [DHT] IPFS DHT not available" << endl;
+        }
+        
         cout << "\n  Your friends can connect using:\n";
-        cout << "    ./orcashi add " << id << "\n";
+        cout << "    ./orcashi connect " << id << "\n";
         return true;
     }
     
@@ -244,7 +284,42 @@ bool ORCASHI::register_identity() {
     return false;
 }
 
-// ==================== REQUEST SYSTEM (NEW!) ====================
+// ==================== CONNECT PEER (WITH DHT) ====================
+bool ORCASHI::connect_peer(const string& id) {
+    Registry registry;
+    Peer peer;
+    
+    // 1. Check Registry first
+    if (registry.get_peer(id, peer)) {
+        cout << "  [ORCA] Found in registry: " << peer.ip << ":" << peer.port << "\n";
+        return join_room(peer.ip);
+    }
+    
+    // 2. Lookup in DHT!
+    cout << "  [ORCA] Looking up " << id << " in IPFS DHT..." << endl;
+    
+    if (!dht.is_online()) {
+        cout << "  [ORCA] DHT not available!" << endl;
+        cout << "  [ORCA] Try: ./orcashi search " << id << " (LAN broadcast)" << endl;
+        return false;
+    }
+    
+    string endpoint = dht.lookup(id);
+    if (!endpoint.empty()) {
+        string ip = endpoint.substr(0, endpoint.find(':'));
+        cout << "  [ORCA] Found in DHT: " << endpoint << endl;
+        
+        // Save to registry for next time
+        registry.register_peer(id, ip, "9000");
+        
+        return join_room(ip);
+    }
+    
+    cout << "  [ORCA] Peer not found in DHT!" << endl;
+    return false;
+}
+
+// ==================== REQUEST SYSTEM ====================
 bool ORCASHI::add_peer(const string& id) {
     cout << "\n  [ORCA] Sending request to " << id << "...\n";
     
@@ -288,32 +363,17 @@ bool ORCASHI::check_requests() {
             Peer peer;
             if (registry.get_peer(req.from_id, peer)) {
                 cout << "  [ORCA] Connecting to " << req.from_id << "...\n";
-                join_room(peer.ip);
-                return true;
+                return join_room(peer.ip);
             } else {
                 cout << "  [ORCA] Peer not found in registry!\n";
-                cout << "  [ORCA] Trying to discover via broadcast...\n";
-                // TODO: Add discovery here
+                cout << "  [ORCA] Looking up in DHT...\n";
+                return connect_peer(req.from_id);
             }
         } else {
             requests.reject_request(req.from_id, my_id);
         }
     }
     return true;
-}
-
-bool ORCASHI::connect_peer(const string& id) {
-    Registry registry;
-    Peer peer;
-    
-    if (registry.get_peer(id, peer)) {
-        cout << "  [ORCA] Found " << id << " at " << peer.ip << ":" << peer.port << "\n";
-        return join_room(peer.ip);
-    } else {
-        cout << "  [ORCA] Peer not registered!\n";
-        cout << "  [ORCA] Send a request: ./orcashi add " << id << "\n";
-        return false;
-    }
 }
 
 // ==================== SHOW PEERS ====================
@@ -357,6 +417,11 @@ void ORCASHI::show_banner() {
         cout << GREEN << "Mode: iSH (TCP Plug)" << RESET << endl;
     } else {
         cout << GREEN << "Mode: Linux (TCP Connect)" << RESET << endl;
+    }
+    if (dht.is_online()) {
+        cout << GREEN << "DHT: Connected to IPFS" << RESET << endl;
+    } else {
+        cout << YELLOW << "DHT: Not connected (install IPFS)" << RESET << endl;
     }
     cout << "Type /help for commands" << endl;
     cout << string(50, '=') << endl << endl;
