@@ -1,8 +1,7 @@
- // orcashi.cpp - Real Implementation (v3.1)
-
-# // orcashi.cpp - Real Implementation (v3.1)
+ // orcashi.cpp - ORCASHI v3.1 with Request System
 #include "orcashi.hpp"
 #include "registry.hpp"
+#include "request.hpp"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -17,12 +16,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <ifaddrs.h>
-#include <cstring>      
-#include <cctype>       
-
-using namespace std;
-
-// ... rest of code ...
+#include <cstring>
+#include <cctype>
 
 using namespace std;
 
@@ -33,6 +28,7 @@ const string RED = "\033[31m";
 const string RESET = "\033[0m";
 const string ORCASHI_HOME = string(getenv("HOME")) + "/.orcashi/";
 
+// ==================== CONSTRUCTOR / DESTRUCTOR ====================
 ORCASHI::ORCASHI() : running(true) {
     string cmd = "mkdir -p " + ORCASHI_HOME;
     system(cmd.c_str());
@@ -73,7 +69,7 @@ string ORCASHI::get_local_ip() {
     return "127.0.0.1";
 }
 
-// ==================== REST OF CODE (ដដែល) ====================
+// ==================== SYSTEM DETECTION ====================
 bool ORCASHI::detect_ish() {
     if (access("/sbin/apk", F_OK) == 0) return true;
     
@@ -103,6 +99,7 @@ bool ORCASHI::detect_ish() {
     return false;
 }
 
+// ==================== ID GENERATION ====================
 string ORCASHI::generate_id() {
     string id_file = ORCASHI_HOME + "id";
     
@@ -131,6 +128,7 @@ string ORCASHI::generate_id() {
     return ss.str();
 }
 
+// ==================== ROOM MANAGEMENT ====================
 bool ORCASHI::create_room(int port) {
     cout << "\n" << string(50, '=') << endl;
     cout << "ORCASHI - CREATE ROOM" << endl;
@@ -161,6 +159,7 @@ bool ORCASHI::join_room(const string& ip, int port) {
     return false;
 }
 
+// ==================== UI LOOP ====================
 void ORCASHI::ui_loop() {
     string input;
     while (running && plug.is_connected()) {
@@ -186,6 +185,7 @@ void ORCASHI::ui_loop() {
     }
 }
 
+// ==================== MESSAGING ====================
 bool ORCASHI::send_message(const string& msg) {
     return plug.send_message(msg);
 }
@@ -194,6 +194,7 @@ bool ORCASHI::receive_message(string& msg, int timeout_ms) {
     return plug.receive_message(msg, timeout_ms);
 }
 
+// ==================== CONNECTION STATUS ====================
 bool ORCASHI::is_connected() const {
     return plug.is_connected();
 }
@@ -204,6 +205,7 @@ void ORCASHI::disconnect() {
     plug.close_connection();
 }
 
+// ==================== GETTERS ====================
 string ORCASHI::get_my_id() const { return my_id; }
 string ORCASHI::get_peer_id() const { return plug.get_peer_id(); }
 string ORCASHI::get_peer_ip() const { return plug.get_peer_ip(); }
@@ -225,7 +227,6 @@ bool ORCASHI::register_identity() {
         return false;
     }
     
-    // ===== REAL IP DETECTION =====
     string ip = get_local_ip();
     cout << "  Your IP: " << ip << "\n";
     
@@ -235,7 +236,7 @@ bool ORCASHI::register_identity() {
         cout << "  Your ID: " << id << "\n";
         cout << "  Endpoint: " << ip << ":9000\n";
         cout << "\n  Your friends can connect using:\n";
-        cout << "    ./orcashi connect " << id << "\n";
+        cout << "    ./orcashi add " << id << "\n";
         return true;
     }
     
@@ -243,6 +244,79 @@ bool ORCASHI::register_identity() {
     return false;
 }
 
+// ==================== REQUEST SYSTEM (NEW!) ====================
+bool ORCASHI::add_peer(const string& id) {
+    cout << "\n  [ORCA] Sending request to " << id << "...\n";
+    
+    RequestManager requests;
+    if (requests.send_request(my_id, id)) {
+        // Check if peer is in registry
+        Registry registry;
+        Peer peer;
+        if (registry.get_peer(id, peer)) {
+            cout << "  [ORCA] Peer found in registry: " << peer.ip << "\n";
+        } else {
+            cout << "  [ORCA] Peer not in registry. Waiting for response...\n";
+        }
+        return true;
+    }
+    return false;
+}
+
+bool ORCASHI::check_requests() {
+    RequestManager requests;
+    auto pending = requests.get_pending_requests(my_id);
+    
+    if (pending.empty()) {
+        cout << "  [ORCA] No pending requests.\n";
+        return false;
+    }
+    
+    cout << "\n  [ORCA] You have " << pending.size() << " pending request(s):\n";
+    
+    for (const auto& req : pending) {
+        cout << "    " << req.from_id << " wants to connect.\n";
+        cout << "    Accept? (y/n): ";
+        string answer;
+        getline(cin, answer);
+        
+        if (answer == "y" || answer == "Y") {
+            requests.accept_request(req.from_id, my_id);
+            
+            // Connect to peer
+            Registry registry;
+            Peer peer;
+            if (registry.get_peer(req.from_id, peer)) {
+                cout << "  [ORCA] Connecting to " << req.from_id << "...\n";
+                join_room(peer.ip);
+                return true;
+            } else {
+                cout << "  [ORCA] Peer not found in registry!\n";
+                cout << "  [ORCA] Trying to discover via broadcast...\n";
+                // TODO: Add discovery here
+            }
+        } else {
+            requests.reject_request(req.from_id, my_id);
+        }
+    }
+    return true;
+}
+
+bool ORCASHI::connect_peer(const string& id) {
+    Registry registry;
+    Peer peer;
+    
+    if (registry.get_peer(id, peer)) {
+        cout << "  [ORCA] Found " << id << " at " << peer.ip << ":" << peer.port << "\n";
+        return join_room(peer.ip);
+    } else {
+        cout << "  [ORCA] Peer not registered!\n";
+        cout << "  [ORCA] Send a request: ./orcashi add " << id << "\n";
+        return false;
+    }
+}
+
+// ==================== SHOW PEERS ====================
 void ORCASHI::show_peers() {
     Registry registry;
     auto peers = registry.get_all_peers();
@@ -250,6 +324,7 @@ void ORCASHI::show_peers() {
     cout << "\n  Your Peers:\n";
     if (peers.empty()) {
         cout << "    No peers registered.\n";
+        cout << "    Use ./orcashi add <id> to add peers.\n";
     } else {
         for (const auto& p : peers) {
             cout << "    " << p.id << " - " << p.ip << ":" << p.port;
@@ -263,6 +338,7 @@ void ORCASHI::show_peers() {
     cout << "\n";
 }
 
+// ==================== SHOW BANNER ====================
 void ORCASHI::show_banner() {
     cout << CYAN << R"(
 ============================================================
@@ -286,6 +362,7 @@ void ORCASHI::show_banner() {
     cout << string(50, '=') << endl << endl;
 }
 
+// ==================== SHOW HELP ====================
 void ORCASHI::show_help() {
     cout << "\n" << string(40, '=') << endl;
     cout << "ORCASHI v3.1 - P2P Chat" << endl;
@@ -293,6 +370,7 @@ void ORCASHI::show_help() {
     cout << "Commands:" << endl;
     cout << "  /help    - Show this help" << endl;
     cout << "  /exit    - Disconnect" << endl;
+    cout << "  /status  - Show connection status" << endl;
     cout << "\nYour ID: " << my_id << endl;
     cout << "Peer ID: " << get_peer_id() << endl;
     cout << string(40, '=') << endl << endl;
@@ -309,7 +387,11 @@ string ORCASHI::detect_usb() {
     return "";  // v3.2
 }
 
-bool ORCASHI::save_to_usb(const struct Identity& identity, const string& usb_path) {
+bool ORCASHI::save_to_usb(const Identity& identity, const string& usb_path) {
+    return false;  // v3.2
+}
+
+bool ORCASHI::load_from_usb(Identity& identity, const string& usb_path) {
     return false;  // v3.2
 }
 
