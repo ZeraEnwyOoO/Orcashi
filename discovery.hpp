@@ -1,4 +1,4 @@
-// discovery.hpp
+ // discovery.hpp - FIXED
 #ifndef DISCOVERY_HPP
 #define DISCOVERY_HPP
 
@@ -49,6 +49,9 @@ public:
     // Get discovered peers
     std::vector<PeerInfo> get_discovered_peers();
     
+    // <<< PUBLIC: Get local IP >>>
+    std::string get_local_ip();  // ← នៅទីនេះ!
+    
 private:
     int udp_socket_;
     int port_;
@@ -64,7 +67,7 @@ private:
     void listen_loop();
     void broadcast_loop();
     void parse_message(const std::string& msg, const std::string& sender_ip);
-    std::string get_local_ip();
+    // std::string get_local_ip();  // ← លុបចេញ!
     void send_udp(const std::string& msg, const std::string& ip, int port);
     void cleanup_stale_peers();
     bool is_valid_ip(const std::string& ip);
