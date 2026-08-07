@@ -1,179 +1,261 @@
- // main.cpp - ORCASHI v3.1
+ // main.cpp - ORCASHI v3.1 with Register System
 #include "orcashi.hpp"
-#include "discovery.hpp"
-#include "endpoint.hpp"
-#include "peer_cache.hpp"
+#include "registry.hpp"
 #include <iostream>
 #include <string>
+#include <cstdlib>
 #include <thread>
 #include <chrono>
-#include <cstdlib>
 
 using namespace std;
 
+void show_help() {
+    cout << "\n";
+    cout << "  +------------------------------------------+\n";
+    cout << "  |           ORCASHI v3.1                  |\n";
+    cout << "  |           P2P Chat System               |\n";
+    cout << "  +------------------------------------------+\n";
+    cout << "\n";
+    cout << "  Usage:\n";
+    cout << "    ./orcashi                - Interactive mode\n";
+    cout << "    ./orcashi register       - Register new ID\n";
+    cout << "    ./orcashi connect <id>   - Connect by ID\n";
+    cout << "    ./orcashi create         - Create room (iSH)\n";
+    cout << "    ./orcashi join <ip>      - Join by IP\n";
+    cout << "    ./orcashi peers          - Show peer list\n";
+    cout << "    ./orcashi search <id>    - Search for peer\n";
+    cout << "    ./orcashi --help         - Show this help\n";
+    cout << "\n";
+    cout << "  Commands during chat:\n";
+    cout << "    /help   - Show commands\n";
+    cout << "    /exit   - Disconnect\n";
+    cout << "    /status - Show peer status\n";
+    cout << "\n";
+}
+
+void chat_loop(ORCASHI& orcashi) {
+    string input;
+    while (orcashi.is_connected()) {
+        cout << "  > " << flush;
+        
+        if (!getline(cin, input)) {
+            break;
+        }
+        
+        if (input == "/exit") {
+            orcashi.disconnect();
+            break;
+        } else if (input == "/help") {
+            cout << "  Commands: /exit, /status, /help\n";
+        } else if (input == "/status") {
+            cout << "  Connected to: " << orcashi.get_peer_id() << "\n";
+            cout << "  IP: " << orcashi.get_peer_ip() << "\n";
+        } else if (!input.empty()) {
+            orcashi.send_message(input);
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     ORCASHI orcashi;
-    
-    // Initialize discovery
-    Discovery discovery;
-    discovery.init();
-    discovery.start();
-    
-    // Initialize peer cache
-    PeerCache cache;
-    
-    // Show peers on startup
-    cout << "\n[ORCA] Loading saved peers..." << endl;
-    auto saved_peers = cache.get_all_peers();
-    if (!saved_peers.empty()) {
-        for (const auto& peer : saved_peers) {
-            cout << "  " << peer.id << " (" << (peer.online ? "online" : "offline") << ")" << endl;
-        }
-    } else {
-        cout << "  No saved peers" << endl;
-    }
+    orcashi.init();
     
     if (argc < 2) {
-        cout << "\nORCASHI v3.1 - P2P Chat with Discovery" << endl;
-        cout << "Usage:" << endl;
-        cout << "  ./orcashi create              - Create room (iSH)" << endl;
-        cout << "  ./orcashi join <ip>           - Join room by IP" << endl;
-        cout << "  ./orcashi connect <id>        - Connect by ID (Auto-discovery)" << endl;
-        cout << "  ./orcashi search <name>       - Search for peer" << endl;
-        cout << "  ./orcashi peers               - Show saved peers" << endl;
-        cout << "  ./orcashi --help              - Show help" << endl;
-        discovery.stop();
+        // Interactive mode
+        cout << "\n";
+        cout << "  +------------------------------------------+\n";
+        cout << "  |           ORCASHI v3.1                  |\n";
+        cout << "  |           Your ID: " << orcashi.get_my_id() << "                  |\n";
+        cout << "  +------------------------------------------+\n";
+        cout << "\n";
+        cout << "  Commands: /help, /peers, /register, /exit\n";
+        cout << "\n";
+        
+        string input;
+        while (true) {
+            cout << "  > ";
+            getline(cin, input);
+            
+            if (input == "/exit") {
+                break;
+            } else if (input == "/help") {
+                show_help();
+            } else if (input == "/peers") {
+                Registry registry;
+                auto peers = registry.get_all_peers();
+                cout << "\n  Your Peers:\n";
+                if (peers.empty()) {
+                    cout << "    No peers registered.\n";
+                } else {
+                    for (const auto& p : peers) {
+                        cout << "    " << p.id << " - " << p.ip << ":" << p.port;
+                        if (p.online) {
+                            cout << " [ONLINE]\n";
+                        } else {
+                            cout << " [OFFLINE]\n";
+                        }
+                    }
+                }
+                cout << "\n";
+            } else if (input == "/register") {
+                orcashi.register_identity();
+            } else if (!input.empty()) {
+                cout << "  Unknown command. Type /help\n";
+            }
+        }
         return 0;
     }
     
     string cmd = argv[1];
     
-    if (cmd == "create") {
-        orcashi.create_room();
-        
-        // Broadcast presence
-        string my_id = orcashi.get_my_id();
-        string local_ip = discovery.get_local_ip();
-        discovery.broadcast_presence(my_id, local_ip + ":9000");
-        
-        string msg;
-        while (orcashi.is_connected()) {
-            if (orcashi.receive_message(msg)) {
-                cout << "\r\033[K[" << orcashi.get_peer_id() << "]> " << msg << endl;
-                cout << orcashi.get_my_id() << "> " << flush;
-            }
-        }
-    } 
-    else if (cmd == "join" && argc >= 3) {
-        orcashi.join_room(argv[2]);
-        
-        string msg;
-        while (orcashi.is_connected()) {
-            if (orcashi.receive_message(msg)) {
-                cout << "\r\033[K[" << orcashi.get_peer_id() << "]> " << msg << endl;
-                cout << orcashi.get_my_id() << "> " << flush;
-            }
-        }
-    } 
+    if (cmd == "register") {
+        orcashi.register_identity();
+    }
     else if (cmd == "connect" && argc >= 3) {
         string id = argv[2];
-        cout << "[ORCA] Looking for " << id << "..." << endl;
+        cout << "\n  [ORCA] Looking for " << id << "...\n";
         
-        // Try to find peer
-        PeerInfo peer;
-        if (discovery.find_peer(id, peer)) {
-            cout << "[ORCA] Found " << id << " at " << peer.endpoint << endl;
-            orcashi.join_room(peer.ip);
+        Registry registry;
+        Peer peer;
+        if (registry.get_peer(id, peer)) {
+            cout << "  [ORCA] Found in registry: " << peer.ip << ":" << peer.port << "\n";
+            cout << "  [ORCA] Connecting...\n";
             
-            // Save to cache
-            cache.save_peer(peer);
-            
-            string msg;
-            while (orcashi.is_connected()) {
-                if (orcashi.receive_message(msg)) {
-                    cout << "\r\033[K[" << orcashi.get_peer_id() << "]> " << msg << endl;
-                    cout << orcashi.get_my_id() << "> " << flush;
-                }
-            }
-        } else {
-            cout << "[ORCA] Peer not in cache. Broadcasting search..." << endl;
-            discovery.broadcast_search(id);
-            
-            // Wait for response
-            cout << "[ORCA] Waiting for response..." << endl;
-            this_thread::sleep_for(chrono::seconds(3));
-            
-            if (discovery.find_peer(id, peer)) {
-                cout << "[ORCA] Found " << id << " at " << peer.endpoint << endl;
-                orcashi.join_room(peer.ip);
-                cache.save_peer(peer);
+            if (orcashi.join_room(peer.ip)) {
+                cout << "  [ORCA] Connected! Type /help for commands\n\n";
                 
-                string msg;
-                while (orcashi.is_connected()) {
-                    if (orcashi.receive_message(msg)) {
-                        cout << "\r\033[K[" << orcashi.get_peer_id() << "]> " << msg << endl;
-                        cout << orcashi.get_my_id() << "> " << flush;
+                // Start receive thread
+                thread receive_thread([&]() {
+                    string msg;
+                    while (orcashi.is_connected()) {
+                        if (orcashi.receive_message(msg, 100)) {
+                            cout << "\r\033[K  [" << id << "] " << msg << endl;
+                            cout << "  > " << flush;
+                        }
                     }
+                });
+                
+                // Chat loop
+                chat_loop(orcashi);
+                
+                if (receive_thread.joinable()) {
+                    receive_thread.join();
                 }
             } else {
-                cout << "[ORCA] Peer not found!" << endl;
+                cout << "  [ERROR] Failed to connect!\n";
             }
-        }
-    } 
-    else if (cmd == "search" && argc >= 3) {
-        string query = argv[2];
-        cout << "[ORCA] Searching for: " << query << endl;
-        
-        // Broadcast search
-        discovery.broadcast_search(query);
-        
-        // Wait for responses
-        this_thread::sleep_for(chrono::seconds(2));
-        
-        auto peers = discovery.get_discovered_peers();
-        bool found = false;
-        for (const auto& peer : peers) {
-            if (peer.id.find(query) != string::npos || peer.id == query) {
-                cout << "  Found: " << peer.id << " at " << peer.endpoint << endl;
-                found = true;
-            }
-        }
-        if (!found) {
-            cout << "  No peers found matching: " << query << endl;
-        }
-    } 
-    else if (cmd == "peers") {
-        auto peers = cache.get_all_peers();
-        cout << "\n[ORCA] Saved Peers:" << endl;
-        if (peers.empty()) {
-            cout << "  No saved peers" << endl;
         } else {
-            for (const auto& peer : peers) {
-                cout << "  " << peer.id 
-                     << " (" << (peer.online ? "\033[32monline\033[0m" : "\033[31moffline\033[0m") 
-                     << ") at " << peer.endpoint << endl;
+            cout << "  [ORCA] Peer not registered!\n";
+            cout << "  [ORCA] Try searching: ./orcashi search " << id << "\n";
+        }
+    }
+    else if (cmd == "create") {
+        cout << "\n  [ORCA] Creating room...\n";
+        if (orcashi.create_room()) {
+            cout << "  [ORCA] Waiting for connection...\n";
+            cout << "  [ORCA] Your ID: " << orcashi.get_my_id() << "\n\n";
+            
+            // Wait for connection
+            while (!orcashi.is_connected()) {
+                this_thread::sleep_for(chrono::milliseconds(100));
+            }
+            
+            cout << "  [ORCA] Connected! Type /help for commands\n\n";
+            
+            // Start receive thread
+            thread receive_thread([&]() {
+                string msg;
+                while (orcashi.is_connected()) {
+                    if (orcashi.receive_message(msg, 100)) {
+                        cout << "\r\033[K  [" << orcashi.get_peer_id() << "] " << msg << endl;
+                        cout << "  > " << flush;
+                    }
+                }
+            });
+            
+            // Chat loop
+            chat_loop(orcashi);
+            
+            if (receive_thread.joinable()) {
+                receive_thread.join();
             }
         }
-    } 
+    }
+    else if (cmd == "join" && argc >= 3) {
+        string ip = argv[2];
+        cout << "\n  [ORCA] Joining " << ip << "...\n";
+        
+        if (orcashi.join_room(ip)) {
+            cout << "  [ORCA] Connected! Type /help for commands\n\n";
+            
+            // Start receive thread
+            thread receive_thread([&]() {
+                string msg;
+                while (orcashi.is_connected()) {
+                    if (orcashi.receive_message(msg, 100)) {
+                        cout << "\r\033[K  [" << orcashi.get_peer_id() << "] " << msg << endl;
+                        cout << "  > " << flush;
+                    }
+                }
+            });
+            
+            // Chat loop
+            chat_loop(orcashi);
+            
+            if (receive_thread.joinable()) {
+                receive_thread.join();
+            }
+        } else {
+            cout << "  [ERROR] Failed to join!\n";
+        }
+    }
+    else if (cmd == "peers") {
+        Registry registry;
+        auto peers = registry.get_all_peers();
+        
+        cout << "\n";
+        cout << "  +------------------------------------------+\n";
+        cout << "  |           Your Peers                    |\n";
+        cout << "  +------------------------------------------+\n";
+        cout << "\n";
+        
+        if (peers.empty()) {
+            cout << "  No peers registered yet.\n";
+            cout << "  Use ./orcashi register to register.\n";
+        } else {
+            for (const auto& p : peers) {
+                cout << "    " << p.id << " - " << p.ip << ":" << p.port;
+                if (p.online) {
+                    cout << " [ONLINE]\n";
+                } else {
+                    cout << " [OFFLINE]\n";
+                }
+            }
+        }
+        cout << "\n";
+    }
+    else if (cmd == "search" && argc >= 3) {
+        string id = argv[2];
+        cout << "\n  [ORCA] Searching for " << id << "...\n";
+        
+        Registry registry;
+        Peer peer;
+        if (registry.get_peer(id, peer)) {
+            cout << "  [ORCA] Found: " << id << " at " << peer.ip << ":" << peer.port << "\n";
+            cout << "  [ORCA] Connect using: ./orcashi connect " << id << "\n";
+        } else {
+            cout << "  [ORCA] Peer not found in registry.\n";
+            cout << "  [ORCA] Make sure they have registered.\n";
+        }
+        cout << "\n";
+    }
     else if (cmd == "--help" || cmd == "-h") {
-        cout << "\nORCASHI v3.1 - P2P Chat with Discovery" << endl;
-        cout << "========================================" << endl;
-        cout << "Usage:" << endl;
-        cout << "  ./orcashi create              - Create room (iSH)" << endl;
-        cout << "  ./orcashi join <ip>           - Join room by IP" << endl;
-        cout << "  ./orcashi connect <id>        - Connect by ID (Auto-discovery)" << endl;
-        cout << "  ./orcashi search <name>       - Search for peer" << endl;
-        cout << "  ./orcashi peers               - Show saved peers" << endl;
-        cout << "  ./orcashi --help              - Show this help" << endl;
-        cout << "\nCommands:" << endl;
-        cout << "  Type /help during chat for more options" << endl;
-        cout << "  Type /exit to disconnect" << endl;
-    } 
+        show_help();
+    }
     else {
-        cout << "Unknown command: " << cmd << endl;
-        cout << "Use ./orcashi --help for usage." << endl;
+        cout << "\n  Unknown command: " << cmd << "\n";
+        cout << "  Use ./orcashi --help for usage.\n\n";
     }
     
-    discovery.stop();
     return 0;
 }
