@@ -1,4 +1,4 @@
- // orcashi.cpp - ORCASHI v3.1 with DHT + mDNS
+ // orcashi.cpp - ORCASHI v3.1 with DHT + Pure C++ mDNS
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include "request.hpp"
@@ -96,11 +96,11 @@ string ORCASHI::lookup_in_dht(const string& id) {
     return dht.lookup(id);
 }
 
-// ==================== mDNS FUNCTIONS ====================
+// ==================== mDNS FUNCTIONS (Pure C++) ====================
 bool ORCASHI::init_mdns() {
-    cout << "\n[mDNS] Initializing mDNS..." << endl;
+    cout << "\n[mDNS] Initializing Pure C++ Multicast..." << endl;
     if (mdns.init()) {
-        cout << GREEN << "[mDNS] mDNS ready!" << RESET << endl;
+        cout << GREEN << "[mDNS] Pure C++ mDNS ready!" << RESET << endl;
         return true;
     }
     cout << YELLOW << "[mDNS] mDNS not available" << RESET << endl;
@@ -288,7 +288,7 @@ bool ORCASHI::register_identity() {
         cout << "  Your ID: " << id << "\n";
         cout << "  Endpoint: " << ip << ":9000\n";
         
-        // ===== STORE IN DHT =====
+        // ===== STORE IN DHT (Linux) =====
         if (dht.is_online()) {
             string endpoint = ip + ":9000";
             if (dht.store(id, endpoint)) {
@@ -300,10 +300,10 @@ bool ORCASHI::register_identity() {
             cout << "  [DHT] IPFS DHT not available" << endl;
         }
         
-        // ===== PUBLISH mDNS =====
+        // ===== PUBLISH mDNS (Pure C++) =====
         if (mdns.init()) {
             if (mdns.publish(id, 9000)) {
-                cout << "  [mDNS] Published via mDNS!" << endl;
+                cout << "  [mDNS] Published via Pure C++ Multicast!" << endl;
             } else {
                 cout << "  [mDNS] Failed to publish via mDNS" << endl;
             }
@@ -331,7 +331,7 @@ bool ORCASHI::connect_peer(const string& id) {
         return join_room(peer.ip);
     }
     
-    // 2. Try DHT (if available)
+    // 2. Try DHT (Linux)
     if (dht.is_online()) {
         cout << "  [ORCA] Looking up " << id << " in IPFS DHT..." << endl;
         string endpoint = dht.lookup(id);
@@ -343,7 +343,7 @@ bool ORCASHI::connect_peer(const string& id) {
         }
     }
     
-    // 3. Try mDNS (for iSH/LAN)
+    // 3. Try mDNS (Pure C++ - works on iSH!)
     cout << "  [ORCA] Looking up " << id << " via mDNS..." << endl;
     if (mdns.init()) {
         string endpoint = mdns.lookup(id);
@@ -450,8 +450,8 @@ void ORCASHI::show_banner() {
     } else {
         cout << YELLOW << "DHT: Not connected (install IPFS)" << RESET << endl;
     }
-    if (mdns.init()) {
-        cout << GREEN << "mDNS: Available" << RESET << endl;
+    if (mdns.is_running()) {
+        cout << GREEN << "mDNS: Pure C++ Multicast" << RESET << endl;
     } else {
         cout << YELLOW << "mDNS: Not available" << RESET << endl;
     }
