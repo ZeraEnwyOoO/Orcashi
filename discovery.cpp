@@ -1,10 +1,11 @@
-// discovery.cpp - FULL VERSION
+ // discovery.cpp
 #include "discovery.hpp"
 #include <iostream>
 #include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/select.h>   // ← បន្ថែម!
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <sstream>
@@ -242,13 +243,4 @@ void Discovery::on_peer_found(PeerCallback callback) {
 
 void Discovery::on_peer_offline(PeerCallback callback) {
     offline_callback_ = callback;
-}
-
-void Discovery::send_udp(const string& msg, const string& ip, int port) {
-    // Implementation if needed
-}
-
-bool Discovery::is_valid_ip(const string& ip) {
-    // Implementation if needed
-    return true;
 }
