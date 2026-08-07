@@ -1,6 +1,6 @@
  // main.cpp - ORCASHI v3.1 with Register System
 #include "orcashi.hpp"
-#include "registry.hpp"
+#include "registry.hpp"      // ← បន្ថែមនេះ!
 #include <iostream>
 #include <string>
 #include <cstdlib>
@@ -124,7 +124,6 @@ int main(int argc, char* argv[]) {
             if (orcashi.join_room(peer.ip)) {
                 cout << "  [ORCA] Connected! Type /help for commands\n\n";
                 
-                // Start receive thread
                 thread receive_thread([&]() {
                     string msg;
                     while (orcashi.is_connected()) {
@@ -135,7 +134,6 @@ int main(int argc, char* argv[]) {
                     }
                 });
                 
-                // Chat loop
                 chat_loop(orcashi);
                 
                 if (receive_thread.joinable()) {
@@ -155,14 +153,12 @@ int main(int argc, char* argv[]) {
             cout << "  [ORCA] Waiting for connection...\n";
             cout << "  [ORCA] Your ID: " << orcashi.get_my_id() << "\n\n";
             
-            // Wait for connection
             while (!orcashi.is_connected()) {
                 this_thread::sleep_for(chrono::milliseconds(100));
             }
             
             cout << "  [ORCA] Connected! Type /help for commands\n\n";
             
-            // Start receive thread
             thread receive_thread([&]() {
                 string msg;
                 while (orcashi.is_connected()) {
@@ -173,7 +169,6 @@ int main(int argc, char* argv[]) {
                 }
             });
             
-            // Chat loop
             chat_loop(orcashi);
             
             if (receive_thread.joinable()) {
@@ -188,7 +183,6 @@ int main(int argc, char* argv[]) {
         if (orcashi.join_room(ip)) {
             cout << "  [ORCA] Connected! Type /help for commands\n\n";
             
-            // Start receive thread
             thread receive_thread([&]() {
                 string msg;
                 while (orcashi.is_connected()) {
@@ -199,7 +193,6 @@ int main(int argc, char* argv[]) {
                 }
             });
             
-            // Chat loop
             chat_loop(orcashi);
             
             if (receive_thread.joinable()) {
