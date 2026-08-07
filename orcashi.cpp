@@ -1,4 +1,4 @@
- // orcashi.cpp - ORCASHI v3.1 with DHT
+ // orcashi.cpp - ORCASHI v3.1 with DHT + mDNS
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include "request.hpp"
@@ -43,8 +43,8 @@ ORCASHI::~ORCASHI() {
 }
 
 bool ORCASHI::init() {
-    // Initialize DHT
     init_dht();
+    init_mdns();
     return true;
 }
 
@@ -94,6 +94,31 @@ string ORCASHI::lookup_in_dht(const string& id) {
         return "";
     }
     return dht.lookup(id);
+}
+
+// ==================== mDNS FUNCTIONS ====================
+bool ORCASHI::init_mdns() {
+    cout << "\n[mDNS] Initializing mDNS..." << endl;
+    if (mdns.init()) {
+        cout << GREEN << "[mDNS] mDNS ready!" << RESET << endl;
+        return true;
+    }
+    cout << YELLOW << "[mDNS] mDNS not available" << RESET << endl;
+    return false;
+}
+
+bool ORCASHI::publish_mdns(const string& id, int port) {
+    if (!mdns.init()) {
+        return false;
+    }
+    return mdns.publish(id, port);
+}
+
+string ORCASHI::lookup_mdns(const string& id) {
+    if (!mdns.init()) {
+        return "";
+    }
+    return mdns.lookup(id);
 }
 
 // ==================== SYSTEM DETECTION ====================
@@ -275,6 +300,17 @@ bool ORCASHI::register_identity() {
             cout << "  [DHT] IPFS DHT not available" << endl;
         }
         
+        // ===== PUBLISH mDNS =====
+        if (mdns.init()) {
+            if (mdns.publish(id, 9000)) {
+                cout << "  [mDNS] Published via mDNS!" << endl;
+            } else {
+                cout << "  [mDNS] Failed to publish via mDNS" << endl;
+            }
+        } else {
+            cout << "  [mDNS] mDNS not available" << endl;
+        }
+        
         cout << "\n  Your friends can connect using:\n";
         cout << "    ./orcashi connect " << id << "\n";
         return true;
@@ -284,7 +320,7 @@ bool ORCASHI::register_identity() {
     return false;
 }
 
-// ==================== CONNECT PEER (WITH DHT) ====================
+// ==================== CONNECT PEER (HYBRID) ====================
 bool ORCASHI::connect_peer(const string& id) {
     Registry registry;
     Peer peer;
@@ -295,27 +331,30 @@ bool ORCASHI::connect_peer(const string& id) {
         return join_room(peer.ip);
     }
     
-    // 2. Lookup in DHT!
-    cout << "  [ORCA] Looking up " << id << " in IPFS DHT..." << endl;
-    
-    if (!dht.is_online()) {
-        cout << "  [ORCA] DHT not available!" << endl;
-        cout << "  [ORCA] Try: ./orcashi search " << id << " (LAN broadcast)" << endl;
-        return false;
+    // 2. Try DHT (if available)
+    if (dht.is_online()) {
+        cout << "  [ORCA] Looking up " << id << " in IPFS DHT..." << endl;
+        string endpoint = dht.lookup(id);
+        if (!endpoint.empty()) {
+            string ip = endpoint.substr(0, endpoint.find(':'));
+            cout << "  [ORCA] Found in DHT: " << endpoint << endl;
+            registry.register_peer(id, ip, "9000");
+            return join_room(ip);
+        }
     }
     
-    string endpoint = dht.lookup(id);
-    if (!endpoint.empty()) {
-        string ip = endpoint.substr(0, endpoint.find(':'));
-        cout << "  [ORCA] Found in DHT: " << endpoint << endl;
-        
-        // Save to registry for next time
-        registry.register_peer(id, ip, "9000");
-        
-        return join_room(ip);
+    // 3. Try mDNS (for iSH/LAN)
+    cout << "  [ORCA] Looking up " << id << " via mDNS..." << endl;
+    if (mdns.init()) {
+        string endpoint = mdns.lookup(id);
+        if (!endpoint.empty()) {
+            cout << "  [ORCA] Found via mDNS: " << endpoint << endl;
+            registry.register_peer(id, endpoint, "9000");
+            return join_room(endpoint);
+        }
     }
     
-    cout << "  [ORCA] Peer not found in DHT!" << endl;
+    cout << "  [ORCA] Peer not found!" << endl;
     return false;
 }
 
@@ -325,7 +364,6 @@ bool ORCASHI::add_peer(const string& id) {
     
     RequestManager requests;
     if (requests.send_request(my_id, id)) {
-        // Check if peer is in registry
         Registry registry;
         Peer peer;
         if (registry.get_peer(id, peer)) {
@@ -357,18 +395,7 @@ bool ORCASHI::check_requests() {
         
         if (answer == "y" || answer == "Y") {
             requests.accept_request(req.from_id, my_id);
-            
-            // Connect to peer
-            Registry registry;
-            Peer peer;
-            if (registry.get_peer(req.from_id, peer)) {
-                cout << "  [ORCA] Connecting to " << req.from_id << "...\n";
-                return join_room(peer.ip);
-            } else {
-                cout << "  [ORCA] Peer not found in registry!\n";
-                cout << "  [ORCA] Looking up in DHT...\n";
-                return connect_peer(req.from_id);
-            }
+            return connect_peer(req.from_id);
         } else {
             requests.reject_request(req.from_id, my_id);
         }
@@ -422,6 +449,11 @@ void ORCASHI::show_banner() {
         cout << GREEN << "DHT: Connected to IPFS" << RESET << endl;
     } else {
         cout << YELLOW << "DHT: Not connected (install IPFS)" << RESET << endl;
+    }
+    if (mdns.init()) {
+        cout << GREEN << "mDNS: Available" << RESET << endl;
+    } else {
+        cout << YELLOW << "mDNS: Not available" << RESET << endl;
     }
     cout << "Type /help for commands" << endl;
     cout << string(50, '=') << endl << endl;
