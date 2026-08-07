@@ -1,5 +1,6 @@
  // orcashi.cpp
 #include "orcashi.hpp"
+#include "registry.hpp"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -30,6 +31,10 @@ ORCASHI::~ORCASHI() {
     running = false;
     if (ui_thread.joinable()) ui_thread.join();
     plug.close_connection();
+}
+
+bool ORCASHI::init() {
+    return true;
 }
 
 bool ORCASHI::detect_ish() {
@@ -166,10 +171,72 @@ string ORCASHI::get_my_id() const { return my_id; }
 string ORCASHI::get_peer_id() const { return plug.get_peer_id(); }
 string ORCASHI::get_peer_ip() const { return plug.get_peer_ip(); }
 
+string ORCASHI::get_local_ip() {
+    return "192.168.1.100";
+}
+
+string ORCASHI::get_hidden_password() {
+    string password;
+    getline(cin, password);
+    return password;
+}
+
+bool ORCASHI::register_identity() {
+    cout << "\n";
+    cout << "  +------------------------------------------+\n";
+    cout << "  |           ORCA Registration              |\n";
+    cout << "  +------------------------------------------+\n";
+    cout << "\n";
+    
+    cout << "  Enter your ID (3 digits): ";
+    string id;
+    getline(cin, id);
+    
+    if (id.length() != 3 || !isdigit(id[0]) || !isdigit(id[1]) || !isdigit(id[2])) {
+        cout << "  [ERROR] ID must be 3 digits!\n";
+        return false;
+    }
+    
+    string ip = get_local_ip();
+    cout << "  Your IP: " << ip << "\n";
+    
+    Registry registry;
+    if (registry.register_peer(id, ip, "9000")) {
+        cout << "\n  [SUCCESS] Registered!\n";
+        cout << "  Your ID: " << id << "\n";
+        cout << "  Endpoint: " << ip << ":9000\n";
+        cout << "\n  Your friends can connect using:\n";
+        cout << "    ./orcashi connect " << id << "\n";
+        return true;
+    }
+    
+    cout << "  [ERROR] Registration failed!\n";
+    return false;
+}
+
+void ORCASHI::show_peers() {
+    Registry registry;
+    auto peers = registry.get_all_peers();
+    
+    cout << "\n  Your Peers:\n";
+    if (peers.empty()) {
+        cout << "    No peers registered.\n";
+    } else {
+        for (const auto& p : peers) {
+            cout << "    " << p.id << " - " << p.ip << ":" << p.port;
+            if (p.online) {
+                cout << " [ONLINE]\n";
+            } else {
+                cout << " [OFFLINE]\n";
+            }
+        }
+    }
+    cout << "\n";
+}
+
 void ORCASHI::show_banner() {
     cout << CYAN << R"(
 ============================================================
-     
   ██████╗ ██████╗  ██████╗ █████╗ 
  ██╔═══██╗██╔══██╗██╔════╝██╔══██╗C
  ██║   ██║██████╔╝██║     ███████╗H
