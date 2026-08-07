@@ -1,5 +1,4 @@
- // registry.hpp - HEADER ONLY
-#ifndef REGISTRY_HPP
+ #ifndef REGISTRY_HPP
 #define REGISTRY_HPP
 
 #include <string>
@@ -18,16 +17,13 @@ struct Peer {
 class Registry {
 public:
     Registry();
-    
     bool register_peer(const std::string& id, const std::string& ip, const std::string& port);
     bool get_peer(const std::string& id, Peer& out_peer);
     void update_peer(const std::string& id, const std::string& ip, const std::string& port);
     void set_online(const std::string& id, bool online);
     std::vector<Peer> get_all_peers();
-    std::vector<Peer> get_online_peers();
     bool remove_peer(const std::string& id);
     bool peer_exists(const std::string& id);
-    
     void load();
     void save();
     
