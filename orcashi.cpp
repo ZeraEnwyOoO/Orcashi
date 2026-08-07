@@ -1,37 +1,55 @@
- #define _POSIX_C_SOURCE 200809L
-#include "mdns.hpp"
+ // orcashi.cpp - ORCASHI v3.1 with MDNS (Pure C++)
+#include "orcashi.hpp"
+#include "registry.hpp"
+#include "request.hpp"
 #include <iostream>
-#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <cstdlib>
+#include <random>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <ifaddrs.h>
-#include <poll.h>
-#include <chrono>
-#include <thread>
+#include <cstring>
+#include <cctype>
 
 using namespace std;
 
-#define MDNS_ADDR "224.0.0.251"
-#define MDNS_PORT 5353
+const string CYAN = "\033[36m";
+const string GREEN = "\033[32m";
+const string YELLOW = "\033[33m";
+const string RED = "\033[31m";
+const string RESET = "\033[0m";
+const string ORCASHI_HOME = string(getenv("HOME")) + "/.orcashi/";
 
-MDNS::MDNS() : sock(-1), running(false) {}
-
-MDNS::~MDNS() {
-    cleanup();
+ORCASHI::ORCASHI() : running(true) {
+    string cmd = "mkdir -p " + ORCASHI_HOME;
+    system(cmd.c_str());
+    is_ish_mode = detect_ish();
+    my_id = generate_id();
 }
 
-void MDNS::cleanup() {
+ORCASHI::~ORCASHI() {
     running = false;
-    if (listen_thread.joinable()) listen_thread.join();
-    if (sock >= 0) {
-        close(sock);
-        sock = -1;
-    }
+    if (ui_thread.joinable()) ui_thread.join();
+    plug.close_connection();
 }
 
-string MDNS::get_local_ip() {
+bool ORCASHI::init() {
+    // Initialize MDNS
+    if (mdns.init()) {
+        cout << "[ORCA] MDNS initialized" << endl;
+    }
+    return true;
+}
+
+string ORCASHI::get_local_ip() {
     struct ifaddrs* ifaddr;
     if (getifaddrs(&ifaddr) == -1) {
         return "127.0.0.1";
@@ -53,180 +71,309 @@ string MDNS::get_local_ip() {
     return "127.0.0.1";
 }
 
-bool MDNS::init() {
-    if (sock >= 0) {
-        cleanup();
+bool ORCASHI::detect_ish() {
+    if (access("/sbin/apk", F_OK) == 0) return true;
+    
+    ifstream f("/etc/os-release");
+    if (f.is_open()) {
+        string line;
+        while (getline(f, line)) {
+            if (line.find("Alpine") != string::npos) {
+                f.close();
+                return true;
+            }
+        }
+        f.close();
     }
     
-    sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        cerr << "[mDNS] Failed to create socket!" << endl;
+    ifstream f2("/proc/version");
+    if (f2.is_open()) {
+        string content;
+        getline(f2, content);
+        if (content.find("iOS") != string::npos || content.find("iPhone") != string::npos) {
+            f2.close();
+            return true;
+        }
+        f2.close();
+    }
+    
+    return false;
+}
+
+string ORCASHI::generate_id() {
+    string id_file = ORCASHI_HOME + "id";
+    
+    ifstream f(id_file);
+    if (f.is_open()) {
+        int id;
+        if (f >> id && id >= 1 && id <= 999) {
+            f.close();
+            stringstream ss;
+            ss << "<" << setw(3) << setfill('0') << id << ">";
+            return ss.str();
+        }
+        f.close();
+    }
+    
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_int_distribution<> dis(1, 999);
+    int new_id = dis(gen);
+    
+    ofstream f2(id_file);
+    if (f2.is_open()) f2 << new_id;
+    
+    stringstream ss;
+    ss << "<" << setw(3) << setfill('0') << new_id << ">";
+    return ss.str();
+}
+
+bool ORCASHI::create_room(int port) {
+    cout << "\n" << string(50, '=') << endl;
+    cout << "ORCASHI - CREATE ROOM" << endl;
+    cout << string(50, '=') << endl;
+    
+    if (plug.create_plug(port)) {
+        cout << GREEN << "[SUCCESS] TCP Plug created!" << RESET << endl;
+        cout << "Your ID: " << my_id << endl;
+        cout << "Waiting for connection..." << endl;
+        show_banner();
+        ui_thread = thread(&ORCASHI::ui_loop, this);
+        return true;
+    }
+    return false;
+}
+
+bool ORCASHI::join_room(const string& ip, int port) {
+    cout << "\n" << string(50, '=') << endl;
+    cout << "ORCASHI - JOIN ROOM" << endl;
+    cout << string(50, '=') << endl;
+    
+    if (plug.connect_to_plug(ip, port)) {
+        cout << GREEN << "[SUCCESS] Connected!" << RESET << endl;
+        show_banner();
+        ui_thread = thread(&ORCASHI::ui_loop, this);
+        return true;
+    }
+    return false;
+}
+
+void ORCASHI::ui_loop() {
+    string input;
+    while (running && plug.is_connected()) {
+        cout << my_id << "> " << flush;
+        
+        if (!getline(cin, input)) {
+            if (cin.eof()) {
+                cout << "\n[ORCA] EOF detected." << endl;
+                running = false;
+                break;
+            }
+            continue;
+        }
+        
+        if (input == "/exit") {
+            running = false;
+            break;
+        } else if (input == "/help") {
+            show_help();
+        } else if (!input.empty()) {
+            plug.send_message(input);
+        }
+    }
+}
+
+bool ORCASHI::send_message(const string& msg) {
+    return plug.send_message(msg);
+}
+
+bool ORCASHI::receive_message(string& msg, int timeout_ms) {
+    return plug.receive_message(msg, timeout_ms);
+}
+
+bool ORCASHI::is_connected() const {
+    return plug.is_connected();
+}
+
+void ORCASHI::disconnect() {
+    running = false;
+    if (ui_thread.joinable()) ui_thread.join();
+    plug.close_connection();
+}
+
+string ORCASHI::get_my_id() const { return my_id; }
+string ORCASHI::get_peer_id() const { return plug.get_peer_id(); }
+string ORCASHI::get_peer_ip() const { return plug.get_peer_ip(); }
+
+bool ORCASHI::register_identity() {
+    cout << "\n";
+    cout << "  +------------------------------------------+\n";
+    cout << "  |           ORCA Registration              |\n";
+    cout << "  +------------------------------------------+\n";
+    cout << "\n";
+    
+    cout << "  Enter your ID (3 digits): ";
+    string id;
+    getline(cin, id);
+    
+    if (id.length() != 3 || !isdigit(id[0]) || !isdigit(id[1]) || !isdigit(id[2])) {
+        cout << "  [ERROR] ID must be 3 digits!\n";
         return false;
     }
     
-    int opt = 1;
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        cerr << "[mDNS] Failed to set SO_REUSEADDR!" << endl;
-        close(sock);
-        sock = -1;
+    string ip = get_local_ip();
+    cout << "  Your IP: " << ip << "\n";
+    
+    Registry registry;
+    if (registry.register_peer(id, ip, "9000")) {
+        cout << "\n  [SUCCESS] Registered!\n";
+        cout << "  Your ID: " << id << "\n";
+        cout << "  Endpoint: " << ip << ":9000\n";
+        
+        // ===== PUBLISH MDNS =====
+        if (mdns.publish(id, 9000)) {
+            cout << "  [MDNS] Published via Pure C++ Multicast!" << endl;
+        } else {
+            cout << "  [MDNS] Failed to publish" << endl;
+        }
+        
+        cout << "\n  Your friends can connect using:\n";
+        cout << "    ./orcashi connect " << id << "\n";
+        return true;
+    }
+    
+    cout << "  [ERROR] Registration failed!\n";
+    return false;
+}
+
+bool ORCASHI::connect_peer(const string& id) {
+    Registry registry;
+    Peer peer;
+    
+    // 1. Check Registry
+    if (registry.get_peer(id, peer)) {
+        cout << "  [ORCA] Found in registry: " << peer.ip << ":" << peer.port << "\n";
+        return join_room(peer.ip);
+    }
+    
+    // 2. Try MDNS
+    cout << "  [ORCA] Looking up " << id << " via MDNS..." << endl;
+    string endpoint = mdns.lookup(id);
+    if (!endpoint.empty()) {
+        cout << "  [ORCA] Found via MDNS: " << endpoint << endl;
+        registry.register_peer(id, endpoint, "9000");
+        return join_room(endpoint);
+    }
+    
+    cout << "  [ORCA] Peer not found!\n";
+    return false;
+}
+
+bool ORCASHI::add_peer(const string& id) {
+    cout << "\n  [ORCA] Sending request to " << id << "...\n";
+    
+    RequestManager requests;
+    if (requests.send_request(my_id, id)) {
+        Registry registry;
+        Peer peer;
+        if (registry.get_peer(id, peer)) {
+            cout << "  [ORCA] Peer found in registry: " << peer.ip << "\n";
+        } else {
+            cout << "  [ORCA] Peer not in registry. Waiting for response...\n";
+        }
+        return true;
+    }
+    return false;
+}
+
+bool ORCASHI::check_requests() {
+    RequestManager requests;
+    auto pending = requests.get_pending_requests(my_id);
+    
+    if (pending.empty()) {
+        cout << "  [ORCA] No pending requests.\n";
         return false;
     }
     
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(MDNS_PORT);
+    cout << "\n  [ORCA] You have " << pending.size() << " pending request(s):\n";
     
-    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        cerr << "[mDNS] Failed to bind to port " << MDNS_PORT << "!" << endl;
-        close(sock);
-        sock = -1;
-        return false;
+    for (const auto& req : pending) {
+        cout << "    " << req.from_id << " wants to connect.\n";
+        cout << "    Accept? (y/n): ";
+        string answer;
+        getline(cin, answer);
+        
+        if (answer == "y" || answer == "Y") {
+            requests.accept_request(req.from_id, my_id);
+            return connect_peer(req.from_id);
+        } else {
+            requests.reject_request(req.from_id, my_id);
+        }
     }
-    
-    struct ip_mreq mreq;
-    mreq.imr_multiaddr.s_addr = inet_addr(MDNS_ADDR);
-    mreq.imr_interface.s_addr = INADDR_ANY;
-    
-    if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
-        cerr << "[mDNS] Failed to join multicast group!" << endl;
-        close(sock);
-        sock = -1;
-        return false;
-    }
-    
-    cout << "[mDNS] Pure C++ Multicast initialized!" << endl;
     return true;
 }
 
-bool MDNS::publish(const string& id, int port) {
-    if (sock < 0) {
-        cerr << "[mDNS] Socket not initialized!" << endl;
-        return false;
-    }
+void ORCASHI::show_peers() {
+    Registry registry;
+    auto peers = registry.get_all_peers();
     
-    my_id = id;
-    my_endpoint = get_local_ip() + ":" + to_string(port);
-    
-    running = true;
-    listen_thread = thread(&MDNS::listen_loop, this);
-    
-    string msg = "ORCA_PRESENCE:" + id + ":" + my_endpoint;
-    send_announcement(msg);
-    
-    cout << "[mDNS] Published " << id << " at " << my_endpoint << endl;
-    return true;
-}
-
-void MDNS::send_announcement(const string& msg) {
-    struct sockaddr_in multicast_addr;
-    memset(&multicast_addr, 0, sizeof(multicast_addr));
-    multicast_addr.sin_family = AF_INET;
-    multicast_addr.sin_addr.s_addr = inet_addr(MDNS_ADDR);
-    multicast_addr.sin_port = htons(MDNS_PORT);
-    
-    sendto(sock, msg.c_str(), msg.length(), 0,
-           (struct sockaddr*)&multicast_addr, sizeof(multicast_addr));
-}
-
-void MDNS::send_query(const string& query) {
-    struct sockaddr_in multicast_addr;
-    memset(&multicast_addr, 0, sizeof(multicast_addr));
-    multicast_addr.sin_family = AF_INET;
-    multicast_addr.sin_addr.s_addr = inet_addr(MDNS_ADDR);
-    multicast_addr.sin_port = htons(MDNS_PORT);
-    
-    sendto(sock, query.c_str(), query.length(), 0,
-           (struct sockaddr*)&multicast_addr, sizeof(multicast_addr));
-}
-
-void MDNS::listen_loop() {
-    char buffer[4096];
-    struct sockaddr_in sender;
-    socklen_t sender_len = sizeof(sender);
-    
-    while (running) {
-        struct pollfd pfd;
-        pfd.fd = sock;
-        pfd.events = POLLIN;
-        
-        int ret = poll(&pfd, 1, 1000);
-        
-        if (ret <= 0) continue;
-        
-        if (pfd.revents & POLLIN) {
-            int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0,
-                            (struct sockaddr*)&sender, &sender_len);
-            if (n > 0) {
-                buffer[n] = '\0';
-                string msg(buffer);
-                process_message(msg);
+    cout << "\n  Your Peers:\n";
+    if (peers.empty()) {
+        cout << "    No peers registered.\n";
+        cout << "    Use ./orcashi add <id> to add peers.\n";
+    } else {
+        for (const auto& p : peers) {
+            cout << "    " << p.id << " - " << p.ip << ":" << p.port;
+            if (p.online) {
+                cout << " [ONLINE]\n";
+            } else {
+                cout << " [OFFLINE]\n";
             }
         }
     }
+    cout << "\n";
 }
 
-void MDNS::process_message(const string& msg) {
-    if (msg.find("ORCA_PRESENCE:") == 0) {
-        string rest = msg.substr(15);
-        size_t colon = rest.find(':');
-        if (colon != string::npos) {
-            string id = rest.substr(0, colon);
-            string endpoint = rest.substr(colon + 1);
-            
-            if (id != my_id) {
-                lock_guard<mutex> lock(cache_mutex);
-                cache[id] = endpoint;
-                cout << "[mDNS] Discovered " << id << " at " << endpoint << endl;
-            }
-        }
-    }
+void ORCASHI::show_banner() {
+    cout << CYAN << R"(
+============================================================
+  ██████╗ ██████╗  ██████╗ █████╗ 
+ ██╔═══██╗██╔══██╗██╔════╝██╔══██╗C
+ ██║   ██║██████╔╝██║     ███████╗H
+ ██║   ██║██╔══██╗██║     ██╔══██╗A
+ ╚██████╔╝██║  ██║╚██████╗██║  ██║T
+  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
+            ORCASHI v3.1 - P2P Chat
+============================================================
+)" << RESET << endl;
     
-    if (msg.find("ORCA_QUERY:") == 0) {
-        string id = msg.substr(11);
-        if (id == my_id && !my_endpoint.empty()) {
-            string response = "ORCA_PRESENCE:" + my_id + ":" + my_endpoint;
-            send_announcement(response);
-        }
+    cout << "Your ID: " << my_id << endl;
+    if (is_ish_mode) {
+        cout << GREEN << "Mode: iSH (TCP Plug)" << RESET << endl;
+    } else {
+        cout << GREEN << "Mode: Linux (TCP Connect)" << RESET << endl;
     }
+    cout << "Type /help for commands" << endl;
+    cout << string(50, '=') << endl << endl;
 }
 
-string MDNS::lookup(const string& id) {
-    if (sock < 0) {
-        cerr << "[mDNS] Socket not initialized!" << endl;
-        return "";
-    }
-    
-    {
-        lock_guard<mutex> lock(cache_mutex);
-        auto it = cache.find(id);
-        if (it != cache.end()) {
-            cout << "[mDNS] Found " << id << " in cache: " << it->second << endl;
-            return it->second;
-        }
-    }
-    
-    string query = "ORCA_QUERY:" + id;
-    send_query(query);
-    
-    cout << "[mDNS] Waiting for " << id << " to respond..." << endl;
-    
-    for (int i = 0; i < 3; i++) {
-        this_thread::sleep_for(chrono::seconds(1));
-        
-        lock_guard<mutex> lock(cache_mutex);
-        auto it = cache.find(id);
-        if (it != cache.end()) {
-            return it->second;
-        }
-    }
-    
-    cout << "[mDNS] " << id << " not found!" << endl;
-    return "";
+void ORCASHI::show_help() {
+    cout << "\n" << string(40, '=') << endl;
+    cout << "ORCASHI v3.1 - P2P Chat" << endl;
+    cout << string(40, '=') << endl;
+    cout << "Commands:" << endl;
+    cout << "  /help    - Show this help" << endl;
+    cout << "  /exit    - Disconnect" << endl;
+    cout << "  /status  - Show connection status" << endl;
+    cout << "\nYour ID: " << my_id << endl;
+    cout << "Peer ID: " << get_peer_id() << endl;
+    cout << string(40, '=') << endl << endl;
 }
 
-void MDNS::unpublish() {
-    cleanup();
-    cout << "[mDNS] Unpublished" << endl;
-}
+// ==================== UNUSED FUNCTIONS ====================
+string ORCASHI::get_hidden_password() { return ""; }
+string ORCASHI::detect_usb() { return ""; }
+bool ORCASHI::save_to_usb(const Identity& identity, const string& usb_path) { return false; }
+bool ORCASHI::load_from_usb(Identity& identity, const string& usb_path) { return false; }
+bool ORCASHI::register_normal_id() { return false; }
+bool ORCASHI::register_verified_id() { return false; }
