@@ -1,30 +1,55 @@
- #ifndef ORCASHI_HPP
+ // orcashi.hpp - ORCASHI v3.1 with Request System
+#ifndef ORCASHI_HPP
 #define ORCASHI_HPP
 
 #include "plug.hpp"
 #include <string>
 #include <atomic>
 #include <thread>
-#include <ifaddrs.h>   // ← បន្ថែម!
+
+struct Identity {
+    std::string id;
+    std::string name;
+    std::string role;
+    std::string public_key;
+    std::string private_key_encrypted;
+    std::string signature;
+};
 
 class ORCASHI {
 public:
     ORCASHI();
     ~ORCASHI();
     
+    // Initialize
     bool init();
+    
+    // Room management
     bool create_room(int port = 9000);
     bool join_room(const std::string& ip, int port = 9000);
+    
+    // Messaging
     bool send_message(const std::string& msg);
     bool receive_message(std::string& msg, int timeout_ms = 100);
+    
+    // Connection status
     bool is_connected() const;
     void disconnect();
     
+    // Identity
     std::string get_my_id() const;
     std::string get_peer_id() const;
     std::string get_peer_ip() const;
     
+    // Registration
     bool register_identity();
+    
+    // Request System (NEW!)
+    bool add_peer(const std::string& id);
+    bool check_requests();
+    bool connect_peer(const std::string& id);
+    
+    // Peer management
     void show_peers();
     void show_help();
     
@@ -35,13 +60,16 @@ private:
     std::thread ui_thread;
     bool is_ish_mode;
     
+    // Registration functions
     bool register_normal_id();
     bool register_verified_id();
-    std::string get_local_ip();      // ← Real now!
+    std::string get_local_ip();
     std::string get_hidden_password();
-    std::string detect_usb();        // ← Still simulation (v3.2)
-    bool save_to_usb(const struct Identity& identity, const std::string& usb_path); // ← v3.2
+    std::string detect_usb();
+    bool save_to_usb(const Identity& identity, const std::string& usb_path);
+    bool load_from_usb(Identity& identity, const std::string& usb_path);
     
+    // Core functions
     bool detect_ish();
     std::string generate_id();
     void ui_loop();
