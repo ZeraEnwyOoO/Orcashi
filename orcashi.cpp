@@ -1,5 +1,6 @@
  // orcashi.cpp - Real Implementation (v3.1)
 
+# // orcashi.cpp - Real Implementation (v3.1)
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include <iostream>
@@ -15,7 +16,13 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <ifaddrs.h>    // ← បន្ថែម!
+#include <ifaddrs.h>
+#include <cstring>      
+#include <cctype>       
+
+using namespace std;
+
+// ... rest of code ...
 
 using namespace std;
 
