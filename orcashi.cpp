@@ -48,25 +48,51 @@ bool ORCASHI::init() {
     return true;
 }
 
+// ==================== REAL IP DETECTION (AUTO) ====================
 string ORCASHI::get_local_ip() {
+    // Method 1: Try getifaddrs (works on Linux + iSH)
     struct ifaddrs* ifaddr;
-    if (getifaddrs(&ifaddr) == -1) {
-        return "127.0.0.1";
-    }
-    
-    for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr == NULL) continue;
-        if (ifa->ifa_addr->sa_family != AF_INET) continue;
-        if (strcmp(ifa->ifa_name, "lo") == 0) continue;
-        
-        struct sockaddr_in* addr = (struct sockaddr_in*)ifa->ifa_addr;
-        char ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+    if (getifaddrs(&ifaddr) == 0) {
+        for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+            if (ifa->ifa_addr == NULL) continue;
+            if (ifa->ifa_addr->sa_family != AF_INET) continue;
+            if (strcmp(ifa->ifa_name, "lo") == 0) continue;
+            
+            struct sockaddr_in* addr = (struct sockaddr_in*)ifa->ifa_addr;
+            char ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+            freeifaddrs(ifaddr);
+            
+            // Make sure it's not localhost
+            if (string(ip) != "127.0.0.1") {
+                return string(ip);
+            }
+        }
         freeifaddrs(ifaddr);
-        return string(ip);
     }
     
-    freeifaddrs(ifaddr);
+    // Method 2: Try socket method (fallback)
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock >= 0) {
+        struct sockaddr_in dest;
+        dest.sin_family = AF_INET;
+        dest.sin_port = htons(80);
+        inet_pton(AF_INET, "8.8.8.8", &dest.sin_addr);
+        
+        if (connect(sock, (struct sockaddr*)&dest, sizeof(dest)) == 0) {
+            struct sockaddr_in local;
+            socklen_t addr_len = sizeof(local);
+            if (getsockname(sock, (struct sockaddr*)&local, &addr_len) == 0) {
+                char ip[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &local.sin_addr, ip, sizeof(ip));
+                close(sock);
+                return string(ip);
+            }
+        }
+        close(sock);
+    }
+    
+    // Fallback
     return "127.0.0.1";
 }
 
