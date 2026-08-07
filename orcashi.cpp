@@ -1,4 +1,5 @@
- // orcashi.cpp
+ // orcashi.cpp - Real Implementation (v3.1)
+
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include <iostream>
@@ -10,6 +11,11 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <ifaddrs.h>    // ← បន្ថែម!
 
 using namespace std;
 
@@ -37,6 +43,30 @@ bool ORCASHI::init() {
     return true;
 }
 
+// ==================== REAL IP DETECTION ====================
+string ORCASHI::get_local_ip() {
+    struct ifaddrs* ifaddr;
+    if (getifaddrs(&ifaddr) == -1) {
+        return "127.0.0.1";
+    }
+    
+    for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (strcmp(ifa->ifa_name, "lo") == 0) continue;
+        
+        struct sockaddr_in* addr = (struct sockaddr_in*)ifa->ifa_addr;
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+        freeifaddrs(ifaddr);
+        return string(ip);
+    }
+    
+    freeifaddrs(ifaddr);
+    return "127.0.0.1";
+}
+
+// ==================== REST OF CODE (ដដែល) ====================
 bool ORCASHI::detect_ish() {
     if (access("/sbin/apk", F_OK) == 0) return true;
     
@@ -171,16 +201,7 @@ string ORCASHI::get_my_id() const { return my_id; }
 string ORCASHI::get_peer_id() const { return plug.get_peer_id(); }
 string ORCASHI::get_peer_ip() const { return plug.get_peer_ip(); }
 
-string ORCASHI::get_local_ip() {
-    return "192.168.1.100";
-}
-
-string ORCASHI::get_hidden_password() {
-    string password;
-    getline(cin, password);
-    return password;
-}
-
+// ==================== REGISTER IDENTITY ====================
 bool ORCASHI::register_identity() {
     cout << "\n";
     cout << "  +------------------------------------------+\n";
@@ -197,6 +218,7 @@ bool ORCASHI::register_identity() {
         return false;
     }
     
+    // ===== REAL IP DETECTION =====
     string ip = get_local_ip();
     cout << "  Your IP: " << ip << "\n";
     
@@ -267,4 +289,27 @@ void ORCASHI::show_help() {
     cout << "\nYour ID: " << my_id << endl;
     cout << "Peer ID: " << get_peer_id() << endl;
     cout << string(40, '=') << endl << endl;
+}
+
+// ==================== SIMULATION (FOR v3.2) ====================
+string ORCASHI::get_hidden_password() {
+    string password;
+    getline(cin, password);
+    return password;
+}
+
+string ORCASHI::detect_usb() {
+    return "";  // v3.2
+}
+
+bool ORCASHI::save_to_usb(const struct Identity& identity, const string& usb_path) {
+    return false;  // v3.2
+}
+
+bool ORCASHI::register_normal_id() {
+    return false;  // v3.2
+}
+
+bool ORCASHI::register_verified_id() {
+    return false;  // v3.2
 }
