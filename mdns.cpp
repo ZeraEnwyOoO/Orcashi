@@ -1,8 +1,9 @@
-#include "mdns.hpp"
+ #include "mdns.hpp"
 #include <iostream>
 #include <cstdlib>
 #include <sstream>
 #include <unistd.h>
+#include <cstring>
 
 using namespace std;
 
@@ -25,7 +26,7 @@ string MDNS::exec(const string& cmd) {
 }
 
 bool MDNS::init() {
-    // Check if avahi is installed (Linux)
+    // Check avahi (Linux)
     string cmd = "which avahi-publish 2>/dev/null";
     string result = exec(cmd);
     if (!result.empty()) {
@@ -33,7 +34,7 @@ bool MDNS::init() {
         return true;
     }
     
-    // Check if dns-sd is available (macOS/iSH)
+    // Check dns-sd (macOS/iSH)
     cmd = "which dns-sd 2>/dev/null";
     result = exec(cmd);
     if (!result.empty()) {
@@ -102,9 +103,6 @@ string MDNS::extract_ip(const string& output) {
     if (start == string::npos) {
         start = output.find("127.");
     }
-    if (start == string::npos) {
-        start = output.find("::1");
-    }
     if (start == string::npos) return "";
     
     size_t end = output.find(" ", start);
@@ -121,7 +119,6 @@ string MDNS::extract_ip(const string& output) {
 void MDNS::unpublish() {
     if (!published) return;
     
-    // Kill avahi-publish processes
     system("pkill avahi-publish 2>/dev/null");
     system("pkill dns-sd 2>/dev/null");
     published = false;
