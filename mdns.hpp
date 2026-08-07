@@ -1,51 +1,38 @@
- #ifndef ORCASHI_HPP
-#define ORCASHI_HPP
+ #ifndef MDNS_HPP
+#define MDNS_HPP
 
-#include "plug.hpp"
-#include "mdns.hpp"  // ← រក្សា!
 #include <string>
-#include <atomic>
+#include <map>
+#include <mutex>
 #include <thread>
+#include <atomic>
 
-class ORCASHI {
+class MDNS {
 public:
-    ORCASHI();
-    ~ORCASHI();
+    MDNS();
+    ~MDNS();
     
     bool init();
-    bool create_room(int port = 9000);
-    bool join_room(const std::string& ip, int port = 9000);
-    bool send_message(const std::string& msg);
-    bool receive_message(std::string& msg, int timeout_ms = 100);
-    bool is_connected() const;
-    void disconnect();
-    
-    std::string get_my_id() const;
-    std::string get_peer_id() const;
-    std::string get_peer_ip() const;
-    
-    bool register_identity();
-    bool connect_peer(const std::string& id);
-    bool add_peer(const std::string& id);
-    bool check_requests();
-    void show_peers();
-    void show_help();
+    bool publish(const std::string& id, int port);
+    std::string lookup(const std::string& id);
+    void unpublish();
+    bool is_running() const { return running; }
     
 private:
-    TCPPlug plug;
-    MDNS mdns;  // ← រក្សា!
+    int sock;
     std::string my_id;
+    std::string my_endpoint;
     std::atomic<bool> running;
-    std::thread ui_thread;
-    bool is_ish_mode;
+    std::thread listen_thread;
+    std::map<std::string, std::string> cache;
+    std::mutex cache_mutex;
     
+    void listen_loop();
+    void process_message(const std::string& msg);
+    void send_announcement(const std::string& msg);
+    void send_query(const std::string& query);
     std::string get_local_ip();
-    std::string get_hidden_password();
-    std::string detect_usb();
-    bool detect_ish();
-    std::string generate_id();
-    void ui_loop();
-    void show_banner();
+    void cleanup();
 };
 
 #endif
