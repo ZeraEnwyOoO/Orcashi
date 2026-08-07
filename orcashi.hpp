@@ -1,8 +1,9 @@
- // orcashi.hpp - ORCASHI v3.1 with Request System
+ // orcashi.hpp - ORCASHI v3.1 with DHT
 #ifndef ORCASHI_HPP
 #define ORCASHI_HPP
 
 #include "plug.hpp"
+#include "dht.hpp"
 #include <string>
 #include <atomic>
 #include <thread>
@@ -44,17 +45,21 @@ public:
     // Registration
     bool register_identity();
     
-    // Request System (NEW!)
+    // Peer Management
+    bool connect_peer(const std::string& id);
     bool add_peer(const std::string& id);
     bool check_requests();
-    bool connect_peer(const std::string& id);
-    
-    // Peer management
     void show_peers();
     void show_help();
     
+    // DHT
+    bool init_dht();
+    bool store_in_dht(const std::string& id, const std::string& endpoint);
+    std::string lookup_in_dht(const std::string& id);
+    
 private:
     TCPPlug plug;
+    DHT dht;
     std::string my_id;
     std::atomic<bool> running;
     std::thread ui_thread;
