@@ -1,9 +1,10 @@
- // orcashi.hpp - ORCASHI v3.1 with DHT
+ // orcashi.hpp - ORCASHI v3.1 with DHT + mDNS
 #ifndef ORCASHI_HPP
 #define ORCASHI_HPP
 
 #include "plug.hpp"
 #include "dht.hpp"
+#include "mdns.hpp"  // ← បន្ថែម!
 #include <string>
 #include <atomic>
 #include <thread>
@@ -57,9 +58,15 @@ public:
     bool store_in_dht(const std::string& id, const std::string& endpoint);
     std::string lookup_in_dht(const std::string& id);
     
+    // mDNS (NEW!)
+    bool init_mdns();
+    bool publish_mdns(const std::string& id, int port);
+    std::string lookup_mdns(const std::string& id);
+    
 private:
     TCPPlug plug;
     DHT dht;
+    MDNS mdns;  // ← បន្ថែម!
     std::string my_id;
     std::atomic<bool> running;
     std::thread ui_thread;
