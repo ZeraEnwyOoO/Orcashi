@@ -5,6 +5,7 @@
 #include <string>
 #include <map>
 #include <mutex>
+#include <vector>
 #include <chrono>
 
 struct EndpointInfo {
