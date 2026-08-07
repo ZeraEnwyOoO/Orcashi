@@ -1,13 +1,15 @@
- #include "mdns.hpp"
+ #define _POSIX_C_SOURCE 200809L
+#include "mdns.hpp"
 #include <iostream>
 #include <cstring>
 #include <unistd.h>
 #include <sys/socket.h>
-#include <sys/select.h>    
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+#include <poll.h>
 #include <chrono>
+#include <thread>
 
 using namespace std;
 
@@ -145,23 +147,22 @@ void MDNS::listen_loop() {
     socklen_t sender_len = sizeof(sender);
     
     while (running) {
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(sock, &fds);
+        struct pollfd pfd;
+        pfd.fd = sock;
+        pfd.events = POLLIN;
         
-        struct timeval tv;
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
+        int ret = poll(&pfd, 1, 1000);
         
-        int ret = select(sock + 1, &fds, NULL, NULL, &tv);
         if (ret <= 0) continue;
         
-        int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0,
-                        (struct sockaddr*)&sender, &sender_len);
-        if (n > 0) {
-            buffer[n] = '\0';
-            string msg(buffer);
-            process_message(msg);
+        if (pfd.revents & POLLIN) {
+            int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0,
+                            (struct sockaddr*)&sender, &sender_len);
+            if (n > 0) {
+                buffer[n] = '\0';
+                string msg(buffer);
+                process_message(msg);
+            }
         }
     }
 }
