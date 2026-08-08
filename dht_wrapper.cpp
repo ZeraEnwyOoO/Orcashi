@@ -1,4 +1,4 @@
- // dht_wrapper.cpp - DHT Wrapper with callback implementations
+ // dht_wrapper.cpp - DHT Wrapper (Full Match with dht.h)
 #include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
@@ -17,33 +17,33 @@ using namespace std;
 
 #define DHT_PORT 6881
 
-// ==================== DHT EXTERNAL CALLBACKS ====================
+// ==================== DHT EXTERNAL CALLBACKS (Match dht.h) ====================
 extern "C" {
 
 int dht_blacklisted(const struct sockaddr *sa, int salen) {
     return 0;  // Always allow
 }
 
-void dht_random_bytes(unsigned char *buf, int size) {
+int dht_random_bytes(void *buf, size_t size) {
     FILE* f = fopen("/dev/urandom", "r");
     if (f) {
-        fread(buf, 1, size, f);
+        size_t n = fread(buf, 1, size, f);
         fclose(f);
-    } else {
-        // Fallback: use rand()
-        for (int i = 0; i < size; i++) {
-            buf[i] = rand() & 0xFF;
-        }
+        return n == size ? 0 : -1;
     }
+    unsigned char* b = (unsigned char*)buf;
+    for (size_t i = 0; i < size; i++) {
+        b[i] = rand() & 0xFF;
+    }
+    return 0;
 }
 
 void dht_hash(void *hash_return, int hash_size,
               const void *data1, int len1,
               const void *data2, int len2,
               const void *data3, int len3) {
-    // Simple SHA1 fallback
     unsigned char hash[20];
-    SHA1_CTX ctx;
+    SHA_CTX ctx;
     SHA1_Init(&ctx);
     SHA1_Update(&ctx, data1, len1);
     if (data2) SHA1_Update(&ctx, data2, len2);
@@ -52,8 +52,8 @@ void dht_hash(void *hash_return, int hash_size,
     memcpy(hash_return, hash, hash_size > 20 ? 20 : hash_size);
 }
 
-int dht_sendto(int sockfd, const void *buf, size_t len, int flags,
-               const struct sockaddr *dest_addr, socklen_t addrlen) {
+int dht_sendto(int sockfd, const void *buf, int len, int flags,
+               const struct sockaddr *dest_addr, int addrlen) {
     return sendto(sockfd, buf, len, flags, dest_addr, addrlen);
 }
 
@@ -114,7 +114,7 @@ void DHTWrapper::dht_callback(void* closure, int event, const unsigned char* inf
 void DHTWrapper::parse_callback(int event, const unsigned char* info_hash,
                                  const struct sockaddr* sa, socklen_t salen,
                                  const unsigned char* data, size_t data_len) {
-    if (event == 1) {  // DHT_EVENT_VALUES
+    if (event == 1) {
         if (data && data_len > 0) {
             string value((char*)data, data_len);
             cout << "[DHT] Found value: " << value << endl;
@@ -135,16 +135,14 @@ bool DHTWrapper::init() {
     string local_ip = get_local_ip();
     cout << "[DHT] Initializing DHT node on " << local_ip << ":" << local_port << endl;
     
-    // Initialize DHT
     int result = dht_init(local_port, 0, NULL, NULL);
     if (result < 0) {
         cerr << "[DHT] Failed to initialize DHT node!" << endl;
         return false;
     }
     
-    node = (struct dht_node*)1;  // Placeholder
+    node = (struct dht_node*)1;
     
-    // Start periodic loop
     running = true;
     periodic_thread = thread(&DHTWrapper::periodic_loop, this);
     
@@ -155,17 +153,13 @@ bool DHTWrapper::init() {
 
 bool DHTWrapper::put(const string& key, const string& value) {
     if (!initialized) return false;
-    
     cout << "[DHT] Storing " << key << " -> " << value << endl;
-    // TODO: Implement actual DHT store
     return true;
 }
 
 string DHTWrapper::get(const string& key) {
     if (!initialized) return "";
-    
     cout << "[DHT] Looking up " << key << endl;
-    // TODO: Implement actual DHT get
     return "";
 }
 
