@@ -2,7 +2,7 @@
 #define ORCASHI_HPP
 
 #include "plug.hpp"
-#include "dht_wrapper.hpp"
+#include "dht_wrapper.hpp"   // ← បន្ថែម!
 #include <string>
 #include <atomic>
 #include <thread>
@@ -31,9 +31,12 @@ public:
     void show_peers();
     void show_help();
     
+    // DHT method
+    std::string lookup_in_dht(const std::string& id);
+    
 private:
     TCPPlug plug;
-    DHTWrapper dht;
+    DHTWrapper dht;          // ← បន្ថែម!
     std::string my_id;
     std::atomic<bool> running;
     std::thread ui_thread;
