@@ -231,6 +231,7 @@ bool ORCASHI::register_identity() {
         cout << "  Your ID: " << id << "\n";
         cout << "  Endpoint: " << ip << ":9000\n";
         
+        // ===== STORE IN MAINLINE DHT =====
         if (dht.is_initialized()) {
             string endpoint = ip + ":9000";
             if (dht.put(id, endpoint)) {
@@ -255,11 +256,13 @@ bool ORCASHI::connect_peer(const string& id) {
     Registry registry;
     Peer peer;
     
+    // 1. Check Registry first
     if (registry.get_peer(id, peer)) {
         cout << "  [ORCA] Found in registry: " << peer.ip << ":" << peer.port << "\n";
         return join_room(peer.ip);
     }
     
+    // 2. Try Mainline DHT
     cout << "  [ORCA] Looking up " << id << " in Mainline DHT..." << endl;
     
     if (!dht.is_initialized()) {
@@ -271,7 +274,10 @@ bool ORCASHI::connect_peer(const string& id) {
     string endpoint = dht.get(id);
     if (!endpoint.empty()) {
         cout << "  [ORCA] Found in DHT: " << endpoint << endl;
+        
+        // Save to registry for next time
         registry.register_peer(id, endpoint, "9000");
+        
         return join_room(endpoint);
     }
     
