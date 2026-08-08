@@ -1,4 +1,4 @@
- // dht_wrapper.cpp - DHT Wrapper with proper socket
+ // dht_wrapper.cpp - DHT Wrapper (Fixed: ID != NULL)
 #include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
@@ -99,14 +99,13 @@ bool DHTWrapper::init() {
     string local_ip = get_local_ip();
     cout << "[DHT] Initializing DHT node on " << local_ip << ":" << local_port << endl;
     
-    // Create UDP socket for DHT
+    // Create UDP socket
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
         cerr << "[DHT] Failed to create socket!" << endl;
         return false;
     }
     
-    // Enable port reuse
     int opt = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         cerr << "[DHT] Failed to set SO_REUSEADDR!" << endl;
@@ -114,7 +113,6 @@ bool DHTWrapper::init() {
         return false;
     }
     
-    // Bind to port
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -127,8 +125,12 @@ bool DHTWrapper::init() {
         return false;
     }
     
-    // Initialize DHT with socket descriptor
-    int result = dht_init(sock, 0, NULL, NULL);
+    // ===== CREATE DHT ID (20 bytes) =====
+    unsigned char my_id[20];
+    dht_random_bytes(my_id, 20);  // Generate random ID
+    
+    // ===== INITIALIZE DHT WITH ID =====
+    int result = dht_init(sock, 0, my_id, NULL);  // Pass ID!
     if (result < 0) {
         cerr << "[DHT] Failed to initialize DHT node (error: " << result << ")" << endl;
         close(sock);
