@@ -1,4 +1,4 @@
- // orcashi.cpp - ORCASHI v3.1 with Mainline DHT (Clean)
+ // orcashi.cpp - ORCASHI v3.1 with Mainline DHT
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include "request.hpp"
