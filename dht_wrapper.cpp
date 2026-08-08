@@ -1,4 +1,5 @@
- #include "dht_wrapper.hpp"
+ // dht_wrapper.cpp - DHT Wrapper with callback implementations
+#include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
 #include <unistd.h>
@@ -8,10 +9,57 @@
 #include <sstream>
 #include <iomanip>
 #include <chrono>
+#include <cstdlib>
+#include <cstdio>
+#include <sys/socket.h>
 
 using namespace std;
 
 #define DHT_PORT 6881
+
+// ==================== DHT EXTERNAL CALLBACKS ====================
+extern "C" {
+
+int dht_blacklisted(const struct sockaddr *sa, int salen) {
+    return 0;  // Always allow
+}
+
+void dht_random_bytes(unsigned char *buf, int size) {
+    FILE* f = fopen("/dev/urandom", "r");
+    if (f) {
+        fread(buf, 1, size, f);
+        fclose(f);
+    } else {
+        // Fallback: use rand()
+        for (int i = 0; i < size; i++) {
+            buf[i] = rand() & 0xFF;
+        }
+    }
+}
+
+void dht_hash(void *hash_return, int hash_size,
+              const void *data1, int len1,
+              const void *data2, int len2,
+              const void *data3, int len3) {
+    // Simple SHA1 fallback
+    unsigned char hash[20];
+    SHA1_CTX ctx;
+    SHA1_Init(&ctx);
+    SHA1_Update(&ctx, data1, len1);
+    if (data2) SHA1_Update(&ctx, data2, len2);
+    if (data3) SHA1_Update(&ctx, data3, len3);
+    SHA1_Final(hash, &ctx);
+    memcpy(hash_return, hash, hash_size > 20 ? 20 : hash_size);
+}
+
+int dht_sendto(int sockfd, const void *buf, size_t len, int flags,
+               const struct sockaddr *dest_addr, socklen_t addrlen) {
+    return sendto(sockfd, buf, len, flags, dest_addr, addrlen);
+}
+
+}
+
+// ==================== DHTWRAPPER IMPLEMENTATION ====================
 
 DHTWrapper::DHTWrapper() : node(nullptr), initialized(false), local_port(DHT_PORT), running(false) {}
 
@@ -19,7 +67,7 @@ DHTWrapper::~DHTWrapper() {
     running = false;
     if (periodic_thread.joinable()) periodic_thread.join();
     if (node) {
-        dht_uninit();  // ← កែ! dht_uninit() គ្មាន argument!
+        dht_uninit();
         node = nullptr;
     }
 }
@@ -76,7 +124,7 @@ void DHTWrapper::parse_callback(int event, const unsigned char* info_hash,
 
 void DHTWrapper::periodic_loop() {
     while (running) {
-        // dht_periodic(node, NULL, 0, NULL, NULL, NULL, NULL);
+        dht_periodic(NULL, 0, NULL, 0, NULL, NULL, NULL);
         this_thread::sleep_for(chrono::seconds(5));
     }
 }
@@ -87,7 +135,7 @@ bool DHTWrapper::init() {
     string local_ip = get_local_ip();
     cout << "[DHT] Initializing DHT node on " << local_ip << ":" << local_port << endl;
     
-    // Try to initialize DHT
+    // Initialize DHT
     int result = dht_init(local_port, 0, NULL, NULL);
     if (result < 0) {
         cerr << "[DHT] Failed to initialize DHT node!" << endl;
