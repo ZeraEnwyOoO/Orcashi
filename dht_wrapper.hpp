@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 #include <mutex>
-#include <sys/socket.h>   // ← បន្ថែម!
-#include <netinet/in.h>   // ← បន្ថែម!
+#include <sys/socket.h>   
+#include <netinet/in.h>   
 
 extern "C" {
     #include "dht.h"
