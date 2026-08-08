@@ -2,10 +2,19 @@
 #define ORCASHI_HPP
 
 #include "plug.hpp"
-#include "dht_wrapper.hpp"   // ← បន្ថែម!
+#include "dht_wrapper.hpp"
 #include <string>
 #include <atomic>
 #include <thread>
+
+struct Identity {
+    std::string id;
+    std::string name;
+    std::string role;
+    std::string public_key;
+    std::string private_key_encrypted;
+    std::string signature;
+};
 
 class ORCASHI {
 public:
@@ -31,12 +40,11 @@ public:
     void show_peers();
     void show_help();
     
-    // DHT method
     std::string lookup_in_dht(const std::string& id);
     
 private:
     TCPPlug plug;
-    DHTWrapper dht;          // ← បន្ថែម!
+    DHTWrapper dht;
     std::string my_id;
     std::atomic<bool> running;
     std::thread ui_thread;
