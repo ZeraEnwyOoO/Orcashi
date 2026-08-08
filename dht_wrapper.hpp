@@ -4,14 +4,18 @@
 #include <string>
 #include <vector>
 #include <mutex>
-#include <atomic>      // ← បន្ថែម!
-#include <thread>      // ← បន្ថែម!
+#include <atomic>
+#include <thread>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
+#ifdef __cplusplus
 extern "C" {
+#endif
     #include "dht.h"
+#ifdef __cplusplus
 }
+#endif
 
 class DHTWrapper {
 public:
@@ -29,8 +33,8 @@ private:
     std::mutex mtx;
     bool initialized;
     int local_port;
-    std::atomic<bool> running;    // ← ឥឡូវមាន!
-    std::thread periodic_thread;  // ← ឥឡូវមាន!
+    std::atomic<bool> running;
+    std::thread periodic_thread;
     
     static void dht_callback(void* closure, int event, const unsigned char* info_hash,
                              const struct sockaddr* sa, socklen_t salen,
