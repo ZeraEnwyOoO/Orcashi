@@ -206,6 +206,14 @@ string ORCASHI::get_my_id() const { return my_id; }
 string ORCASHI::get_peer_id() const { return plug.get_peer_id(); }
 string ORCASHI::get_peer_ip() const { return plug.get_peer_ip(); }
 
+// ==================== DHT METHOD ====================
+string ORCASHI::lookup_in_dht(const string& id) {
+    if (!dht.is_initialized()) {
+        return "";
+    }
+    return dht.get(id);
+}
+
 bool ORCASHI::register_identity() {
     cout << "\n";
     cout << "  +------------------------------------------+\n";
