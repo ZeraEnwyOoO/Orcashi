@@ -1,4 +1,4 @@
- // dht_wrapper.cpp - DHT Wrapper (Full Match with dht.h)
+ // dht_wrapper.cpp - DHT Wrapper (No extern "C")
 #include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
@@ -16,50 +16,6 @@
 using namespace std;
 
 #define DHT_PORT 6881
-
-// ==================== DHT EXTERNAL CALLBACKS (Match dht.h) ====================
-extern "C" {
-
-int dht_blacklisted(const struct sockaddr *sa, int salen) {
-    return 0;  // Always allow
-}
-
-int dht_random_bytes(void *buf, size_t size) {
-    FILE* f = fopen("/dev/urandom", "r");
-    if (f) {
-        size_t n = fread(buf, 1, size, f);
-        fclose(f);
-        return n == size ? 0 : -1;
-    }
-    unsigned char* b = (unsigned char*)buf;
-    for (size_t i = 0; i < size; i++) {
-        b[i] = rand() & 0xFF;
-    }
-    return 0;
-}
-
-void dht_hash(void *hash_return, int hash_size,
-              const void *data1, int len1,
-              const void *data2, int len2,
-              const void *data3, int len3) {
-    unsigned char hash[20];
-    SHA_CTX ctx;
-    SHA1_Init(&ctx);
-    SHA1_Update(&ctx, data1, len1);
-    if (data2) SHA1_Update(&ctx, data2, len2);
-    if (data3) SHA1_Update(&ctx, data3, len3);
-    SHA1_Final(hash, &ctx);
-    memcpy(hash_return, hash, hash_size > 20 ? 20 : hash_size);
-}
-
-int dht_sendto(int sockfd, const void *buf, int len, int flags,
-               const struct sockaddr *dest_addr, int addrlen) {
-    return sendto(sockfd, buf, len, flags, dest_addr, addrlen);
-}
-
-}
-
-// ==================== DHTWRAPPER IMPLEMENTATION ====================
 
 DHTWrapper::DHTWrapper() : node(nullptr), initialized(false), local_port(DHT_PORT), running(false) {}
 
@@ -124,7 +80,9 @@ void DHTWrapper::parse_callback(int event, const unsigned char* info_hash,
 
 void DHTWrapper::periodic_loop() {
     while (running) {
-        dht_periodic(NULL, 0, NULL, 0, NULL, NULL, NULL);
+        if (node) {
+            dht_periodic(NULL, 0, NULL, 0, NULL, NULL, NULL);
+        }
         this_thread::sleep_for(chrono::seconds(5));
     }
 }
@@ -137,28 +95,36 @@ bool DHTWrapper::init() {
     
     int result = dht_init(local_port, 0, NULL, NULL);
     if (result < 0) {
-        cerr << "[DHT] Failed to initialize DHT node!" << endl;
+        cerr << "[DHT] Failed to initialize DHT node (error: " << result << ")" << endl;
         return false;
     }
     
     node = (struct dht_node*)1;
+    initialized = true;
     
     running = true;
     periodic_thread = thread(&DHTWrapper::periodic_loop, this);
     
-    initialized = true;
     cout << "[DHT] DHT initialized!" << endl;
     return true;
 }
 
 bool DHTWrapper::put(const string& key, const string& value) {
-    if (!initialized) return false;
+    if (!initialized) {
+        cerr << "[DHT] Cannot store: DHT not initialized!" << endl;
+        return false;
+    }
+    
     cout << "[DHT] Storing " << key << " -> " << value << endl;
     return true;
 }
 
 string DHTWrapper::get(const string& key) {
-    if (!initialized) return "";
+    if (!initialized) {
+        cerr << "[DHT] Cannot lookup: DHT not initialized!" << endl;
+        return "";
+    }
+    
     cout << "[DHT] Looking up " << key << endl;
     return "";
 }
