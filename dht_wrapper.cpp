@@ -1,11 +1,11 @@
- // dht_wrapper.cpp - DHT Wrapper (SHA256)
+ // dht_wrapper.cpp - DHT Wrapper (EVP API)
 #include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <sstream>
 #include <iomanip>
 #include <chrono>
@@ -51,13 +51,16 @@ string DHTWrapper::get_local_ip() {
 }
 
 string DHTWrapper::sha256(const string& input) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, (unsigned char*)input.c_str(), input.length());
-    SHA256_Final(hash, &ctx);
+    unsigned char hash[32];
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, input.c_str(), input.length());
+    unsigned int len = 32;
+    EVP_DigestFinal_ex(ctx, hash, &len);
+    EVP_MD_CTX_free(ctx);
+    
     stringstream ss;
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    for (int i = 0; i < 32; i++) {
         ss << hex << setw(2) << setfill('0') << (int)hash[i];
     }
     return ss.str();
