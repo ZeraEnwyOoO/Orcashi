@@ -1,5 +1,4 @@
- // orcashi.hpp - ORCASHI v3.1 with Mainline DHT
-#ifndef ORCASHI_HPP
+ #ifndef ORCASHI_HPP
 #define ORCASHI_HPP
 
 #include "plug.hpp"
@@ -7,15 +6,6 @@
 #include <string>
 #include <atomic>
 #include <thread>
-
-struct Identity {
-    std::string id;
-    std::string name;
-    std::string role;
-    std::string public_key;
-    std::string private_key_encrypted;
-    std::string signature;
-};
 
 class ORCASHI {
 public:
@@ -54,14 +44,6 @@ private:
     std::string generate_id();
     void ui_loop();
     void show_banner();
-    
-    // Unused functions
-    std::string get_hidden_password() { return ""; }
-    std::string detect_usb() { return ""; }
-    bool save_to_usb(const Identity&, const std::string&) { return false; }
-    bool load_from_usb(Identity&, const std::string&) { return false; }
-    bool register_normal_id() { return false; }
-    bool register_verified_id() { return false; }
 };
 
 #endif
