@@ -1,4 +1,4 @@
- // dht_wrapper.cpp - DHT Wrapper (No extern "C")
+ // dht_wrapper.cpp - DHT Wrapper (SHA256)
 #include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
@@ -50,11 +50,14 @@ string DHTWrapper::get_local_ip() {
     return "127.0.0.1";
 }
 
-string DHTWrapper::sha1(const string& input) {
-    unsigned char hash[SHA_DIGEST_LENGTH];
-    SHA1((unsigned char*)input.c_str(), input.length(), hash);
+string DHTWrapper::sha256(const string& input) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_CTX ctx;
+    SHA256_Init(&ctx);
+    SHA256_Update(&ctx, (unsigned char*)input.c_str(), input.length());
+    SHA256_Final(hash, &ctx);
     stringstream ss;
-    for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
         ss << hex << setw(2) << setfill('0') << (int)hash[i];
     }
     return ss.str();
