@@ -1,4 +1,4 @@
-// dht_impl.c - DHT Implementation for jech/dht
+ // dht_impl.c - DHT Implementation for jech/dht (SHA256)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,14 +29,14 @@ void dht_hash(void *hash_return, int hash_size,
               const void *data1, int len1,
               const void *data2, int len2,
               const void *data3, int len3) {
-    unsigned char hash[20];
-    SHA_CTX ctx;
-    SHA1_Init(&ctx);
-    SHA1_Update(&ctx, data1, len1);
-    if (data2) SHA1_Update(&ctx, data2, len2);
-    if (data3) SHA1_Update(&ctx, data3, len3);
-    SHA1_Final(hash, &ctx);
-    memcpy(hash_return, hash, hash_size > 20 ? 20 : hash_size);
+    unsigned char hash[32];  // SHA256 = 32 bytes
+    SHA256_CTX ctx;
+    SHA256_Init(&ctx);
+    SHA256_Update(&ctx, data1, len1);
+    if (data2) SHA256_Update(&ctx, data2, len2);
+    if (data3) SHA256_Update(&ctx, data3, len3);
+    SHA256_Final(hash, &ctx);
+    memcpy(hash_return, hash, hash_size > 32 ? 32 : hash_size);
 }
 
 int dht_sendto(int sockfd, const void *buf, int len, int flags,
