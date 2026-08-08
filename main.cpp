@@ -204,8 +204,13 @@ int main(int argc, char* argv[]) {
             cout << "  [ORCA] Found in registry: " << id << " at " << peer.ip << ":" << peer.port << "\n";
             cout << "  [ORCA] Connect using: ./orcashi connect " << id << "\n";
         } else {
-            cout << "  [ORCA] Not in registry.\n";
-            cout << "  [ORCA] Try: ./orcashi connect " << id << " (uses DHT)\n";
+            string endpoint = orcashi.lookup_in_dht(id);
+            if (!endpoint.empty()) {
+                cout << "  [ORCA] Found in DHT: " << endpoint << "\n";
+                cout << "  [ORCA] Connect using: ./orcashi connect " << id << "\n";
+            } else {
+                cout << "  [ORCA] Peer not found!\n";
+            }
         }
         cout << "\n";
     }
