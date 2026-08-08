@@ -10,33 +10,15 @@ SOURCES = \
     peer_cache.cpp \
     registry.cpp \
     request.cpp \
-    dht_wrapper.cpp \
+    dht_libtorrent.cpp \
     main.cpp
-
-HEADERS = \
-    plug.hpp \
-    orcashi.hpp \
-    discovery.hpp \
-    endpoint.hpp \
-    peer_cache.hpp \
-    registry.hpp \
-    request.hpp \
-    dht_wrapper.hpp \
-    ui.hpp
-
-OBJECTS = $(SOURCES:.cpp=.o)
 
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS)
-	$(CXX) -o $(TARGET) $(OBJECTS) $(CXXFLAGS) -lssl -lcrypto
-
-%.o: %.cpp $(HEADERS)
-	$(CXX) -c $< -o $@ $(CXXFLAGS)
+$(TARGET): $(SOURCES)
+	$(CXX) -o $(TARGET) $(SOURCES) $(CXXFLAGS) -lssl -lcrypto -ltorrent-rasterbar -DTORRENT_USE_OPENSSL
 
 clean:
-	rm -f $(TARGET) $(OBJECTS)
+	rm -f $(TARGET) *.o
 
-rebuild: clean all
-
-.PHONY: all clean rebuild
+.PHONY: all clean
