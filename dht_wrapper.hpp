@@ -4,8 +4,10 @@
 #include <string>
 #include <vector>
 #include <mutex>
-#include <sys/socket.h>   
-#include <netinet/in.h>   
+#include <atomic>      // ← បន្ថែម!
+#include <thread>      // ← បន្ថែម!
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 extern "C" {
     #include "dht.h"
@@ -27,8 +29,8 @@ private:
     std::mutex mtx;
     bool initialized;
     int local_port;
-    std::atomic<bool> running;
-    std::thread periodic_thread;
+    std::atomic<bool> running;    // ← ឥឡូវមាន!
+    std::thread periodic_thread;  // ← ឥឡូវមាន!
     
     static void dht_callback(void* closure, int event, const unsigned char* info_hash,
                              const struct sockaddr* sa, socklen_t salen,
