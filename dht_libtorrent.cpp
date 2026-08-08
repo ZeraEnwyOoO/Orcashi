@@ -1,4 +1,4 @@
-#include "dht_libtorrent.hpp"
+ #include "dht_libtorrent.hpp"
 #include <iostream>
 #include <openssl/sha.h>
 #include <sstream>
@@ -37,7 +37,10 @@ bool DHTLibtorrent::init(int port) {
     try {
         lt::settings_pack settings;
         settings.set_bool(lt::settings_pack::enable_dht, true);
-        settings.set_int(lt::settings_pack::dht_port, port);
+        
+        // libtorrent v2.0: use listen_interfaces instead of dht_port
+        string listen_str = "0.0.0.0:" + to_string(port);
+        settings.set_str(lt::settings_pack::listen_interfaces, listen_str);
         
         session = std::make_unique<lt::session>(settings);
         
@@ -45,7 +48,7 @@ bool DHTLibtorrent::init(int port) {
         dht_thread = thread(&DHTLibtorrent::dht_loop, this);
         
         initialized = true;
-        cout << "[DHT] libtorrent DHT initialized!" << endl;
+        cout << "[DHT] libtorrent DHT initialized on port " << port << "!" << endl;
         return true;
         
     } catch (const std::exception& e) {
