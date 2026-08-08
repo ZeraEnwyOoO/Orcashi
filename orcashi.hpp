@@ -1,7 +1,9 @@
- #ifndef ORCASHI_HPP
+ // orcashi.hpp - ORCASHI v3.1 with Mainline DHT
+#ifndef ORCASHI_HPP
 #define ORCASHI_HPP
 
 #include "plug.hpp"
+#include "dht_wrapper.hpp"
 #include <string>
 #include <atomic>
 #include <thread>
@@ -41,6 +43,7 @@ public:
     
 private:
     TCPPlug plug;
+    DHTWrapper dht;
     std::string my_id;
     std::atomic<bool> running;
     std::thread ui_thread;
