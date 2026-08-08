@@ -1,4 +1,4 @@
- // orcashi.cpp - ORCASHI v3.1 (Clean - No MDNS)
+ // orcashi.cpp - ORCASHI v3.1 with Mainline DHT
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include "request.hpp"
@@ -42,6 +42,12 @@ ORCASHI::~ORCASHI() {
 }
 
 bool ORCASHI::init() {
+    // Initialize DHT
+    if (dht.init()) {
+        cout << "[DHT] Mainline DHT initialized!" << endl;
+    } else {
+        cout << "[DHT] Mainline DHT initialization failed!" << endl;
+    }
     return true;
 }
 
@@ -225,6 +231,19 @@ bool ORCASHI::register_identity() {
         cout << "\n  [SUCCESS] Registered!\n";
         cout << "  Your ID: " << id << "\n";
         cout << "  Endpoint: " << ip << ":9000\n";
+        
+        // ===== STORE IN MAINLINE DHT =====
+        if (dht.is_initialized()) {
+            string endpoint = ip + ":9000";
+            if (dht.put(id, endpoint)) {
+                cout << "  [DHT] Stored in Mainline DHT!" << endl;
+            } else {
+                cout << "  [DHT] Failed to store in Mainline DHT!" << endl;
+            }
+        } else {
+            cout << "  [DHT] Mainline DHT not available!" << endl;
+        }
+        
         cout << "\n  Your friends can connect using:\n";
         cout << "    ./orcashi connect " << id << "\n";
         return true;
@@ -238,13 +257,32 @@ bool ORCASHI::connect_peer(const string& id) {
     Registry registry;
     Peer peer;
     
+    // 1. Check Registry first
     if (registry.get_peer(id, peer)) {
         cout << "  [ORCA] Found in registry: " << peer.ip << ":" << peer.port << "\n";
         return join_room(peer.ip);
     }
     
-    cout << "  [ORCA] Peer not found!\n";
-    cout << "  [ORCA] Try: ./orcashi search " << id << "\n";
+    // 2. Try Mainline DHT
+    cout << "  [ORCA] Looking up " << id << " in Mainline DHT..." << endl;
+    
+    if (!dht.is_initialized()) {
+        cout << "  [ORCA] DHT not initialized!" << endl;
+        cout << "  [ORCA] Try: ./orcashi search " << id << endl;
+        return false;
+    }
+    
+    string endpoint = dht.get(id);
+    if (!endpoint.empty()) {
+        cout << "  [ORCA] Found in DHT: " << endpoint << endl;
+        
+        // Save to registry for next time
+        registry.register_peer(id, endpoint, "9000");
+        
+        return join_room(endpoint);
+    }
+    
+    cout << "  [ORCA] Peer not found in DHT!" << endl;
     return false;
 }
 
@@ -258,7 +296,14 @@ bool ORCASHI::add_peer(const string& id) {
         if (registry.get_peer(id, peer)) {
             cout << "  [ORCA] Peer found in registry: " << peer.ip << "\n";
         } else {
-            cout << "  [ORCA] Peer not in registry. Waiting for response...\n";
+            cout << "  [ORCA] Peer not in registry. Trying DHT...\n";
+            if (dht.is_initialized()) {
+                string endpoint = dht.get(id);
+                if (!endpoint.empty()) {
+                    cout << "  [ORCA] Found in DHT: " << endpoint << endl;
+                    registry.register_peer(id, endpoint, "9000");
+                }
+            }
         }
         return true;
     }
@@ -331,6 +376,11 @@ void ORCASHI::show_banner() {
         cout << GREEN << "Mode: iSH (TCP Plug)" << RESET << endl;
     } else {
         cout << GREEN << "Mode: Linux (TCP Connect)" << RESET << endl;
+    }
+    if (dht.is_initialized()) {
+        cout << GREEN << "DHT: Connected to Mainline DHT" << RESET << endl;
+    } else {
+        cout << YELLOW << "DHT: Not connected" << RESET << endl;
     }
     cout << "Type /help for commands" << endl;
     cout << string(50, '=') << endl << endl;
