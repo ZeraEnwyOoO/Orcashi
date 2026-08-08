@@ -1,4 +1,4 @@
- // main.cpp - ORCASHI v3.1 with DHT
+ // main.cpp - ORCASHI v3.1 with Mainline DHT
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include "request.hpp"
@@ -35,8 +35,8 @@ void show_help() {
     cout << "    /status - Show peer status\n";
     cout << "\n";
     cout << "  DHT Features:\n";
-    cout << "    - Store ID -> Endpoint in IPFS DHT\n";
-    cout << "    - Lookup ID from IPFS DHT\n";
+    cout << "    - Store ID -> Endpoint in Mainline DHT\n";
+    cout << "    - Lookup ID from Mainline DHT\n";
     cout << "    - No need to know IP!\n";
     cout << "\n";
 }
@@ -111,7 +111,6 @@ int main(int argc, char* argv[]) {
         if (orcashi.connect_peer(id)) {
             cout << "  [ORCA] Connected! Type /help for commands\n\n";
             
-            // Start receive thread
             thread receive_thread([&]() {
                 string msg;
                 while (orcashi.is_connected()) {
@@ -205,14 +204,8 @@ int main(int argc, char* argv[]) {
             cout << "  [ORCA] Found in registry: " << id << " at " << peer.ip << ":" << peer.port << "\n";
             cout << "  [ORCA] Connect using: ./orcashi connect " << id << "\n";
         } else {
-            cout << "  [ORCA] Not in registry. Looking up in DHT...\n";
-            string endpoint = orcashi.lookup_in_dht(id);
-            if (!endpoint.empty()) {
-                cout << "  [ORCA] Found in DHT: " << endpoint << "\n";
-                cout << "  [ORCA] Connect using: ./orcashi connect " << id << "\n";
-            } else {
-                cout << "  [ORCA] Peer not found!\n";
-            }
+            cout << "  [ORCA] Not in registry.\n";
+            cout << "  [ORCA] Try: ./orcashi connect " << id << " (uses DHT)\n";
         }
         cout << "\n";
     }
