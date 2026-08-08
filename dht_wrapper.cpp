@@ -1,4 +1,4 @@
- // dht_wrapper.cpp - DHT Wrapper (EVP API)
+ // dht_wrapper.cpp - DHT Wrapper with proper socket
 #include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
@@ -99,9 +99,39 @@ bool DHTWrapper::init() {
     string local_ip = get_local_ip();
     cout << "[DHT] Initializing DHT node on " << local_ip << ":" << local_port << endl;
     
-    int result = dht_init(local_port, 0, NULL, NULL);
+    // Create UDP socket for DHT
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        cerr << "[DHT] Failed to create socket!" << endl;
+        return false;
+    }
+    
+    // Enable port reuse
+    int opt = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        cerr << "[DHT] Failed to set SO_REUSEADDR!" << endl;
+        close(sock);
+        return false;
+    }
+    
+    // Bind to port
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(local_port);
+    
+    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        cerr << "[DHT] Failed to bind to port " << local_port << "!" << endl;
+        close(sock);
+        return false;
+    }
+    
+    // Initialize DHT with socket descriptor
+    int result = dht_init(sock, 0, NULL, NULL);
     if (result < 0) {
         cerr << "[DHT] Failed to initialize DHT node (error: " << result << ")" << endl;
+        close(sock);
         return false;
     }
     
@@ -111,7 +141,7 @@ bool DHTWrapper::init() {
     running = true;
     periodic_thread = thread(&DHTWrapper::periodic_loop, this);
     
-    cout << "[DHT] DHT initialized!" << endl;
+    cout << "[DHT] DHT initialized on port " << local_port << "!" << endl;
     return true;
 }
 
