@@ -40,7 +40,7 @@ private:
                              const struct sockaddr* sa, socklen_t salen,
                              const unsigned char* data, size_t data_len);
     
-    std::string sha256(const std::string& input);  // ← បន្ថែម!
+    std::string sha256(const std::string& input);
     std::string get_local_ip();
     void parse_callback(int event, const unsigned char* info_hash,
                         const struct sockaddr* sa, socklen_t salen,
