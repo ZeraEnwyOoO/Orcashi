@@ -5,8 +5,9 @@
 
 static const char* glitch_chars = "!@#$%^&*()_+-=[]{}|;:,.<>?/01";
 static const char* default_slogans[] = {
+    "You are not alone here.",
     "Welcome to ORCASHI v3.1",
-    "You are not alone here."
+    "Talk Freely, Stay Anonymous"
 };
 
 int ui_random_int(int min, int max) {
@@ -110,7 +111,7 @@ void ui_next_slogan(UI* ui) {
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char* current_text = NULL;
-    int line = 9;  // Glitch at line 9
+    int line = 12;  // Glitch at line 12 (below banner)
     
     while (ui->running) {
         if (ui->glitch_paused) {
@@ -283,15 +284,17 @@ void ui_show_banner(void) {
         "        ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
         "  ============================================",
         "",
-        "",  // Glitch at line 9
-        "",  // Empty line
-        "",  // Empty line
-        "  Commands: /help, /peers, /register, /exit",
-        "  > "
+        "",  // line 9
+        "",  // line 10
+        "",  // line 11
+        "",  // line 12 - Glitch will appear here
+        "",
+        "  Commands: /help, /peers, /register, /exit",  // line 14
+        "  > "  // line 15
     };
     printf("%s", COLOR_CLEAR);
     fflush(stdout);
-    for (int i = 0; i < 15; i++) {
+    for (int i = 0; i < 16; i++) {
         printf("%s%s%s\n", COLOR_BOLD, COLOR_CYAN, banner[i]);
     }
     printf("%s", COLOR_RESET);
@@ -301,7 +304,7 @@ void ui_show_banner(void) {
 void ui_show_prompt(UI* ui) {
     if (!ui) return;
     pthread_mutex_lock(&ui->stdout_mutex);
-    printf("\033[13;0H");  // Prompt at line 13
+    printf("\033[15;0H");  // Prompt at line 15
     printf("  %s%sCommands: /help, /peers, /register, /exit%s\n", 
            COLOR_BOLD, COLOR_YELLOW, COLOR_RESET);
     printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
