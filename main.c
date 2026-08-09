@@ -1,5 +1,4 @@
- // main.c - check g_ui
-#include "orcashi.h"
+ #include "orcashi.h"
 #include "ui.h"
 #include <signal.h>
 
@@ -46,7 +45,6 @@ void command_handler(const char* cmd) {
         if (g_ui) ui_show_status(g_ui, "Fetching peers...");
     }
     else if (strcmp(cmd, "/register") == 0) {
-        if (g_ui) ui_show_status(g_ui, "Registering...");
         if (orcashi_register_identity(g_orcashi)) {
             if (g_ui) ui_show_status(g_ui, "Registered with DHT!");
         } else {
@@ -68,7 +66,6 @@ void command_handler(const char* cmd) {
         }
     }
     else if (strcmp(cmd, "/create") == 0) {
-        if (g_ui) ui_show_status(g_ui, "Creating room...");
         if (orcashi_create_room(g_orcashi, 9000)) {
             if (g_ui) ui_show_status(g_ui, "Room created! Waiting for connection...");
         } else {
@@ -108,7 +105,6 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    // ===== Create ORCASHI =====
     g_orcashi = orcashi_create();
     if (!g_orcashi) {
         fprintf(stderr, "Failed to create ORCASHI!\n");
@@ -123,7 +119,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // ===== Create UI =====
     g_ui = ui_create();
     if (!g_ui) {
         fprintf(stderr, "Failed to create UI!\n");
@@ -135,7 +130,6 @@ int main(int argc, char* argv[]) {
     ui_init(g_ui);
     ui_start(g_ui);
     
-    // ===== Main Loop =====
     while (running) {
         char* input = ui_get_input();
         if (!input) break;
@@ -143,7 +137,6 @@ int main(int argc, char* argv[]) {
         free(input);
     }
     
-    // ===== Cleanup =====
     if (g_ui) {
         ui_stop(g_ui);
         ui_destroy(g_ui);
@@ -155,7 +148,6 @@ int main(int argc, char* argv[]) {
         g_orcashi = NULL;
     }
     
-    printf("%s", COLOR_SHOW);
     printf("\n  %s%sGoodbye!%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
     
     return 0;
