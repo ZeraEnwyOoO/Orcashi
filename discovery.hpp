@@ -1,76 +1,72 @@
- // discovery.hpp - FIXED
-#ifndef DISCOVERY_HPP
-#define DISCOVERY_HPP
+ // discovery.h - UDP Discovery in C
+#ifndef DISCOVERY_H
+#define DISCOVERY_H
 
-#include <string>
-#include <vector>
-#include <map>
-#include <thread>
-#include <atomic>
-#include <mutex>
-#include <functional>
-#include <chrono>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <ifaddrs.h>
+#include <time.h>
+#include <errno.h>
 
-struct PeerInfo {
-    std::string id;
-    std::string endpoint;
-    std::string ip;
+#define DISCOVERY_PORT 9001
+#define MAX_PEERS 256
+#define PEER_TIMEOUT 60  // seconds
+
+typedef struct {
+    char id[64];
+    char endpoint[128];
+    char ip[INET_ADDRSTRLEN];
     int port;
-    std::string name;
-    int64_t last_seen;
+    char name[128];
+    time_t last_seen;
     bool online;
-    std::string public_key;
-};
+    char public_key[256];
+} PeerInfo;
 
-class Discovery {
-public:
-    Discovery();
-    ~Discovery();
+typedef struct {
+    int udp_socket;
+    int port;
+    bool running;
     
-    bool init(int port = 9001);
-    void start();
-    void stop();
+    pthread_t listen_thread;
+    pthread_t broadcast_thread;
+    pthread_mutex_t mutex;
     
-    // Broadcast presence
-    void broadcast_presence(const std::string& id, const std::string& endpoint);
-    void broadcast_search(const std::string& id);
+    PeerInfo peers[MAX_PEERS];
+    int peer_count;
     
-    // Discovery methods
-    std::vector<PeerInfo> discover_peers(int timeout_ms = 3000);
-    bool find_peer(const std::string& id, PeerInfo& out_peer);
-    std::vector<PeerInfo> search_by_name(const std::string& name);
-    
-    // Events
-    using PeerCallback = std::function<void(const PeerInfo&)>;
-    void on_peer_found(PeerCallback callback);
-    void on_peer_offline(PeerCallback callback);
-    
-    // Get discovered peers
-    std::vector<PeerInfo> get_discovered_peers();
-    
-    // <<< PUBLIC: Get local IP >>>
-    std::string get_local_ip();  // ← នៅទីនេះ!
-    
-private:
-    int udp_socket_;
-    int port_;
-    std::atomic<bool> running_;
-    std::thread listen_thread_;
-    std::thread broadcast_thread_;
-    std::vector<PeerInfo> discovered_peers_;
-    std::map<std::string, PeerInfo> peer_map_;
-    std::mutex mtx_;
-    PeerCallback found_callback_;
-    PeerCallback offline_callback_;
-    
-    void listen_loop();
-    void broadcast_loop();
-    void parse_message(const std::string& msg, const std::string& sender_ip);
-    // std::string get_local_ip();  // ← លុបចេញ!
-    void send_udp(const std::string& msg, const std::string& ip, int port);
-    void cleanup_stale_peers();
-    bool is_valid_ip(const std::string& ip);
-};
+    void (*on_peer_found)(PeerInfo* peer);
+    void (*on_peer_offline)(PeerInfo* peer);
+} Discovery;
+
+// Functions
+Discovery* discovery_create(void);
+void discovery_destroy(Discovery* disc);
+
+bool discovery_init(Discovery* disc, int port);
+void discovery_start(Discovery* disc);
+void discovery_stop(Discovery* disc);
+
+void discovery_broadcast_presence(Discovery* disc, const char* id, const char* endpoint);
+void discovery_broadcast_search(Discovery* disc, const char* id);
+
+bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer);
+int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers);
+
+void discovery_cleanup_stale(Discovery* disc);
+
+char* discovery_get_local_ip(void);
+
+// Callbacks
+void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*));
+void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*));
 
 #endif
