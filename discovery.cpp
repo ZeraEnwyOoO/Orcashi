@@ -1,90 +1,124 @@
- // discovery.cpp
-#include "discovery.hpp"
-#include <iostream>
-#include <cstring>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <sys/select.h>   // ← បន្ថែម!
-#include <ifaddrs.h>
-#include <netdb.h>
-#include <sstream>
-#include <chrono>
+ // discovery.c - UDP Discovery Implementation in C
+#include "discovery.h"
 
-using namespace std;
+#define BUFFER_SIZE 4096
+#define BROADCAST_INTERVAL 30
 
-Discovery::Discovery() : udp_socket_(-1), port_(9001), running_(false) {}
+static void* listen_loop(void* arg);
+static void* broadcast_loop(void* arg);
+static void parse_message(Discovery* disc, const char* msg, const char* sender_ip);
+static void send_udp(Discovery* disc, const char* msg, const char* ip, int port);
+static bool is_valid_ip(const char* ip);
 
-Discovery::~Discovery() {
-    stop();
+Discovery* discovery_create(void) {
+    Discovery* disc = (Discovery*)calloc(1, sizeof(Discovery));
+    if (!disc) return NULL;
+    
+    disc->udp_socket = -1;
+    disc->port = DISCOVERY_PORT;
+    disc->running = false;
+    disc->peer_count = 0;
+    
+    pthread_mutex_init(&disc->mutex, NULL);
+    
+    return disc;
 }
 
-bool Discovery::init(int port) {
-    port_ = port;
+void discovery_destroy(Discovery* disc) {
+    if (!disc) return;
     
-    udp_socket_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp_socket_ < 0) {
-        cerr << "[ERROR] Failed to create UDP socket!" << endl;
+    discovery_stop(disc);
+    
+    if (disc->udp_socket >= 0) {
+        close(disc->udp_socket);
+        disc->udp_socket = -1;
+    }
+    
+    pthread_mutex_destroy(&disc->mutex);
+    free(disc);
+}
+
+bool discovery_init(Discovery* disc, int port) {
+    if (!disc) return false;
+    
+    disc->port = port;
+    
+    disc->udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (disc->udp_socket < 0) {
+        fprintf(stderr, "[ERROR] Failed to create UDP socket!\n");
         return false;
     }
     
     int opt = 1;
-    setsockopt(udp_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(disc->udp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port_);
+    addr.sin_port = htons(port);
     
-    if (bind(udp_socket_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        cerr << "[ERROR] Failed to bind UDP socket to port " << port_ << endl;
-        close(udp_socket_);
+    if (bind(disc->udp_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "[ERROR] Failed to bind UDP socket to port %d!\n", port);
+        close(disc->udp_socket);
+        disc->udp_socket = -1;
         return false;
     }
     
-    cout << "\033[32m[ORCA] Discovery initialized on port " << port_ << "\033[0m" << endl;
+    printf("[ORCA] Discovery initialized on port %d\n", port);
     return true;
 }
 
-void Discovery::start() {
-    if (running_) return;
-    running_ = true;
-    listen_thread_ = thread(&Discovery::listen_loop, this);
-    broadcast_thread_ = thread(&Discovery::broadcast_loop, this);
-    cout << "\033[36m[ORCA] Discovery started!\033[0m" << endl;
+void discovery_start(Discovery* disc) {
+    if (!disc || disc->running) return;
+    
+    disc->running = true;
+    pthread_create(&disc->listen_thread, NULL, listen_loop, disc);
+    pthread_create(&disc->broadcast_thread, NULL, broadcast_loop, disc);
+    
+    printf("[ORCA] Discovery started!\n");
 }
 
-void Discovery::stop() {
-    running_ = false;
-    if (listen_thread_.joinable()) listen_thread_.join();
-    if (broadcast_thread_.joinable()) broadcast_thread_.join();
-    if (udp_socket_ >= 0) close(udp_socket_);
-    cout << "\033[33m[ORCA] Discovery stopped.\033[0m" << endl;
+void discovery_stop(Discovery* disc) {
+    if (!disc || !disc->running) return;
+    
+    disc->running = false;
+    
+    if (disc->listen_thread) {
+        pthread_join(disc->listen_thread, NULL);
+        disc->listen_thread = 0;
+    }
+    if (disc->broadcast_thread) {
+        pthread_join(disc->broadcast_thread, NULL);
+        disc->broadcast_thread = 0;
+    }
+    
+    printf("[ORCA] Discovery stopped.\n");
 }
 
-void Discovery::listen_loop() {
-    char buffer[4096];
+static void* listen_loop(void* arg) {
+    Discovery* disc = (Discovery*)arg;
+    char buffer[BUFFER_SIZE];
     struct sockaddr_in sender_addr;
     socklen_t addr_len = sizeof(sender_addr);
+    fd_set fds;
+    struct timeval tv;
     
-    while (running_) {
-        fd_set fds;
+    while (disc->running) {
         FD_ZERO(&fds);
-        FD_SET(udp_socket_, &fds);
+        FD_SET(disc->udp_socket, &fds);
         
-        struct timeval tv;
         tv.tv_sec = 1;
         tv.tv_usec = 0;
         
-        int ret = select(udp_socket_ + 1, &fds, NULL, NULL, &tv);
+        int ret = select(disc->udp_socket + 1, &fds, NULL, NULL, &tv);
         if (ret < 0) break;
         if (ret == 0) {
-            cleanup_stale_peers();
+            discovery_cleanup_stale(disc);
             continue;
         }
         
-        int n = recvfrom(udp_socket_, buffer, sizeof(buffer) - 1, 0,
+        int n = recvfrom(disc->udp_socket, buffer, sizeof(buffer) - 1, 0,
                         (struct sockaddr*)&sender_addr, &addr_len);
         if (n <= 0) continue;
         
@@ -92,155 +126,200 @@ void Discovery::listen_loop() {
         char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &sender_addr.sin_addr, ip, sizeof(ip));
         
-        parse_message(string(buffer), string(ip));
+        parse_message(disc, buffer, ip);
     }
+    
+    return NULL;
 }
 
-void Discovery::broadcast_loop() {
-    while (running_) {
-        this_thread::sleep_for(chrono::seconds(30));
-        cleanup_stale_peers();
+static void* broadcast_loop(void* arg) {
+    Discovery* disc = (Discovery*)arg;
+    
+    while (disc->running) {
+        sleep(BROADCAST_INTERVAL);
+        discovery_cleanup_stale(disc);
     }
+    
+    return NULL;
 }
 
-void Discovery::broadcast_presence(const string& id, const string& endpoint) {
-    string msg = "ORCA_PRESENCE:" + id + ":" + endpoint;
+void discovery_broadcast_presence(Discovery* disc, const char* id, const char* endpoint) {
+    if (!disc) return;
+    
+    char msg[512];
+    snprintf(msg, sizeof(msg), "ORCA_PRESENCE:%s:%s", id, endpoint);
     
     struct sockaddr_in broadcast_addr;
     memset(&broadcast_addr, 0, sizeof(broadcast_addr));
     broadcast_addr.sin_family = AF_INET;
     broadcast_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
-    broadcast_addr.sin_port = htons(port_);
+    broadcast_addr.sin_port = htons(disc->port);
     
     int broadcast = 1;
-    setsockopt(udp_socket_, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+    setsockopt(disc->udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
     
-    sendto(udp_socket_, msg.c_str(), msg.length(), 0,
+    sendto(disc->udp_socket, msg, strlen(msg), 0,
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
     
-    cout << "\033[36m[ORCA] Broadcasted presence: " << id << " at " << endpoint << "\033[0m" << endl;
+    printf("[ORCA] Broadcasted presence: %s at %s\n", id, endpoint);
 }
 
-void Discovery::broadcast_search(const string& id) {
-    string msg = "ORCA_SEARCH:" + id;
+void discovery_broadcast_search(Discovery* disc, const char* id) {
+    if (!disc) return;
+    
+    char msg[512];
+    snprintf(msg, sizeof(msg), "ORCA_SEARCH:%s", id);
     
     struct sockaddr_in broadcast_addr;
     memset(&broadcast_addr, 0, sizeof(broadcast_addr));
     broadcast_addr.sin_family = AF_INET;
     broadcast_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
-    broadcast_addr.sin_port = htons(port_);
+    broadcast_addr.sin_port = htons(disc->port);
     
     int broadcast = 1;
-    setsockopt(udp_socket_, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+    setsockopt(disc->udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
     
-    sendto(udp_socket_, msg.c_str(), msg.length(), 0,
+    sendto(disc->udp_socket, msg, strlen(msg), 0,
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
     
-    cout << "\033[36m[ORCA] Searching for: " << id << "\033[0m" << endl;
+    printf("[ORCA] Searching for: %s\n", id);
 }
 
-void Discovery::parse_message(const string& msg, const string& sender_ip) {
-    if (msg.find("ORCA_PRESENCE:") == 0) {
-        string rest = msg.substr(15);
-        size_t colon = rest.find(':');
-        if (colon != string::npos) {
-            string id = rest.substr(0, colon);
-            string endpoint = rest.substr(colon + 1);
+static void parse_message(Discovery* disc, const char* msg, const char* sender_ip) {
+    if (strncmp(msg, "ORCA_PRESENCE:", 14) == 0) {
+        const char* rest = msg + 14;
+        char* colon = strchr(rest, ':');
+        if (colon) {
+            char id[64];
+            char endpoint[128];
+            int id_len = colon - rest;
+            strncpy(id, rest, id_len);
+            id[id_len] = '\0';
+            strcpy(endpoint, colon + 1);
             
-            PeerInfo peer;
-            peer.id = id;
-            peer.endpoint = endpoint;
-            peer.ip = sender_ip;
-            peer.last_seen = chrono::duration_cast<chrono::seconds>(
-                chrono::system_clock::now().time_since_epoch()).count();
-            peer.online = true;
+            pthread_mutex_lock(&disc->mutex);
             
-            size_t port_colon = endpoint.find(':');
-            if (port_colon != string::npos) {
-                peer.port = stoi(endpoint.substr(port_colon + 1));
-            } else {
-                peer.port = 9000;
-            }
-            
-            lock_guard<mutex> lock(mtx_);
-            peer_map_[id] = peer;
-            
-            bool exists = false;
-            for (auto& p : discovered_peers_) {
-                if (p.id == id) {
-                    p = peer;
-                    exists = true;
+            // Check if peer exists
+            int found = -1;
+            for (int i = 0; i < disc->peer_count; i++) {
+                if (strcmp(disc->peers[i].id, id) == 0) {
+                    found = i;
                     break;
                 }
             }
-            if (!exists) {
-                discovered_peers_.push_back(peer);
+            
+            if (found == -1 && disc->peer_count < MAX_PEERS) {
+                found = disc->peer_count++;
             }
             
-            if (found_callback_) {
-                found_callback_(peer);
+            if (found >= 0) {
+                PeerInfo* peer = &disc->peers[found];
+                strcpy(peer->id, id);
+                strcpy(peer->endpoint, endpoint);
+                strcpy(peer->ip, sender_ip);
+                peer->last_seen = time(NULL);
+                peer->online = true;
+                
+                // Parse port from endpoint
+                char* port_colon = strchr(endpoint, ':');
+                if (port_colon) {
+                    peer->port = atoi(port_colon + 1);
+                } else {
+                    peer->port = 9000;
+                }
+                
+                if (disc->on_peer_found) {
+                    disc->on_peer_found(peer);
+                }
+                
+                printf("[ORCA] Found peer: %s at %s\n", id, endpoint);
             }
             
-            cout << "\033[32m[ORCA] Found peer: " << id << " at " << endpoint << "\033[0m" << endl;
+            pthread_mutex_unlock(&disc->mutex);
         }
     }
 }
 
-bool Discovery::find_peer(const string& id, PeerInfo& out_peer) {
-    lock_guard<mutex> lock(mtx_);
-    auto it = peer_map_.find(id);
-    if (it != peer_map_.end() && it->second.online) {
-        out_peer = it->second;
-        return true;
+bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
+    if (!disc || !out_peer) return false;
+    
+    pthread_mutex_lock(&disc->mutex);
+    
+    for (int i = 0; i < disc->peer_count; i++) {
+        if (strcmp(disc->peers[i].id, id) == 0 && disc->peers[i].online) {
+            *out_peer = disc->peers[i];
+            pthread_mutex_unlock(&disc->mutex);
+            return true;
+        }
     }
+    
+    pthread_mutex_unlock(&disc->mutex);
     return false;
 }
 
-vector<PeerInfo> Discovery::get_discovered_peers() {
-    lock_guard<mutex> lock(mtx_);
-    return discovered_peers_;
+int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers) {
+    if (!disc || !peers) return 0;
+    
+    pthread_mutex_lock(&disc->mutex);
+    
+    int count = 0;
+    for (int i = 0; i < disc->peer_count && count < max_peers; i++) {
+        if (disc->peers[i].online) {
+            peers[count++] = disc->peers[i];
+        }
+    }
+    
+    pthread_mutex_unlock(&disc->mutex);
+    return count;
 }
 
-void Discovery::cleanup_stale_peers() {
-    int64_t now = chrono::duration_cast<chrono::seconds>(
-        chrono::system_clock::now().time_since_epoch()).count();
+void discovery_cleanup_stale(Discovery* disc) {
+    if (!disc) return;
     
-    lock_guard<mutex> lock(mtx_);
-    for (auto& pair : peer_map_) {
-        if (now - pair.second.last_seen > 60) {
-            pair.second.online = false;
-            if (offline_callback_) {
-                offline_callback_(pair.second);
+    time_t now = time(NULL);
+    
+    pthread_mutex_lock(&disc->mutex);
+    
+    for (int i = 0; i < disc->peer_count; i++) {
+        if (now - disc->peers[i].last_seen > PEER_TIMEOUT) {
+            disc->peers[i].online = false;
+            if (disc->on_peer_offline) {
+                disc->on_peer_offline(&disc->peers[i]);
             }
         }
     }
+    
+    pthread_mutex_unlock(&disc->mutex);
 }
 
-string Discovery::get_local_ip() {
+char* discovery_get_local_ip(void) {
+    static char ip[INET_ADDRSTRLEN];
     struct ifaddrs* ifaddr;
-    if (getifaddrs(&ifaddr) == -1) return "127.0.0.1";
+    
+    if (getifaddrs(&ifaddr) == -1) {
+        strcpy(ip, "127.0.0.1");
+        return ip;
+    }
     
     for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr == NULL) continue;
-        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
         if (strcmp(ifa->ifa_name, "lo") == 0) continue;
         
         struct sockaddr_in* addr = (struct sockaddr_in*)ifa->ifa_addr;
-        char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
-        
         freeifaddrs(ifaddr);
-        return string(ip);
+        return ip;
     }
     
     freeifaddrs(ifaddr);
-    return "127.0.0.1";
+    strcpy(ip, "127.0.0.1");
+    return ip;
 }
 
-void Discovery::on_peer_found(PeerCallback callback) {
-    found_callback_ = callback;
+void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*)) {
+    if (disc) disc->on_peer_found = callback;
 }
 
-void Discovery::on_peer_offline(PeerCallback callback) {
-    offline_callback_ = callback;
+void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*)) {
+    if (disc) disc->on_peer_offline = callback;
 }
