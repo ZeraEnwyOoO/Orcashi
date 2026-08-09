@@ -1,197 +1,159 @@
- // main.c - ORCASHI Main Program in C
+ // main.c - ORCASHI with UI (Separation of Concerns)
 #include "orcashi.h"
-#include <pthread.h>
+#include "ui.h"
 #include <signal.h>
 
+static ORCASHI* g_orcashi = NULL;
+static UI* g_ui = NULL;
 static volatile int running = 1;
 
+// ===== Signal Handler =====
 void signal_handler(int sig) {
-    printf("\n[ORCA] Shutting down...\n");
+    printf("\n");
     running = 0;
+    if (g_orcashi) {
+        orcashi_disconnect(g_orcashi);
+    }
+    if (g_ui) {
+        ui_stop(g_ui);
+    }
 }
 
-static void* chat_thread(void* arg) {
-    ORCASHI* orcashi = (ORCASHI*)arg;
-    char msg[MAX_MSG_LEN];
+// ===== ORCASHI Callbacks (UI gets data from ORCASHI) =====
+void on_peer_found(const char* id, const char* ip) {
+    if (g_ui) {
+        ui_show_peer(id, ip, true);
+    }
+}
+
+void on_message_received(const char* from, const char* msg) {
+    if (g_ui) {
+        char buffer[512];
+        snprintf(buffer, sizeof(buffer), "[%s] %s", from, msg);
+        ui_show_message("MESSAGE", buffer);
+    }
+}
+
+void on_status_change(const char* status) {
+    if (g_ui) {
+        ui_show_status(status);
+    }
+}
+
+// ===== Command Handler (UI -> ORCASHI) =====
+void command_handler(const char* cmd) {
+    if (!cmd || !g_orcashi) return;
     
-    while (running && orcashi_is_connected(orcashi)) {
-        if (orcashi_receive_message(orcashi, msg, sizeof(msg), 100)) {
-            printf("\r\033[K  [%s] %s\n", orcashi_get_peer_id(orcashi), msg);
-            printf("  > ");
-            fflush(stdout);
+    if (strcmp(cmd, "/exit") == 0 || strcmp(cmd, "/quit") == 0) {
+        running = 0;
+        orcashi_disconnect(g_orcashi);
+        if (g_ui) ui_stop(g_ui);
+    }
+    else if (strcmp(cmd, "/help") == 0) {
+        if (g_ui) ui_show_help();
+    }
+    else if (strcmp(cmd, "/peers") == 0) {
+        // ORCASHI handles peers
+        // UI just displays via callback
+        ui_show_status("Fetching peers...");
+    }
+    else if (strcmp(cmd, "/register") == 0) {
+        if (orcashi_register_identity(g_orcashi)) {
+            if (g_ui) ui_show_status("Registered with DHT!");
+        } else {
+            if (g_ui) ui_show_message("ERROR", "Registration failed!");
         }
     }
-    
-    return NULL;
+    else if (strcmp(cmd, "/connect") == 0) {
+        if (g_ui) {
+            ui_show_message("INFO", "Enter peer ID: ");
+            char* id = ui_get_input();
+            if (id && strlen(id) > 0) {
+                if (orcashi_connect_peer(g_orcashi, id)) {
+                    ui_show_status("Connected!");
+                } else {
+                    ui_show_message("ERROR", "Connection failed!");
+                }
+            }
+            free(id);
+        }
+    }
+    else if (strlen(cmd) > 0 && cmd[0] == '/') {
+        if (g_ui) ui_show_message("ERROR", "Unknown command!");
+    }
+    else if (strlen(cmd) > 0) {
+        // Send message via ORCASHI
+        if (orcashi_is_connected(g_orcashi)) {
+            orcashi_send_message(g_orcashi, cmd);
+        } else {
+            if (g_ui) ui_show_message("WARNING", "Not connected!");
+        }
+    }
 }
 
+// ===== Main =====
 int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
     
-    ORCASHI* orcashi = orcashi_create();
-    if (!orcashi) {
-        fprintf(stderr, "[ERROR] Failed to create ORCASHI!\n");
+    // ===== Create ORCASHI (Application Layer) =====
+    g_orcashi = orcashi_create();
+    if (!g_orcashi) {
+        fprintf(stderr, "Failed to create ORCASHI!\n");
         return 1;
     }
     
-    orcashi_init(orcashi);
+    // Set callbacks
+    orcashi_set_callbacks(g_orcashi, on_peer_found, on_message_received, on_status_change);
     
-    if (argc < 2) {
-        // Interactive mode
-        printf("\n");
-        printf("  +------------------------------------------+\n");
-        printf("  |           ORCASHI v1.0                  |\n");
-        printf("  |           Your ID: %s                  |\n", orcashi_get_my_id(orcashi));
-        printf("  +------------------------------------------+\n");
-        printf("\n");
-        printf("  Commands: /help, /register, /connect, /peers, /exit\n");
-        printf("\n");
-        
-        char input[256];
-        while (running) {
-            printf("  > ");
-            if (!fgets(input, sizeof(input), stdin)) break;
-            input[strcspn(input, "\n")] = '\0';
-            
-            if (strcmp(input, "/exit") == 0) {
-                break;
-            } else if (strcmp(input, "/help") == 0) {
-                orcashi_show_help();
-            } else if (strcmp(input, "/register") == 0) {
-                orcashi_register_identity(orcashi);
-            } else if (strcmp(input, "/connect") == 0) {
-                printf("  Enter peer ID: ");
-                char id[64];
-                if (fgets(id, sizeof(id), stdin)) {
-                    id[strcspn(id, "\n")] = '\0';
-                    orcashi_connect_peer(orcashi, id);
-                }
-            } else if (strcmp(input, "/peers") == 0) {
-                orcashi_show_peers(orcashi);
-            } else {
-                printf("  Unknown command. Type /help\n");
-            }
-        }
-        
-        orcashi_destroy(orcashi);
-        return 0;
+    // Initialize ORCASHI
+    if (!orcashi_init(g_orcashi)) {
+        fprintf(stderr, "Failed to initialize ORCASHI!\n");
+        orcashi_destroy(g_orcashi);
+        return 1;
     }
     
-    char* cmd = argv[1];
-    
-    if (strcmp(cmd, "register") == 0) {
-        orcashi_register_identity(orcashi);
-    }
-    else if (strcmp(cmd, "connect") == 0 && argc >= 3) {
-        char* id = argv[2];
-        
-        if (orcashi_connect_peer(orcashi, id)) {
-            printf("\n  [ORCA] Connected! Type /help for commands\n\n");
-            
-            pthread_t thread;
-            pthread_create(&thread, NULL, chat_thread, orcashi);
-            
-            char input[MAX_MSG_LEN];
-            while (running && orcashi_is_connected(orcashi)) {
-                printf("  > ");
-                fflush(stdout);
-                if (!fgets(input, sizeof(input), stdin)) break;
-                input[strcspn(input, "\n")] = '\0';
-                
-                if (strcmp(input, "/exit") == 0) {
-                    break;
-                } else if (strcmp(input, "/help") == 0) {
-                    orcashi_show_help();
-                } else if (strcmp(input, "/status") == 0) {
-                    printf("  Connected to: %s\n", orcashi_get_peer_id(orcashi));
-                    printf("  IP: %s\n", orcashi_get_peer_ip(orcashi));
-                } else if (strlen(input) > 0) {
-                    orcashi_send_message(orcashi, input);
-                }
-            }
-            
-            running = 0;
-            pthread_join(thread, NULL);
-            orcashi_disconnect(orcashi);
-        }
-    }
-    else if (strcmp(cmd, "create") == 0) {
-        printf("\n  [ORCA] Creating room...\n");
-        if (orcashi_create_room(orcashi, 9000)) {
-            printf("  [ORCA] Waiting for connection...\n");
-            printf("  [ORCA] Your ID: %s\n\n", orcashi_get_my_id(orcashi));
-            
-            while (!orcashi_is_connected(orcashi)) {
-                usleep(100000);
-            }
-            
-            printf("  [ORCA] Connected! Type /help for commands\n\n");
-            
-            pthread_t thread;
-            pthread_create(&thread, NULL, chat_thread, orcashi);
-            
-            char input[MAX_MSG_LEN];
-            while (running && orcashi_is_connected(orcashi)) {
-                printf("  > ");
-                fflush(stdout);
-                if (!fgets(input, sizeof(input), stdin)) break;
-                input[strcspn(input, "\n")] = '\0';
-                
-                if (strcmp(input, "/exit") == 0) {
-                    break;
-                } else if (strcmp(input, "/help") == 0) {
-                    orcashi_show_help();
-                } else if (strlen(input) > 0) {
-                    orcashi_send_message(orcashi, input);
-                }
-            }
-            
-            running = 0;
-            pthread_join(thread, NULL);
-            orcashi_disconnect(orcashi);
-        }
-    }
-    else if (strcmp(cmd, "join") == 0 && argc >= 3) {
-        char* ip = argv[2];
-        printf("\n  [ORCA] Joining %s...\n", ip);
-        
-        if (orcashi_join_room(orcashi, ip, 9000)) {
-            printf("  [ORCA] Connected! Type /help for commands\n\n");
-            
-            pthread_t thread;
-            pthread_create(&thread, NULL, chat_thread, orcashi);
-            
-            char input[MAX_MSG_LEN];
-            while (running && orcashi_is_connected(orcashi)) {
-                printf("  > ");
-                fflush(stdout);
-                if (!fgets(input, sizeof(input), stdin)) break;
-                input[strcspn(input, "\n")] = '\0';
-                
-                if (strcmp(input, "/exit") == 0) {
-                    break;
-                } else if (strcmp(input, "/help") == 0) {
-                    orcashi_show_help();
-                } else if (strlen(input) > 0) {
-                    orcashi_send_message(orcashi, input);
-                }
-            }
-            
-            running = 0;
-            pthread_join(thread, NULL);
-            orcashi_disconnect(orcashi);
-        }
-    }
-    else {
-        printf("\n  Unknown command: %s\n", cmd);
-        printf("  Usage:\n");
-        printf("    ./orcashi create      - Create room\n");
-        printf("    ./orcashi join <ip>   - Join by IP\n");
-        printf("    ./orcashi register    - Register ID\n");
-        printf("    ./orcashi connect <id> - Connect by ID\n");
-        printf("\n");
+    // ===== Create UI (Presentation Layer) =====
+    g_ui = ui_create();
+    if (!g_ui) {
+        fprintf(stderr, "Failed to create UI!\n");
+        orcashi_destroy(g_orcashi);
+        return 1;
     }
     
-    orcashi_destroy(orcashi);
+    // Set callback (UI -> ORCASHI)
+    ui_set_command_callback(g_ui, command_handler);
+    
+    // Initialize and start UI
+    ui_init(g_ui);
+    ui_start(g_ui);
+    
+    // ===== Main Loop =====
+    while (running) {
+        char* input = ui_get_input();
+        if (!input) break;
+        
+        if (strlen(input) > 0) {
+            command_handler(input);
+        }
+        free(input);
+    }
+    
+    // ===== Cleanup =====
+    if (g_ui) {
+        ui_stop(g_ui);
+        ui_destroy(g_ui);
+        g_ui = NULL;
+    }
+    
+    if (g_orcashi) {
+        orcashi_disconnect(g_orcashi);
+        orcashi_destroy(g_orcashi);
+        g_orcashi = NULL;
+    }
+    
+    printf("%s", COLOR_SHOW);
+    printf("\n  %s%sGoodbye!%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+    
     return 0;
 }
