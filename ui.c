@@ -111,7 +111,7 @@ void ui_next_slogan(UI* ui) {
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char* current_text = NULL;
-    int line = 12;  // Glitch at line 12 (below banner)
+    int line = 3;  // Glitch at line 3 (top area)
     
     while (ui->running) {
         if (ui->glitch_paused) {
@@ -253,7 +253,7 @@ void ui_init(UI* ui) {
     printf("%s", COLOR_HIDE);
     fflush(stdout);
     ui_show_banner();
-    ui_show_prompt(ui);
+    // មិនហៅ ui_show_prompt() - ទុកឱ្យ Fish Shell!
 }
 
 void ui_start(UI* ui) {
@@ -288,29 +288,22 @@ void ui_show_banner(void) {
         "",  // line 10
         "",  // line 11
         "",  // line 12 - Glitch
-        "",  // line 13
-        "",  // line 14
-        "  Commands: /help, /peers, /register, /exit",  // line 15
-        "  > "  // line 16
+        "",
+        "",
+        ""
     };
     printf("%s", COLOR_CLEAR);
     fflush(stdout);
-    for (int i = 0; i < 17; i++) {
+    for (int i = 0; i < 16; i++) {
         printf("%s%s%s\n", COLOR_BOLD, COLOR_CYAN, banner[i]);
     }
     printf("%s", COLOR_RESET);
     fflush(stdout);
 }
 
+// ★ មិនប្រើ Prompt - ទុកឱ្យ Fish Shell!
 void ui_show_prompt(UI* ui) {
-    if (!ui) return;
-    pthread_mutex_lock(&ui->stdout_mutex);
-    printf("\033[15;0H");  // Prompt at line 15
-    printf("  %s%sCommands: /help, /peers, /register, /exit%s\n", 
-           COLOR_BOLD, COLOR_YELLOW, COLOR_RESET);
-    printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    fflush(stdout);
-    pthread_mutex_unlock(&ui->stdout_mutex);
+    (void)ui;  // មិនធ្វើអ្វីទាំងអស់!
 }
 
 void ui_show_message(UI* ui, const char* level, const char* msg) {
@@ -326,7 +319,6 @@ void ui_show_message(UI* ui, const char* level, const char* msg) {
     pthread_mutex_lock(&ui->stdout_mutex);
     printf("\n\033[K  %s%s[%s] %s%s%s\n", 
            COLOR_BOLD, color, level, COLOR_RESET, msg, COLOR_RESET);
-    printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
     fflush(stdout);
     pthread_mutex_unlock(&ui->stdout_mutex);
     
@@ -342,7 +334,6 @@ void ui_show_status(UI* ui, const char* status) {
     pthread_mutex_lock(&ui->stdout_mutex);
     printf("\n\033[K  %s%s✓ %s%s\n", 
            COLOR_BOLD, COLOR_GREEN, status, COLOR_RESET);
-    printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
     fflush(stdout);
     pthread_mutex_unlock(&ui->stdout_mutex);
     
@@ -362,7 +353,6 @@ void ui_show_peer(UI* ui, const char* id, const char* ip, bool online) {
     printf("\n\033[K  %s%s%s%s - %s %s%s\n",
            COLOR_BOLD, color, id, COLOR_RESET,
            ip, COLOR_BOLD, status);
-    printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
     fflush(stdout);
     pthread_mutex_unlock(&ui->stdout_mutex);
     
@@ -384,7 +374,7 @@ void ui_show_help(UI* ui) {
     printf("  %s  /create   - Create room%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /join     - Join room by IP%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /exit     - Exit program%s\n", COLOR_BOLD, COLOR_RESET);
-    printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+    printf("  %s\n", COLOR_RESET);
     fflush(stdout);
     pthread_mutex_unlock(&ui->stdout_mutex);
     
