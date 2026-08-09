@@ -1,6 +1,7 @@
  #include "orcashi.h"
 #include "ui.h"
 #include <signal.h>
+#include <stdlib.h>
 
 static ORCASHI* g_orcashi = NULL;
 static UI* g_ui = NULL;
@@ -9,9 +10,20 @@ static volatile int running = 1;
 void signal_handler(int sig) {
     (void)sig;
     printf("\n");
+    printf("  Shutting down...\n");
     running = 0;
-    if (g_orcashi) orcashi_disconnect(g_orcashi);
-    if (g_ui) ui_stop(g_ui);
+    
+    // Disconnect everything
+    if (g_orcashi) {
+        orcashi_disconnect(g_orcashi);
+    }
+    if (g_ui) {
+        ui_stop(g_ui);
+    }
+    
+    // Force exit after 1 second
+    sleep(1);
+    exit(0);
 }
 
 void on_peer_found(const char* id, const char* ip) {
@@ -34,9 +46,11 @@ void command_handler(const char* cmd) {
     if (!cmd || !g_orcashi) return;
     
     if (strcmp(cmd, "/exit") == 0 || strcmp(cmd, "/quit") == 0) {
+        printf("\n  Goodbye!\n");
         running = 0;
-        orcashi_disconnect(g_orcashi);
+        if (g_orcashi) orcashi_disconnect(g_orcashi);
         if (g_ui) ui_stop(g_ui);
+        exit(0);
         return;
     }
     else if (strcmp(cmd, "/help") == 0) {
@@ -173,6 +187,7 @@ void show_info_screen(void) {
     printf("    /status   - Show status\n");
     printf("    /exit     - Exit program\n");
     printf("\n");
+    printf("  Press Ctrl+C to exit anytime\n");
     fflush(stdout);
 }
 
