@@ -1,24 +1,62 @@
- CXX = g++
-CXXFLAGS = -std=c++17 -pthread -g -O0
-TARGET = orcashi
+ # Makefile for ORCASHI DHT
+CXX = g++
+CC = gcc
+CXXFLAGS = -std=c++17 -Wall -O2 -pthread
+CFLAGS = -std=c99 -Wall -O2 -pthread
+LDFLAGS = -lssl -lcrypto -lpthread -lstdc++
 
-SOURCES = \
-    plug.cpp \
-    orcashi.cpp \
-    discovery.cpp \
-    endpoint.cpp \
-    peer_cache.cpp \
-    registry.cpp \
-    request.cpp \
-    dht_libtorrent.cpp \
-    main.cpp
+# Target executable
+TARGET = orcashi_dht
 
+# Source files
+C_SOURCES = dht.c dht_impl.c
+CPP_SOURCES = dht_wrapper.cpp main.cpp
+
+# Object files
+C_OBJECTS = $(C_SOURCES:.c=.o)
+CPP_OBJECTS = $(CPP_SOURCES:.cpp=.o)
+OBJECTS = $(C_OBJECTS) $(CPP_OBJECTS)
+
+# Default target
 all: $(TARGET)
 
-$(TARGET): $(SOURCES)
-	$(CXX) -o $(TARGET) $(SOURCES) $(CXXFLAGS) -lssl -lcrypto -ltorrent-rasterbar -DTORRENT_USE_OPENSSL
+# Link
+$(TARGET): $(OBJECTS)
+	$(CXX) -o $@ $^ $(LDFLAGS)
 
+# Compile C files
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Compile C++ files
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Clean
 clean:
-	rm -f $(TARGET) *.o
+	rm -f $(OBJECTS) $(TARGET) *.log
 
-.PHONY: all clean
+# Run with debug
+run: $(TARGET)
+	./$(TARGET)
+
+# Run with valgrind (memory check)
+valgrind: $(TARGET)
+	valgrind --leak-check=full ./$(TARGET)
+
+# Debug build
+debug: CXXFLAGS += -DDEBUG -g
+debug: CFLAGS += -DDEBUG -g
+debug: $(TARGET)
+
+# Install dependencies (Ubuntu/Debian)
+install-deps:
+	sudo apt-get update
+	sudo apt-get install -y g++ gcc make libssl-dev
+
+# Install dependencies (Alpine/iSH)
+install-deps-alpine:
+	apk update
+	apk add g++ gcc make openssl-dev libc-dev
+
+.PHONY: all clean run valgrind debug install-deps install-deps-alpine
