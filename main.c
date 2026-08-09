@@ -37,6 +37,7 @@ void command_handler(const char* cmd) {
         running = 0;
         orcashi_disconnect(g_orcashi);
         if (g_ui) ui_stop(g_ui);
+        return;
     }
     else if (strcmp(cmd, "/help") == 0) {
         if (g_ui) ui_show_help(g_ui);
@@ -199,7 +200,6 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    // ===== Non-interactive mode =====
     if (argc > 1) {
         g_orcashi = orcashi_create();
         if (!g_orcashi) {
@@ -358,7 +358,9 @@ int main(int argc, char* argv[]) {
     while (running) {
         char* input = ui_get_input();
         if (!input) break;
-        if (strlen(input) > 0) command_handler(input);
+        if (strlen(input) > 0) {
+            command_handler(input);
+        }
         free(input);
         if (running) {
             printf("  > ");
