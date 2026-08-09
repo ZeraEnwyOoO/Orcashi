@@ -31,8 +31,8 @@ typedef struct {
     pthread_mutex_t mutex;
     
     // ★ បន្ថែមពីរនេះ!
-    pthread_mutex_t stdout_mutex;   // ការពារ stdout
-    bool glitch_paused;             // បញ្ឈប់ glitch បណ្តោះអាសន្ន
+    pthread_mutex_t stdout_mutex;
+    bool glitch_paused;
     
     char* current_slogan;
     char** slogans;
@@ -43,7 +43,6 @@ typedef struct {
     void (*on_message)(const char* msg);
 } UI;
 
-// Functions
 UI* ui_create(void);
 void ui_destroy(UI* ui);
 
@@ -51,12 +50,13 @@ void ui_init(UI* ui);
 void ui_start(UI* ui);
 void ui_stop(UI* ui);
 
+// ★ បន្ថែម UI* ui ទៅ functions ទាំងអស់!
 void ui_show_banner(void);
-void ui_show_prompt(void);
-void ui_show_message(const char* level, const char* msg);
-void ui_show_status(const char* status);
-void ui_show_peer(const char* id, const char* ip, bool online);
-void ui_show_help(void);
+void ui_show_prompt(UI* ui);
+void ui_show_message(UI* ui, const char* level, const char* msg);
+void ui_show_status(UI* ui, const char* status);
+void ui_show_peer(UI* ui, const char* id, const char* ip, bool online);
+void ui_show_help(UI* ui);
 
 void ui_glitch_text(const char* text, int intensity, int delay_ms);
 void ui_type_text(const char* text, int delay_ms);
