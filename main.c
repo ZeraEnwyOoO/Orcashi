@@ -1,7 +1,6 @@
  #include "orcashi.h"
 #include "ui.h"
 #include <signal.h>
-#include <getopt.h>
 
 static ORCASHI* g_orcashi = NULL;
 static UI* g_ui = NULL;
@@ -40,19 +39,7 @@ void command_handler(const char* cmd) {
         if (g_ui) ui_stop(g_ui);
     }
     else if (strcmp(cmd, "/help") == 0) {
-        printf("\n");
-        printf("  ORCASHI Commands:\n");
-        printf("    /help     - Show this help\n");
-        printf("    /peers    - List connected peers\n");
-        printf("    /register - Register with DHT\n");
-        printf("    /connect  - Connect to peer by ID\n");
-        printf("    /search   - Search peer in DHT\n");
-        printf("    /create   - Create room\n");
-        printf("    /join     - Join room by IP or ID\n");
-        printf("    /status   - Show status\n");
-        printf("    /exit     - Exit program\n");
-        printf("\n");
-        fflush(stdout);
+        if (g_ui) ui_show_help(g_ui);
     }
     else if (strcmp(cmd, "/peers") == 0) {
         orcashi_show_peers(g_orcashi);
@@ -125,8 +112,7 @@ void command_handler(const char* cmd) {
         }
     }
     else if (strcmp(cmd, "/status") == 0) {
-        printf("\n");
-        printf("  Status:\n");
+        printf("\n  Status:\n");
         printf("    ID: %s\n", orcashi_get_my_id(g_orcashi));
         printf("    Connected: %s\n", orcashi_is_connected(g_orcashi) ? "Yes" : "No");
         printf("    Registered: %s\n", g_orcashi->registered ? "Yes" : "No");
@@ -137,7 +123,6 @@ void command_handler(const char* cmd) {
             printf("    Peer IP: %s\n", orcashi_get_peer_ip(g_orcashi));
         }
         printf("\n");
-        fflush(stdout);
     }
     else if (strlen(cmd) > 0 && cmd[0] == '/') {
         if (g_ui) ui_show_message(g_ui, "ERROR", "Unknown command! Type /help");
@@ -167,7 +152,7 @@ void show_info_screen(void) {
     printf("  No Servers, No Tracking, No Censorship\n");
     printf("\n");
     printf("  Usage:\n");
-    printf("    ./orcashi              - Interactive mode with glitch animation\n");
+    printf("    ./orcashi              - Interactive mode\n");
     printf("    ./orcashi help         - Show help\n");
     printf("    ./orcashi register     - Register identity with DHT\n");
     printf("    ./orcashi peers        - List all saved peers\n");
@@ -186,39 +171,6 @@ void show_info_screen(void) {
     printf("    /join     - Join room by IP or ID\n");
     printf("    /status   - Show status\n");
     printf("    /exit     - Exit program\n");
-    printf("\n");
-    printf("  Press Ctrl+C to exit anytime\n");
-    printf("\n");
-    fflush(stdout);
-}
-
-void show_help(void) {
-    printf("\n");
-    printf("  ORCASHI v3.1 - Help\n");
-    printf("  ================================\n");
-    printf("\n");
-    printf("  Commands:\n");
-    printf("    ./orcashi              - Interactive mode with glitch animation\n");
-    printf("    ./orcashi help         - Show help\n");
-    printf("    ./orcashi register     - Register identity with DHT\n");
-    printf("    ./orcashi peers        - List all saved peers\n");
-    printf("    ./orcashi connect <id> - Connect to peer by ID\n");
-    printf("    ./orcashi search <id>  - Search peer in DHT\n");
-    printf("    ./orcashi create       - Create a room (server)\n");
-    printf("    ./orcashi join <id/ip> - Join room by ID or IP\n");
-    printf("\n");
-    printf("  Interactive Commands:\n");
-    printf("    /help     - Show commands\n");
-    printf("    /peers    - List connected peers\n");
-    printf("    /register - Register with DHT\n");
-    printf("    /connect  - Connect to peer by ID\n");
-    printf("    /search   - Search peer in DHT\n");
-    printf("    /create   - Create room\n");
-    printf("    /join     - Join room by IP or ID\n");
-    printf("    /status   - Show status\n");
-    printf("    /exit     - Exit program\n");
-    printf("\n");
-    printf("  Press Ctrl+C to exit anytime\n");
     printf("\n");
     fflush(stdout);
 }
@@ -243,13 +195,13 @@ int main(int argc, char* argv[]) {
         char* cmd = argv[1];
         
         if (strcmp(cmd, "help") == 0) {
-            show_help();
+            show_info_screen();
             orcashi_destroy(g_orcashi);
             return 0;
         }
         else if (strcmp(cmd, "register") == 0) {
             if (orcashi_register_identity(g_orcashi)) {
-                printf("  [SUCCESS] Registered successfully!\n");
+                printf("  [SUCCESS] Registered!\n");
                 printf("  ID: %s\n", orcashi_get_my_id(g_orcashi));
                 printf("  IP: %s\n", orcashi_get_local_ip());
             } else {
@@ -259,14 +211,12 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         else if (strcmp(cmd, "peers") == 0) {
-            printf("\n  Saved Peers:\n");
             orcashi_show_peers(g_orcashi);
             orcashi_destroy(g_orcashi);
             return 0;
         }
         else if (strcmp(cmd, "connect") == 0 && argc >= 3) {
             char* id = argv[2];
-            printf("  [ORCA] Connecting to %s...\n", id);
             if (orcashi_connect_peer(g_orcashi, id)) {
                 printf("  [SUCCESS] Connected!\n");
                 g_ui = ui_create();
@@ -274,14 +224,12 @@ int main(int argc, char* argv[]) {
                     ui_set_command_callback(g_ui, command_handler);
                     ui_init(g_ui);
                     ui_start(g_ui);
-                    
                     while (running && orcashi_is_connected(g_orcashi)) {
                         char* input = ui_get_input();
                         if (!input) break;
                         if (strlen(input) > 0) command_handler(input);
                         free(input);
                     }
-                    
                     if (g_ui) {
                         ui_stop(g_ui);
                         ui_destroy(g_ui);
@@ -296,7 +244,6 @@ int main(int argc, char* argv[]) {
         }
         else if (strcmp(cmd, "search") == 0 && argc >= 3) {
             char* id = argv[2];
-            printf("  [DHT] Searching for %s...\n", id);
             char* result = orcashi_dht_lookup(g_orcashi, id);
             if (result) {
                 printf("  [FOUND] %s\n", result);
@@ -308,36 +255,25 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         else if (strcmp(cmd, "create") == 0) {
-            printf("  [ORCA] Creating room on port 9000...\n");
             if (orcashi_create_room(g_orcashi, 9000)) {
                 printf("  [SUCCESS] Room created!\n");
                 printf("  ID: %s\n", orcashi_get_my_id(g_orcashi));
                 printf("  Waiting for connection...\n");
-                
-                while (!orcashi_is_connected(g_orcashi) && running) {
-                    usleep(100000);
-                }
-                
-                if (orcashi_is_connected(g_orcashi)) {
-                    printf("  [SUCCESS] Connected!\n");
-                    g_ui = ui_create();
+                g_ui = ui_create();
+                if (g_ui) {
+                    ui_set_command_callback(g_ui, command_handler);
+                    ui_init(g_ui);
+                    ui_start(g_ui);
+                    while (running) {
+                        char* input = ui_get_input();
+                        if (!input) break;
+                        if (strlen(input) > 0) command_handler(input);
+                        free(input);
+                    }
                     if (g_ui) {
-                        ui_set_command_callback(g_ui, command_handler);
-                        ui_init(g_ui);
-                        ui_start(g_ui);
-                        
-                        while (running && orcashi_is_connected(g_orcashi)) {
-                            char* input = ui_get_input();
-                            if (!input) break;
-                            if (strlen(input) > 0) command_handler(input);
-                            free(input);
-                        }
-                        
-                        if (g_ui) {
-                            ui_stop(g_ui);
-                            ui_destroy(g_ui);
-                            g_ui = NULL;
-                        }
+                        ui_stop(g_ui);
+                        ui_destroy(g_ui);
+                        g_ui = NULL;
                     }
                 }
             } else {
@@ -349,59 +285,27 @@ int main(int argc, char* argv[]) {
         else if (strcmp(cmd, "join") == 0 && argc >= 3) {
             char* target = argv[2];
             int port = (argc >= 4) ? atoi(argv[3]) : 9000;
-            
-            if (strchr(target, '.') != NULL) {
-                printf("  [ORCA] Joining %s:%d...\n", target, port);
-                if (orcashi_join_room(g_orcashi, target, port)) {
-                    printf("  [SUCCESS] Connected!\n");
-                    g_ui = ui_create();
-                    if (g_ui) {
-                        ui_set_command_callback(g_ui, command_handler);
-                        ui_init(g_ui);
-                        ui_start(g_ui);
-                        
-                        while (running && orcashi_is_connected(g_orcashi)) {
-                            char* input = ui_get_input();
-                            if (!input) break;
-                            if (strlen(input) > 0) command_handler(input);
-                            free(input);
-                        }
-                        
-                        if (g_ui) {
-                            ui_stop(g_ui);
-                            ui_destroy(g_ui);
-                            g_ui = NULL;
-                        }
+            if (orcashi_join_room(g_orcashi, target, port)) {
+                printf("  [SUCCESS] Connected!\n");
+                g_ui = ui_create();
+                if (g_ui) {
+                    ui_set_command_callback(g_ui, command_handler);
+                    ui_init(g_ui);
+                    ui_start(g_ui);
+                    while (running && orcashi_is_connected(g_orcashi)) {
+                        char* input = ui_get_input();
+                        if (!input) break;
+                        if (strlen(input) > 0) command_handler(input);
+                        free(input);
                     }
-                } else {
-                    printf("  [ERROR] Connection failed!\n");
+                    if (g_ui) {
+                        ui_stop(g_ui);
+                        ui_destroy(g_ui);
+                        g_ui = NULL;
+                    }
                 }
             } else {
-                printf("  [ORCA] Connecting to %s...\n", target);
-                if (orcashi_connect_peer(g_orcashi, target)) {
-                    printf("  [SUCCESS] Connected!\n");
-                    g_ui = ui_create();
-                    if (g_ui) {
-                        ui_set_command_callback(g_ui, command_handler);
-                        ui_init(g_ui);
-                        ui_start(g_ui);
-                        
-                        while (running && orcashi_is_connected(g_orcashi)) {
-                            char* input = ui_get_input();
-                            if (!input) break;
-                            if (strlen(input) > 0) command_handler(input);
-                            free(input);
-                        }
-                        
-                        if (g_ui) {
-                            ui_stop(g_ui);
-                            ui_destroy(g_ui);
-                            g_ui = NULL;
-                        }
-                    }
-                } else {
-                    printf("  [ERROR] Connection failed!\n");
-                }
+                printf("  [ERROR] Connection failed!\n");
             }
             orcashi_destroy(g_orcashi);
             return 0;
@@ -429,14 +333,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    show_info_screen();
+    
     g_ui = ui_create();
     if (g_ui) {
         ui_set_command_callback(g_ui, command_handler);
         ui_init(g_ui);
         ui_start(g_ui);
     }
-    
-    show_info_screen();
     
     printf("  > ");
     fflush(stdout);
