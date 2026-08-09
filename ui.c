@@ -111,7 +111,7 @@ void ui_next_slogan(UI* ui) {
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char* current_text = NULL;
-    int line = 12;  // Glitch at line 12 (below banner)
+    int line = 12;
     
     while (ui->running) {
         if (ui->glitch_paused) {
@@ -269,7 +269,6 @@ void ui_stop(UI* ui) {
         pthread_join(ui->glitch_thread, NULL);
         ui->glitch_thread = 0;
     }
-    // ★ មិនបង្ហាញ cursor - Fish គ្រប់គ្រង!
     fflush(stdout);
 }
 
@@ -301,7 +300,7 @@ void ui_show_banner(void) {
     fflush(stdout);
 }
 
-// ★ មិនប្រើ - ទុកឱ្យ Fish!
+// ★ មិនប្រើ - ទុកឱ្យ Fish គ្រប់គ្រង!
 void ui_show_prompt(UI* ui) {
     (void)ui;
 }
