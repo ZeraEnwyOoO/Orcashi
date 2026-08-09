@@ -1,4 +1,4 @@
- // main.c - ORCASHI with UI (Separation of Concerns)
+ // main.c - បន្ថែមការពិនិត្យ g_ui
 #include "orcashi.h"
 #include "ui.h"
 #include <signal.h>
@@ -7,24 +7,16 @@ static ORCASHI* g_orcashi = NULL;
 static UI* g_ui = NULL;
 static volatile int running = 1;
 
-// ===== Signal Handler =====
 void signal_handler(int sig) {
     (void)sig;
     printf("\n");
     running = 0;
-    if (g_orcashi) {
-        orcashi_disconnect(g_orcashi);
-    }
-    if (g_ui) {
-        ui_stop(g_ui);
-    }
+    if (g_orcashi) orcashi_disconnect(g_orcashi);
+    if (g_ui) ui_stop(g_ui);
 }
 
-// ===== ORCASHI Callbacks =====
 void on_peer_found(const char* id, const char* ip) {
-    if (g_ui) {
-        ui_show_peer(g_ui, id, ip, true);
-    }
+    if (g_ui) ui_show_peer(g_ui, id, ip, true);
 }
 
 void on_message_received(const char* from, const char* msg) {
@@ -36,12 +28,9 @@ void on_message_received(const char* from, const char* msg) {
 }
 
 void on_status_change(const char* status) {
-    if (g_ui) {
-        ui_show_status(g_ui, status);
-    }
+    if (g_ui) ui_show_status(g_ui, status);
 }
 
-// ===== Command Handler =====
 void command_handler(const char* cmd) {
     if (!cmd || !g_orcashi) return;
     
@@ -57,6 +46,7 @@ void command_handler(const char* cmd) {
         if (g_ui) ui_show_status(g_ui, "Fetching peers...");
     }
     else if (strcmp(cmd, "/register") == 0) {
+        if (g_ui) ui_show_status(g_ui, "Registering...");
         if (orcashi_register_identity(g_orcashi)) {
             if (g_ui) ui_show_status(g_ui, "Registered with DHT!");
         } else {
@@ -78,6 +68,7 @@ void command_handler(const char* cmd) {
         }
     }
     else if (strcmp(cmd, "/create") == 0) {
+        if (g_ui) ui_show_status(g_ui, "Creating room...");
         if (orcashi_create_room(g_orcashi, 9000)) {
             if (g_ui) ui_show_status(g_ui, "Room created! Waiting for connection...");
         } else {
@@ -110,7 +101,6 @@ void command_handler(const char* cmd) {
     }
 }
 
-// ===== Main =====
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
@@ -125,10 +115,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Set callbacks
     orcashi_set_callbacks(g_orcashi, on_peer_found, on_message_received, on_status_change);
     
-    // Initialize ORCASHI
     if (!orcashi_init(g_orcashi)) {
         fprintf(stderr, "Failed to initialize ORCASHI!\n");
         orcashi_destroy(g_orcashi);
@@ -143,10 +131,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Set callback
     ui_set_command_callback(g_ui, command_handler);
-    
-    // Initialize and start UI
     ui_init(g_ui);
     ui_start(g_ui);
     
@@ -154,10 +139,7 @@ int main(int argc, char* argv[]) {
     while (running) {
         char* input = ui_get_input();
         if (!input) break;
-        
-        if (strlen(input) > 0) {
-            command_handler(input);
-        }
+        if (strlen(input) > 0) command_handler(input);
         free(input);
     }
     
@@ -167,7 +149,6 @@ int main(int argc, char* argv[]) {
         ui_destroy(g_ui);
         g_ui = NULL;
     }
-    
     if (g_orcashi) {
         orcashi_disconnect(g_orcashi);
         orcashi_destroy(g_orcashi);
