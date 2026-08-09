@@ -6,8 +6,7 @@
 static const char* glitch_chars = "!@#$%^&*()_+-=[]{}|;:,.<>?/01";
 static const char* default_slogans[] = {
     "Welcome to ORCASHI v3.1",
-    "You are not alone here.",
-    "Talk Freely, Stay Anonymous"
+    "You are not alone here."
 };
 
 int ui_random_int(int min, int max) {
@@ -105,11 +104,11 @@ void ui_next_slogan(UI* ui) {
     pthread_mutex_unlock(&ui->mutex);
 }
 
-// ===== GLITCH LOOP - Only AFTER banner (line 10) =====
+// ===== GLITCH LOOP - Fixed line (line 9) =====
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char* current_text = NULL;
-    int line = 10; // បន្ទាប់ពី banner ចប់
+    int line = 9; // បន្ទាត់ថេរ
     
     while (ui->running) {
         if (ui->slogan_count == 0) { sleep(1); continue; }
@@ -122,6 +121,7 @@ static void* glitch_loop(void* arg) {
         if (!current_text) {
             current_text = strdup(target_slogan);
             
+            // Always write to line 9
             printf("\033[%d;0H", line);
             printf("\033[K  ");
             fflush(stdout);
@@ -245,7 +245,7 @@ void ui_show_banner(void) {
         "        ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
         "  ============================================",
         "",
-        "",  // Glitch will appear here (line 10)
+        "",  // Glitch at line 9
         "",
         "  Commands: /help, /peers, /register, /exit",
         "  > "
@@ -269,6 +269,7 @@ void ui_show_message(const char* level, const char* msg) {
     else if (strcmp(level, "WARNING") == 0) color = COLOR_YELLOW;
     else if (strcmp(level, "INFO") == 0) color = COLOR_CYAN;
     
+    // Move to bottom, below prompt
     printf("\n\033[K  %s%s[%s] %s%s%s\n", 
            COLOR_BOLD, color, level, COLOR_RESET, msg, COLOR_RESET);
     printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
