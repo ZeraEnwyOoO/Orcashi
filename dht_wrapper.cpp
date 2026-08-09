@@ -1,4 +1,4 @@
- // dht_wrapper.cpp - DHT Wrapper for jech/dht
+ // dht_wrapper.cpp - DHT Wrapper for jech/dht (FIXED)
 #include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
@@ -159,6 +159,7 @@ bool DHTWrapper::init() {
     return true;
 }
 
+// ==================== FIXED PUT() ====================
 bool DHTWrapper::put(const string& key, const string& value) {
     if (!initialized) {
         cerr << "[DHT] Cannot store: DHT not initialized!" << endl;
@@ -166,9 +167,22 @@ bool DHTWrapper::put(const string& key, const string& value) {
     }
     
     cout << "[DHT] Storing " << key << " -> " << value << endl;
-    return true;
+    
+    // Convert key to info_hash (20 bytes)
+    unsigned char info_hash[20];
+    string key_hash = sha256(key);
+    for (int i = 0; i < 20; i++) {
+        info_hash[i] = stoi(key_hash.substr(i*2, 2), nullptr, 16);
+    }
+    
+    // ===== ANNOUNCE TO DHT =====
+    int result = dht_announce(info_hash, 9000, NULL, 0);
+    cout << "[DHT] dht_announce returned: " << result << endl;
+    
+    return result == 0;
 }
 
+// ==================== FIXED GET() ====================
 string DHTWrapper::get(const string& key) {
     if (!initialized) {
         cerr << "[DHT] Cannot lookup: DHT not initialized!" << endl;
@@ -176,6 +190,21 @@ string DHTWrapper::get(const string& key) {
     }
     
     cout << "[DHT] Looking up " << key << endl;
+    
+    // Convert key to info_hash (20 bytes)
+    unsigned char info_hash[20];
+    string key_hash = sha256(key);
+    for (int i = 0; i < 20; i++) {
+        info_hash[i] = stoi(key_hash.substr(i*2, 2), nullptr, 16);
+    }
+    
+    // ===== GET PEERS FROM DHT =====
+    int result = dht_get_peers(info_hash, NULL, 0);
+    cout << "[DHT] dht_get_peers returned: " << result << endl;
+    
+    // Wait for response (3 seconds)
+    this_thread::sleep_for(chrono::seconds(3));
+    
     return "";
 }
 
