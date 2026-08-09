@@ -1,195 +1,197 @@
- // main.cpp - Test DHT with real debug log
-#include "dht_wrapper.hpp"
-#include <iostream>
-#include <thread>
-#include <chrono>
+ // main.c - ORCASHI Main Program in C
+#include "orcashi.h"
+#include <pthread.h>
 #include <signal.h>
-#include <cstring>
 
-using namespace std;
+static volatile int running = 1;
 
-static DHTWrapper* g_dht = nullptr;
-
-// ===== Signal handler =====
 void signal_handler(int sig) {
-    cout << "\n[INFO] Received signal " << sig << ", shutting down..." << endl;
-    if (g_dht) {
-        g_dht->shutdown();
-    }
-    exit(0);
+    printf("\n[ORCA] Shutting down...\n");
+    running = 0;
 }
 
-// ===== Print DHT stats =====
-void print_stats(DHTWrapper& dht) {
-    cout << "\n=== DHT STATISTICS ===" << endl;
+static void* chat_thread(void* arg) {
+    ORCASHI* orcashi = (ORCASHI*)arg;
+    char msg[MAX_MSG_LEN];
     
-    DHTStats stats = dht.get_stats();
-    cout << "  Total nodes:      " << stats.total_nodes << endl;
-    cout << "  Good nodes:       " << stats.good_nodes << endl;
-    cout << "  Dubious nodes:    " << stats.dubious_nodes << endl;
-    cout << "  Cached nodes:     " << stats.cached_nodes << endl;
-    cout << "  Incoming nodes:   " << stats.incoming_nodes << endl;
-    cout << "  Queries sent:     " << stats.queries_sent << endl;
-    cout << "  Queries received: " << stats.queries_received << endl;
-    cout << "  Responses recv:   " << stats.responses_received << endl;
-    cout << "  Errors recv:      " << stats.errors_received << endl;
-    cout << "=====================\n" << endl;
-}
-
-// ===== Event callback =====
-void on_dht_event(const DHTEvent& event) {
-    switch (event.type) {
-        case DHT_EVENT_VALUES:
-        case DHT_EVENT_VALUES6:
-            cout << "[EVENT] Found values for " << event.info_hash 
-                 << " (" << event.data.size() << " bytes)" << endl;
-            break;
-            
-        case DHT_EVENT_SEARCH_DONE:
-        case DHT_EVENT_SEARCH_DONE6:
-            cout << "[EVENT] Search done for " << event.info_hash << endl;
-            break;
-            
-        case DHT_EVENT_ERROR:
-            cout << "[EVENT] Error: " << event.data << endl;
-            break;
-            
-        default:
-            break;
-    }
-}
-
-// ===== Test PUT =====
-bool test_put(DHTWrapper& dht, const string& key, const string& value) {
-    cout << "\n[TEST] PUT: " << key << " -> " << value << endl;
-    
-    bool result = dht.put(key, value, 30);
-    
-    if (result) {
-        cout << "[PASS] PUT successful!" << endl;
-    } else {
-        cout << "[FAIL] PUT failed!" << endl;
-    }
-    
-    return result;
-}
-
-// ===== Test GET =====
-bool test_get(DHTWrapper& dht, const string& key, const string& expected = "") {
-    cout << "\n[TEST] GET: " << key << endl;
-    
-    string result = dht.get(key, 30);
-    
-    if (!result.empty()) {
-        cout << "[PASS] GET successful!" << endl;
-        cout << "  Value: " << result << endl;
-        if (!expected.empty() && result == expected) {
-            cout << "[PASS] Value matches expected!" << endl;
+    while (running && orcashi_is_connected(orcashi)) {
+        if (orcashi_receive_message(orcashi, msg, sizeof(msg), 100)) {
+            printf("\r\033[K  [%s] %s\n", orcashi_get_peer_id(orcashi), msg);
+            printf("  > ");
+            fflush(stdout);
         }
-    } else {
-        cout << "[FAIL] GET failed or no data found!" << endl;
     }
     
-    return !result.empty();
+    return NULL;
 }
 
-// ===== Main =====
 int main(int argc, char* argv[]) {
-    cout << "=========================================" << endl;
-    cout << "   ORCASHI DHT - Real Implementation" << endl;
-    cout << "=========================================" << endl;
-    
-    // ===== Signal handlers =====
     signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
     
-    // ===== Create DHT instance =====
-    DHTWrapper dht;
-    g_dht = &dht;
-    
-    // ===== Enable debug logging =====
-    dht.set_debug(true);
-    dht.set_log_file("dht_test.log");
-    
-    cout << "\n[INFO] Log file: dht_test.log" << endl;
-    
-    // ===== Set event callback =====
-    dht.set_event_callback(on_dht_event);
-    
-    // ===== Initialize DHT =====
-    cout << "\n[INFO] Initializing DHT on port 6881..." << endl;
-    
-    if (!dht.init(6881, false)) {
-        cerr << "[ERROR] Failed to initialize DHT!" << endl;
+    ORCASHI* orcashi = orcashi_create();
+    if (!orcashi) {
+        fprintf(stderr, "[ERROR] Failed to create ORCASHI!\n");
         return 1;
     }
     
-    cout << "[INFO] DHT initialized successfully!" << endl;
-    cout << "[INFO] Node ID: " << dht.get_node_id() << endl;
+    orcashi_init(orcashi);
     
-    // ===== Wait for bootstrap =====
-    cout << "\n[INFO] Waiting for bootstrap to complete..." << endl;
-    this_thread::sleep_for(chrono::seconds(5));
-    
-    // ===== Print initial stats =====
-    print_stats(dht);
-    
-    // ===== Test PUT =====
-    string test_key = "test_key";
-    string test_value = "Hello from ORCASHI DHT! " + to_string(time(nullptr));
-    
-    if (test_put(dht, test_key, test_value)) {
-        // ===== Wait a bit for propagation =====
-        cout << "\n[INFO] Waiting for propagation..." << endl;
-        this_thread::sleep_for(chrono::seconds(3));
+    if (argc < 2) {
+        // Interactive mode
+        printf("\n");
+        printf("  +------------------------------------------+\n");
+        printf("  |           ORCASHI v1.0                  |\n");
+        printf("  |           Your ID: %s                  |\n", orcashi_get_my_id(orcashi));
+        printf("  +------------------------------------------+\n");
+        printf("\n");
+        printf("  Commands: /help, /register, /connect, /peers, /exit\n");
+        printf("\n");
         
-        // ===== Test GET =====
-        test_get(dht, test_key, test_value);
+        char input[256];
+        while (running) {
+            printf("  > ");
+            if (!fgets(input, sizeof(input), stdin)) break;
+            input[strcspn(input, "\n")] = '\0';
+            
+            if (strcmp(input, "/exit") == 0) {
+                break;
+            } else if (strcmp(input, "/help") == 0) {
+                orcashi_show_help();
+            } else if (strcmp(input, "/register") == 0) {
+                orcashi_register_identity(orcashi);
+            } else if (strcmp(input, "/connect") == 0) {
+                printf("  Enter peer ID: ");
+                char id[64];
+                if (fgets(id, sizeof(id), stdin)) {
+                    id[strcspn(id, "\n")] = '\0';
+                    orcashi_connect_peer(orcashi, id);
+                }
+            } else if (strcmp(input, "/peers") == 0) {
+                orcashi_show_peers(orcashi);
+            } else {
+                printf("  Unknown command. Type /help\n");
+            }
+        }
+        
+        orcashi_destroy(orcashi);
+        return 0;
     }
     
-    // ===== More tests =====
-    cout << "\n[INFO] Testing multiple keys..." << endl;
+    char* cmd = argv[1];
     
-    vector<string> keys = {
-        "my_name",
-        "my_ip",
-        "my_port"
-    };
-    
-    vector<string> values = {
-        "ORCASHI_User",
-        "192.168.1.100",
-        "9000"
-    };
-    
-    for (size_t i = 0; i < keys.size(); i++) {
-        test_put(dht, keys[i], values[i]);
-        this_thread::sleep_for(chrono::seconds(1));
+    if (strcmp(cmd, "register") == 0) {
+        orcashi_register_identity(orcashi);
+    }
+    else if (strcmp(cmd, "connect") == 0 && argc >= 3) {
+        char* id = argv[2];
+        
+        if (orcashi_connect_peer(orcashi, id)) {
+            printf("\n  [ORCA] Connected! Type /help for commands\n\n");
+            
+            pthread_t thread;
+            pthread_create(&thread, NULL, chat_thread, orcashi);
+            
+            char input[MAX_MSG_LEN];
+            while (running && orcashi_is_connected(orcashi)) {
+                printf("  > ");
+                fflush(stdout);
+                if (!fgets(input, sizeof(input), stdin)) break;
+                input[strcspn(input, "\n")] = '\0';
+                
+                if (strcmp(input, "/exit") == 0) {
+                    break;
+                } else if (strcmp(input, "/help") == 0) {
+                    orcashi_show_help();
+                } else if (strcmp(input, "/status") == 0) {
+                    printf("  Connected to: %s\n", orcashi_get_peer_id(orcashi));
+                    printf("  IP: %s\n", orcashi_get_peer_ip(orcashi));
+                } else if (strlen(input) > 0) {
+                    orcashi_send_message(orcashi, input);
+                }
+            }
+            
+            running = 0;
+            pthread_join(thread, NULL);
+            orcashi_disconnect(orcashi);
+        }
+    }
+    else if (strcmp(cmd, "create") == 0) {
+        printf("\n  [ORCA] Creating room...\n");
+        if (orcashi_create_room(orcashi, 9000)) {
+            printf("  [ORCA] Waiting for connection...\n");
+            printf("  [ORCA] Your ID: %s\n\n", orcashi_get_my_id(orcashi));
+            
+            while (!orcashi_is_connected(orcashi)) {
+                usleep(100000);
+            }
+            
+            printf("  [ORCA] Connected! Type /help for commands\n\n");
+            
+            pthread_t thread;
+            pthread_create(&thread, NULL, chat_thread, orcashi);
+            
+            char input[MAX_MSG_LEN];
+            while (running && orcashi_is_connected(orcashi)) {
+                printf("  > ");
+                fflush(stdout);
+                if (!fgets(input, sizeof(input), stdin)) break;
+                input[strcspn(input, "\n")] = '\0';
+                
+                if (strcmp(input, "/exit") == 0) {
+                    break;
+                } else if (strcmp(input, "/help") == 0) {
+                    orcashi_show_help();
+                } else if (strlen(input) > 0) {
+                    orcashi_send_message(orcashi, input);
+                }
+            }
+            
+            running = 0;
+            pthread_join(thread, NULL);
+            orcashi_disconnect(orcashi);
+        }
+    }
+    else if (strcmp(cmd, "join") == 0 && argc >= 3) {
+        char* ip = argv[2];
+        printf("\n  [ORCA] Joining %s...\n", ip);
+        
+        if (orcashi_join_room(orcashi, ip, 9000)) {
+            printf("  [ORCA] Connected! Type /help for commands\n\n");
+            
+            pthread_t thread;
+            pthread_create(&thread, NULL, chat_thread, orcashi);
+            
+            char input[MAX_MSG_LEN];
+            while (running && orcashi_is_connected(orcashi)) {
+                printf("  > ");
+                fflush(stdout);
+                if (!fgets(input, sizeof(input), stdin)) break;
+                input[strcspn(input, "\n")] = '\0';
+                
+                if (strcmp(input, "/exit") == 0) {
+                    break;
+                } else if (strcmp(input, "/help") == 0) {
+                    orcashi_show_help();
+                } else if (strlen(input) > 0) {
+                    orcashi_send_message(orcashi, input);
+                }
+            }
+            
+            running = 0;
+            pthread_join(thread, NULL);
+            orcashi_disconnect(orcashi);
+        }
+    }
+    else {
+        printf("\n  Unknown command: %s\n", cmd);
+        printf("  Usage:\n");
+        printf("    ./orcashi create      - Create room\n");
+        printf("    ./orcashi join <ip>   - Join by IP\n");
+        printf("    ./orcashi register    - Register ID\n");
+        printf("    ./orcashi connect <id> - Connect by ID\n");
+        printf("\n");
     }
     
-    cout << "\n[INFO] Retrieving all keys..." << endl;
-    for (const auto& key : keys) {
-        test_get(dht, key);
-        this_thread::sleep_for(chrono::milliseconds(500));
-    }
-    
-    // ===== Print final stats =====
-    print_stats(dht);
-    
-    // ===== Dump routing table =====
-    cout << "\n[INFO] Dumping routing table..." << endl;
-    dht.dump_table();
-    
-    // ===== Keep running for a while =====
-    cout << "\n[INFO] DHT is running. Press Ctrl+C to exit." << endl;
-    cout << "[INFO] You can run tests in another terminal." << endl;
-    
-    while (true) {
-        this_thread::sleep_for(chrono::seconds(5));
-        print_stats(dht);
-    }
-    
-    // ===== Shutdown (never reached) =====
-    dht.shutdown();
+    orcashi_destroy(orcashi);
     return 0;
 }
