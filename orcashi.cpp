@@ -1,400 +1,297 @@
- // orcashi.cpp - ORCASHI v3.1 with jech/dht
-#include "orcashi.hpp"
-#include "registry.hpp"
-#include "request.hpp"
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <iomanip>
-#include <cstdlib>
-#include <random>
-#include <unistd.h>
+ // orcashi.c - ORCASHI Main Implementation in C
+#include "orcashi.h"
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <ifaddrs.h>
-#include <cstring>
-#include <cctype>
 
-using namespace std;
+#define ORCASHI_HOME "/tmp/.orcashi/"
+#define ID_FILE ORCASHI_HOME "id"
+#define MAX_ID_LEN 64
+#define MAX_MSG_LEN 4096
 
-const string CYAN = "\033[36m";
-const string GREEN = "\033[32m";
-const string YELLOW = "\033[33m";
-const string RED = "\033[31m";
-const string RESET = "\033[0m";
-const string ORCASHI_HOME = string(getenv("HOME")) + "/.orcashi/";
+static char* orcashi_get_peer_id_from_ip(const char* ip);
+static void* chat_loop_thread(void* arg);
 
-ORCASHI::ORCASHI() : running(true) {
-    string cmd = "mkdir -p " + ORCASHI_HOME;
-    system(cmd.c_str());
-    is_ish_mode = detect_ish();
-    my_id = generate_id();
-}
-
-ORCASHI::~ORCASHI() {
-    running = false;
-    if (ui_thread.joinable()) ui_thread.join();
-    plug.close_connection();
-}
-
-bool ORCASHI::init() {
-    if (dht.init()) {
-        cout << "[DHT] jech/dht initialized!" << endl;
-    } else {
-        cout << "[DHT] jech/dht initialization failed!" << endl;
+ORCASHI* orcashi_create(void) {
+    ORCASHI* orcashi = (ORCASHI*)calloc(1, sizeof(ORCASHI));
+    if (!orcashi) return NULL;
+    
+    orcashi->plug = plug_create();
+    if (!orcashi->plug) {
+        free(orcashi);
+        return NULL;
     }
+    
+    // Create home directory
+    mkdir(ORCASHI_HOME, 0700);
+    
+    // Generate ID
+    char* id = orcashi_generate_id();
+    strcpy(orcashi->my_id, id);
+    free(id);
+    
+    // Get local IP
+    char* ip = orcashi_get_local_ip();
+    strcpy(orcashi->local_ip, ip);
+    free(ip);
+    
+    orcashi->connected = false;
+    orcashi->running = false;
+    
+    return orcashi;
+}
+
+void orcashi_destroy(ORCASHI* orcashi) {
+    if (!orcashi) return;
+    
+    orcashi_disconnect(orcashi);
+    
+    if (orcashi->plug) {
+        plug_destroy(orcashi->plug);
+        orcashi->plug = NULL;
+    }
+    
+    free(orcashi);
+}
+
+bool orcashi_init(ORCASHI* orcashi) {
+    if (!orcashi) return false;
+    
+    printf("[ORCA] Initialized with ID: %s\n", orcashi->my_id);
+    printf("[ORCA] Local IP: %s\n", orcashi->local_ip);
+    
     return true;
 }
 
-string ORCASHI::get_local_ip() {
+bool orcashi_create_room(ORCASHI* orcashi, int port) {
+    if (!orcashi) return false;
+    
+    printf("\n%s\n", "================================================");
+    printf("ORCASHI - CREATE ROOM\n");
+    printf("%s\n", "================================================");
+    
+    if (plug_create_server(orcashi->plug, port)) {
+        orcashi->connected = true;
+        orcashi->running = true;
+        
+        // Get peer ID
+        const char* peer_ip = plug_get_peer_ip(orcashi->plug);
+        if (peer_ip) {
+            char* peer_id = orcashi_get_peer_id_from_ip(peer_ip);
+            strcpy(orcashi->peer_id, peer_id);
+            free(peer_id);
+        }
+        
+        orcashi_show_banner(orcashi);
+        return true;
+    }
+    
+    return false;
+}
+
+bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
+    if (!orcashi) return false;
+    
+    printf("\n%s\n", "================================================");
+    printf("ORCASHI - JOIN ROOM\n");
+    printf("%s\n", "================================================");
+    
+    if (plug_connect_client(orcashi->plug, ip, port)) {
+        orcashi->connected = true;
+        orcashi->running = true;
+        
+        char* peer_id = orcashi_get_peer_id_from_ip(ip);
+        strcpy(orcashi->peer_id, peer_id);
+        free(peer_id);
+        
+        orcashi_show_banner(orcashi);
+        return true;
+    }
+    
+    return false;
+}
+
+bool orcashi_send_message(ORCASHI* orcashi, const char* msg) {
+    if (!orcashi || !orcashi->connected) return false;
+    return plug_send_message(orcashi->plug, msg);
+}
+
+bool orcashi_receive_message(ORCASHI* orcashi, char* msg, int msg_size, int timeout_ms) {
+    if (!orcashi || !orcashi->connected) return false;
+    return plug_receive_message(orcashi->plug, msg, msg_size, timeout_ms);
+}
+
+bool orcashi_is_connected(ORCASHI* orcashi) {
+    return orcashi && orcashi->connected && plug_is_connected(orcashi->plug);
+}
+
+void orcashi_disconnect(ORCASHI* orcashi) {
+    if (!orcashi) return;
+    
+    orcashi->connected = false;
+    orcashi->running = false;
+    
+    if (orcashi->plug) {
+        plug_close_connection(orcashi->plug);
+    }
+}
+
+const char* orcashi_get_my_id(ORCASHI* orcashi) {
+    return orcashi ? orcashi->my_id : NULL;
+}
+
+const char* orcashi_get_peer_id(ORCASHI* orcashi) {
+    return orcashi ? orcashi->peer_id : NULL;
+}
+
+const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
+    return orcashi ? plug_get_peer_ip(orcashi->plug) : NULL;
+}
+
+bool orcashi_register_identity(ORCASHI* orcashi) {
+    if (!orcashi) return false;
+    
+    printf("\n");
+    printf("  +------------------------------------------+\n");
+    printf("  |           ORCA Registration              |\n");
+    printf("  +------------------------------------------+\n");
+    printf("\n");
+    
+    printf("  Your ID: %s\n", orcashi->my_id);
+    printf("  Your IP: %s\n", orcashi->local_ip);
+    
+    // Save ID to file
+    FILE* f = fopen(ID_FILE, "w");
+    if (f) {
+        fprintf(f, "%s", orcashi->my_id);
+        fclose(f);
+    }
+    
+    printf("\n  [SUCCESS] Registered!\n");
+    printf("  Your friends can connect using:\n");
+    printf("    ./orcashi connect %s\n", orcashi->my_id);
+    
+    return true;
+}
+
+bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
+    if (!orcashi) return false;
+    
+    printf("\n  [ORCA] Looking for %s...\n", id);
+    
+    // For v1.0, we just use IP directly
+    // In future versions, we'll use DHT
+    
+    printf("  [ORCA] Enter IP for %s: ", id);
+    char ip[INET_ADDRSTRLEN];
+    if (!fgets(ip, sizeof(ip), stdin)) {
+        return false;
+    }
+    ip[strcspn(ip, "\n")] = '\0';
+    
+    return orcashi_join_room(orcashi, ip, 9000);
+}
+
+void orcashi_show_peers(ORCASHI* orcashi) {
+    if (!orcashi) return;
+    
+    printf("\n  Your Peers:\n");
+    if (orcashi->connected) {
+        printf("    %s - %s [ONLINE]\n", orcashi->peer_id, orcashi->local_ip);
+    } else {
+        printf("    No peers connected.\n");
+    }
+    printf("\n");
+}
+
+void orcashi_show_banner(ORCASHI* orcashi) {
+    if (!orcashi) return;
+    
+    printf("\033[36m");
+    printf("%s\n", "============================================================");
+    printf("  ██████╗ ██████╗  ██████╗ █████╗ \n");
+    printf(" ██╔═══██╗██╔══██╗██╔════╝██╔══██╗C\n");
+    printf(" ██║   ██║██████╔╝██║     ███████╗H\n");
+    printf(" ██║   ██║██╔══██╗██║     ██╔══██╗A\n");
+    printf(" ╚██████╔╝██║  ██║╚██████╗██║  ██║T\n");
+    printf("  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝\n");
+    printf("            ORCASHI v1.0 - P2P Chat\n");
+    printf("%s\n", "============================================================");
+    printf("\033[0m");
+    
+    printf("Your ID: %s\n", orcashi->my_id);
+    printf("Mode: TCP Plug (C Version)\n");
+    printf("DHT: Not connected (v1.0)\n");
+    printf("Type /help for commands\n");
+    printf("%s\n", "============================================================");
+    printf("\n");
+}
+
+void orcashi_show_help(void) {
+    printf("\n%s\n", "================================================");
+    printf("ORCASHI v1.0 - P2P Chat\n");
+    printf("%s\n", "================================================");
+    printf("Commands:\n");
+    printf("  /help    - Show this help\n");
+    printf("  /exit    - Disconnect\n");
+    printf("  /status  - Show connection status\n");
+    printf("\n");
+}
+
+char* orcashi_generate_id(void) {
+    static char id[64];
+    
+    // Try to read from file
+    FILE* f = fopen(ID_FILE, "r");
+    if (f) {
+        if (fgets(id, sizeof(id), f)) {
+            id[strcspn(id, "\n")] = '\0';
+            fclose(f);
+            return strdup(id);
+        }
+        fclose(f);
+    }
+    
+    // Generate new ID
+    srand(time(NULL) ^ getpid());
+    int num = (rand() % 999) + 1;
+    snprintf(id, sizeof(id), "<%03d>", num);
+    
+    // Save to file
+    f = fopen(ID_FILE, "w");
+    if (f) {
+        fprintf(f, "%s", id);
+        fclose(f);
+    }
+    
+    return strdup(id);
+}
+
+char* orcashi_get_local_ip(void) {
+    static char ip[INET_ADDRSTRLEN];
     struct ifaddrs* ifaddr;
+    
     if (getifaddrs(&ifaddr) == -1) {
-        return "127.0.0.1";
+        strcpy(ip, "127.0.0.1");
+        return ip;
     }
     
     for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr == NULL) continue;
-        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
         if (strcmp(ifa->ifa_name, "lo") == 0) continue;
         
         struct sockaddr_in* addr = (struct sockaddr_in*)ifa->ifa_addr;
-        char ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+        inet_ntop(AF_INET, &addr->sin_addr, ip, INET_ADDRSTRLEN);
         freeifaddrs(ifaddr);
-        return string(ip);
+        return strdup(ip);
     }
     
     freeifaddrs(ifaddr);
-    return "127.0.0.1";
+    strcpy(ip, "127.0.0.1");
+    return strdup(ip);
 }
 
-bool ORCASHI::detect_ish() {
-    if (access("/sbin/apk", F_OK) == 0) return true;
-    
-    ifstream f("/etc/os-release");
-    if (f.is_open()) {
-        string line;
-        while (getline(f, line)) {
-            if (line.find("Alpine") != string::npos) {
-                f.close();
-                return true;
-            }
-        }
-        f.close();
-    }
-    
-    ifstream f2("/proc/version");
-    if (f2.is_open()) {
-        string content;
-        getline(f2, content);
-        if (content.find("iOS") != string::npos || content.find("iPhone") != string::npos) {
-            f2.close();
-            return true;
-        }
-        f2.close();
-    }
-    
-    return false;
-}
-
-string ORCASHI::generate_id() {
-    string id_file = ORCASHI_HOME + "id";
-    
-    ifstream f(id_file);
-    if (f.is_open()) {
-        int id;
-        if (f >> id && id >= 1 && id <= 999) {
-            f.close();
-            stringstream ss;
-            ss << "<" << setw(3) << setfill('0') << id << ">";
-            return ss.str();
-        }
-        f.close();
-    }
-    
-    random_device rd;
-    mt19937 gen(rd());
-    uniform_int_distribution<> dis(1, 999);
-    int new_id = dis(gen);
-    
-    ofstream f2(id_file);
-    if (f2.is_open()) f2 << new_id;
-    
-    stringstream ss;
-    ss << "<" << setw(3) << setfill('0') << new_id << ">";
-    return ss.str();
-}
-
-bool ORCASHI::create_room(int port) {
-    cout << "\n" << string(50, '=') << endl;
-    cout << "ORCASHI - CREATE ROOM" << endl;
-    cout << string(50, '=') << endl;
-    
-    if (plug.create_plug(port)) {
-        cout << GREEN << "[SUCCESS] TCP Plug created!" << RESET << endl;
-        cout << "Your ID: " << my_id << endl;
-        cout << "Waiting for connection..." << endl;
-        show_banner();
-        ui_thread = thread(&ORCASHI::ui_loop, this);
-        return true;
-    }
-    return false;
-}
-
-bool ORCASHI::join_room(const string& ip, int port) {
-    cout << "\n" << string(50, '=') << endl;
-    cout << "ORCASHI - JOIN ROOM" << endl;
-    cout << string(50, '=') << endl;
-    
-    if (plug.connect_to_plug(ip, port)) {
-        cout << GREEN << "[SUCCESS] Connected!" << RESET << endl;
-        show_banner();
-        ui_thread = thread(&ORCASHI::ui_loop, this);
-        return true;
-    }
-    return false;
-}
-
-void ORCASHI::ui_loop() {
-    string input;
-    while (running && plug.is_connected()) {
-        cout << my_id << "> " << flush;
-        
-        if (!getline(cin, input)) {
-            if (cin.eof()) {
-                cout << "\n[ORCA] EOF detected." << endl;
-                running = false;
-                break;
-            }
-            continue;
-        }
-        
-        if (input == "/exit") {
-            running = false;
-            break;
-        } else if (input == "/help") {
-            show_help();
-        } else if (!input.empty()) {
-            plug.send_message(input);
-        }
-    }
-}
-
-bool ORCASHI::send_message(const string& msg) {
-    return plug.send_message(msg);
-}
-
-bool ORCASHI::receive_message(string& msg, int timeout_ms) {
-    return plug.receive_message(msg, timeout_ms);
-}
-
-bool ORCASHI::is_connected() const {
-    return plug.is_connected();
-}
-
-void ORCASHI::disconnect() {
-    running = false;
-    if (ui_thread.joinable()) ui_thread.join();
-    plug.close_connection();
-}
-
-string ORCASHI::get_my_id() const { return my_id; }
-string ORCASHI::get_peer_id() const { return plug.get_peer_id(); }
-string ORCASHI::get_peer_ip() const { return plug.get_peer_ip(); }
-
-string ORCASHI::lookup_in_dht(const string& id) {
-    if (!dht.is_initialized()) {
-        return "";
-    }
-    return dht.get(id);
-}
-
-bool ORCASHI::register_identity() {
-    cout << "\n";
-    cout << "  +------------------------------------------+\n";
-    cout << "  |           ORCA Registration              |\n";
-    cout << "  +------------------------------------------+\n";
-    cout << "\n";
-    
-    cout << "  Enter your ID (3 digits): ";
-    string id;
-    getline(cin, id);
-    
-    if (id.length() != 3 || !isdigit(id[0]) || !isdigit(id[1]) || !isdigit(id[2])) {
-        cout << "  [ERROR] ID must be 3 digits!\n";
-        return false;
-    }
-    
-    string ip = get_local_ip();
-    cout << "  Your IP: " << ip << "\n";
-    
-    Registry registry;
-    if (registry.register_peer(id, ip, "9000")) {
-        cout << "\n  [SUCCESS] Registered!\n";
-        cout << "  Your ID: " << id << "\n";
-        cout << "  Endpoint: " << ip << ":9000\n";
-        
-        if (dht.is_initialized()) {
-            string endpoint = ip + ":9000";
-            if (dht.put(id, endpoint)) {
-                cout << "  [DHT] Stored in jech/dht!" << endl;
-            } else {
-                cout << "  [DHT] Failed to store in jech/dht!" << endl;
-            }
-        } else {
-            cout << "  [DHT] jech/dht not available!" << endl;
-        }
-        
-        cout << "\n  Your friends can connect using:\n";
-        cout << "    ./orcashi connect " << id << "\n";
-        return true;
-    }
-    
-    cout << "  [ERROR] Registration failed!\n";
-    return false;
-}
-
-bool ORCASHI::connect_peer(const string& id) {
-    Registry registry;
-    Peer peer;
-    
-    if (registry.get_peer(id, peer)) {
-        cout << "  [ORCA] Found in registry: " << peer.ip << ":" << peer.port << "\n";
-        return join_room(peer.ip);
-    }
-    
-    cout << "  [ORCA] Looking up " << id << " in jech/dht..." << endl;
-    
-    if (!dht.is_initialized()) {
-        cout << "  [ORCA] DHT not initialized!" << endl;
-        cout << "  [ORCA] Try: ./orcashi search " << id << endl;
-        return false;
-    }
-    
-    string endpoint = dht.get(id);
-    if (!endpoint.empty()) {
-        cout << "  [ORCA] Found in DHT: " << endpoint << endl;
-        registry.register_peer(id, endpoint, "9000");
-        return join_room(endpoint);
-    }
-    
-    cout << "  [ORCA] Peer not found in DHT!" << endl;
-    return false;
-}
-
-bool ORCASHI::add_peer(const string& id) {
-    cout << "\n  [ORCA] Sending request to " << id << "...\n";
-    
-    RequestManager requests;
-    if (requests.send_request(my_id, id)) {
-        Registry registry;
-        Peer peer;
-        if (registry.get_peer(id, peer)) {
-            cout << "  [ORCA] Peer found in registry: " << peer.ip << "\n";
-        } else {
-            cout << "  [ORCA] Peer not in registry. Trying DHT...\n";
-            if (dht.is_initialized()) {
-                string endpoint = dht.get(id);
-                if (!endpoint.empty()) {
-                    cout << "  [ORCA] Found in DHT: " << endpoint << endl;
-                    registry.register_peer(id, endpoint, "9000");
-                }
-            }
-        }
-        return true;
-    }
-    return false;
-}
-
-bool ORCASHI::check_requests() {
-    RequestManager requests;
-    auto pending = requests.get_pending_requests(my_id);
-    
-    if (pending.empty()) {
-        cout << "  [ORCA] No pending requests.\n";
-        return false;
-    }
-    
-    cout << "\n  [ORCA] You have " << pending.size() << " pending request(s):\n";
-    
-    for (const auto& req : pending) {
-        cout << "    " << req.from_id << " wants to connect.\n";
-        cout << "    Accept? (y/n): ";
-        string answer;
-        getline(cin, answer);
-        
-        if (answer == "y" || answer == "Y") {
-            requests.accept_request(req.from_id, my_id);
-            return connect_peer(req.from_id);
-        } else {
-            requests.reject_request(req.from_id, my_id);
-        }
-    }
-    return true;
-}
-
-void ORCASHI::show_peers() {
-    Registry registry;
-    auto peers = registry.get_all_peers();
-    
-    cout << "\n  Your Peers:\n";
-    if (peers.empty()) {
-        cout << "    No peers registered.\n";
-        cout << "    Use ./orcashi add <id> to add peers.\n";
-    } else {
-        for (const auto& p : peers) {
-            cout << "    " << p.id << " - " << p.ip << ":" << p.port;
-            if (p.online) {
-                cout << " [ONLINE]\n";
-            } else {
-                cout << " [OFFLINE]\n";
-            }
-        }
-    }
-    cout << "\n";
-}
-
-void ORCASHI::show_banner() {
-    cout << CYAN << R"(
-============================================================
-  ██████╗ ██████╗  ██████╗ █████╗ 
- ██╔═══██╗██╔══██╗██╔════╝██╔══██╗C
- ██║   ██║██████╔╝██║     ███████╗H
- ██║   ██║██╔══██╗██║     ██╔══██╗A
- ╚██████╔╝██║  ██║╚██████╗██║  ██║T
-  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
-            ORCASHI v3.1 - P2P Chat
-============================================================
-)" << RESET << endl;
-    
-    cout << "Your ID: " << my_id << endl;
-    if (is_ish_mode) {
-        cout << GREEN << "Mode: iSH (TCP Plug)" << RESET << endl;
-    } else {
-        cout << GREEN << "Mode: Linux (TCP Connect)" << RESET << endl;
-    }
-    if (dht.is_initialized()) {
-        cout << GREEN << "DHT: jech/dht" << RESET << endl;
-    } else {
-        cout << YELLOW << "DHT: Not connected" << RESET << endl;
-    }
-    cout << "Type /help for commands" << endl;
-    cout << string(50, '=') << endl << endl;
-}
-
-void ORCASHI::show_help() {
-    cout << "\n" << string(40, '=') << endl;
-    cout << "ORCASHI v3.1 - P2P Chat" << endl;
-    cout << string(40, '=') << endl;
-    cout << "Commands:" << endl;
-    cout << "  /help    - Show this help" << endl;
-    cout << "  /exit    - Disconnect" << endl;
-    cout << "  /status  - Show connection status" << endl;
-    cout << "\nYour ID: " << my_id << endl;
-    cout << "Peer ID: " << get_peer_id() << endl;
-    cout << string(40, '=') << endl << endl;
+static char* orcashi_get_peer_id_from_ip(const char* ip) {
+    static char id[64];
+    snprintf(id, sizeof(id), "%s", ip);
+    return strdup(id);
 }
