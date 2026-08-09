@@ -1,150 +1,215 @@
- #include "registry.hpp"
-#include <fstream>
-#include <iostream>
-#include <cstdlib>
-#include <unistd.h>
+ // registry.c - Peer Registry Implementation in C
+#include "registry.h"
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
-using namespace std;
+#define REGISTRY_FILE "/tmp/.orcashi/registry.json"
 
-Registry::Registry() {
-    string home = getenv("HOME");
-    registry_file = home + "/.orcashi/registry.json";
+Registry* registry_create(void) {
+    Registry* reg = (Registry*)calloc(1, sizeof(Registry));
+    if (!reg) return NULL;
     
-    string dir = registry_file.substr(0, registry_file.find_last_of('/'));
-    string cmd = "mkdir -p " + dir;
-    system(cmd.c_str());
-    load();
+    strcpy(reg->registry_file, REGISTRY_FILE);
+    
+    // Create directory
+    mkdir("/tmp/.orcashi/", 0700);
+    
+    registry_load(reg);
+    
+    return reg;
 }
 
-bool Registry::register_peer(const string& id, const string& ip, const string& port) {
-    if (peers.find(id) != peers.end()) {
-        cout << "  [ERROR] ID " << id << " already registered!\n";
-        return false;
+void registry_destroy(Registry* reg) {
+    if (reg) {
+        registry_save(reg);
+        free(reg);
+    }
+}
+
+bool registry_register_peer(Registry* reg, const char* id, const char* ip, const char* port) {
+    if (!reg) return false;
+    
+    // Check if already exists
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (strcmp(reg->peers[i].id, id) == 0) {
+            fprintf(stderr, "[ERROR] ID %s already registered!\n", id);
+            return false;
+        }
     }
     
-    Peer peer;
-    peer.id = id;
-    peer.ip = ip;
-    peer.port = port;
-    peer.online = true;
-    peer.last_seen = time(nullptr);
-    peers[id] = peer;
-    save();
+    if (reg->peer_count >= MAX_REGISTRY_PEERS) return false;
+    
+    RegistryPeer* peer = &reg->peers[reg->peer_count++];
+    strcpy(peer->id, id);
+    strcpy(peer->ip, ip);
+    strcpy(peer->port, port);
+    peer->online = true;
+    peer->last_seen = time(NULL);
+    
+    registry_save(reg);
     return true;
 }
 
-bool Registry::get_peer(const string& id, Peer& out_peer) {
-    auto it = peers.find(id);
-    if (it != peers.end()) {
-        out_peer = it->second;
-        return true;
-    }
-    return false;
-}
-
-void Registry::update_peer(const string& id, const string& ip, const string& port) {
-    auto it = peers.find(id);
-    if (it != peers.end()) {
-        it->second.ip = ip;
-        it->second.port = port;
-        it->second.last_seen = time(nullptr);
-        save();
-    }
-}
-
-void Registry::set_online(const string& id, bool online) {
-    auto it = peers.find(id);
-    if (it != peers.end()) {
-        it->second.online = online;
-        it->second.last_seen = time(nullptr);
-        save();
-    }
-}
-
-vector<Peer> Registry::get_all_peers() {
-    vector<Peer> result;
-    for (auto& pair : peers) {
-        result.push_back(pair.second);
-    }
-    return result;
-}
-
-bool Registry::remove_peer(const string& id) {
-    auto it = peers.find(id);
-    if (it != peers.end()) {
-        peers.erase(it);
-        save();
-        return true;
-    }
-    return false;
-}
-
-bool Registry::peer_exists(const string& id) {
-    return peers.find(id) != peers.end();
-}
-
-void Registry::load() {
-    ifstream f(registry_file.c_str());
-    if (!f.is_open()) return;
+bool registry_get_peer(Registry* reg, const char* id, RegistryPeer* out_peer) {
+    if (!reg || !out_peer) return false;
     
-    string line;
-    Peer peer;
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (strcmp(reg->peers[i].id, id) == 0) {
+            *out_peer = reg->peers[i];
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+void registry_update_peer(Registry* reg, const char* id, const char* ip, const char* port) {
+    if (!reg) return;
+    
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (strcmp(reg->peers[i].id, id) == 0) {
+            strcpy(reg->peers[i].ip, ip);
+            strcpy(reg->peers[i].port, port);
+            reg->peers[i].last_seen = time(NULL);
+            registry_save(reg);
+            break;
+        }
+    }
+}
+
+void registry_set_online(Registry* reg, const char* id, bool online) {
+    if (!reg) return;
+    
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (strcmp(reg->peers[i].id, id) == 0) {
+            reg->peers[i].online = online;
+            reg->peers[i].last_seen = time(NULL);
+            registry_save(reg);
+            break;
+        }
+    }
+}
+
+int registry_get_all_peers(Registry* reg, RegistryPeer* peers, int max_peers) {
+    if (!reg || !peers) return 0;
+    
+    int count = 0;
+    for (int i = 0; i < reg->peer_count && count < max_peers; i++) {
+        peers[count++] = reg->peers[i];
+    }
+    
+    return count;
+}
+
+bool registry_remove_peer(Registry* reg, const char* id) {
+    if (!reg) return false;
+    
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (strcmp(reg->peers[i].id, id) == 0) {
+            for (int j = i; j < reg->peer_count - 1; j++) {
+                reg->peers[j] = reg->peers[j + 1];
+            }
+            reg->peer_count--;
+            registry_save(reg);
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+bool registry_peer_exists(Registry* reg, const char* id) {
+    if (!reg) return false;
+    
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (strcmp(reg->peers[i].id, id) == 0) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+void registry_load(Registry* reg) {
+    if (!reg) return;
+    
+    FILE* f = fopen(reg->registry_file, "r");
+    if (!f) return;
+    
+    char line[1024];
+    RegistryPeer peer;
     bool in_peer = false;
     
-    while (getline(f, line)) {
-        if (line.find("\"id\":\"") != string::npos) {
-            size_t start = line.find("\"id\":\"") + 6;
-            size_t end = line.find("\"", start);
-            peer.id = line.substr(start, end - start);
-            in_peer = true;
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, "\"id\":\"") != NULL) {
+            char* start = strstr(line, "\"id\":\"") + 6;
+            char* end = strchr(start, '"');
+            if (end) {
+                int len = end - start;
+                strncpy(peer.id, start, len);
+                peer.id[len] = '\0';
+                in_peer = true;
+            }
         }
-        if (line.find("\"ip\":\"") != string::npos && in_peer) {
-            size_t start = line.find("\"ip\":\"") + 6;
-            size_t end = line.find("\"", start);
-            peer.ip = line.substr(start, end - start);
+        
+        if (in_peer && strstr(line, "\"ip\":\"") != NULL) {
+            char* start = strstr(line, "\"ip\":\"") + 6;
+            char* end = strchr(start, '"');
+            if (end) {
+                int len = end - start;
+                strncpy(peer.ip, start, len);
+                peer.ip[len] = '\0';
+            }
         }
-        if (line.find("\"port\":\"") != string::npos && in_peer) {
-            size_t start = line.find("\"port\":\"") + 8;
-            size_t end = line.find("\"", start);
-            peer.port = line.substr(start, end - start);
+        
+        if (in_peer && strstr(line, "\"port\":\"") != NULL) {
+            char* start = strstr(line, "\"port\":\"") + 8;
+            char* end = strchr(start, '"');
+            if (end) {
+                int len = end - start;
+                strncpy(peer.port, start, len);
+                peer.port[len] = '\0';
+            }
         }
-        if (line.find("\"online\":") != string::npos && in_peer) {
-            size_t start = line.find("\"online\":") + 9;
-            size_t end = line.find(",", start);
-            if (end == string::npos) end = line.find("}", start);
-            string val = line.substr(start, end - start);
-            peer.online = (val.find("true") != string::npos);
+        
+        if (in_peer && strstr(line, "\"online\":") != NULL) {
+            char* start = strstr(line, "\"online\":") + 9;
+            peer.online = (strstr(start, "true") != NULL);
         }
-        if (line.find("}") != string::npos && in_peer) {
-            if (!peer.id.empty()) {
-                peers[peer.id] = peer;
-                peer = Peer();
+        
+        if (in_peer && strchr(line, '}') != NULL) {
+            if (strlen(peer.id) > 0 && reg->peer_count < MAX_REGISTRY_PEERS) {
+                reg->peers[reg->peer_count++] = peer;
+                memset(&peer, 0, sizeof(peer));
                 in_peer = false;
             }
         }
     }
-    f.close();
+    
+    fclose(f);
 }
 
-void Registry::save() {
-    ofstream f(registry_file.c_str());
-    if (!f.is_open()) return;
+void registry_save(Registry* reg) {
+    if (!reg) return;
     
-    f << "{\n  \"peers\": [\n";
-    bool first = true;
-    for (auto& pair : peers) {
-        if (!first) f << ",\n";
-        first = false;
-        Peer& p = pair.second;
-        f << "    {\n";
-        f << "      \"id\": \"" << p.id << "\",\n";
-        f << "      \"ip\": \"" << p.ip << "\",\n";
-        f << "      \"port\": \"" << p.port << "\",\n";
-        f << "      \"online\": " << (p.online ? "true" : "false") << ",\n";
-        f << "      \"last_seen\": " << p.last_seen << "\n";
-        f << "    }";
+    FILE* f = fopen(reg->registry_file, "w");
+    if (!f) return;
+    
+    fprintf(f, "{\n  \"peers\": [\n");
+    
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (i > 0) fprintf(f, ",\n");
+        RegistryPeer* p = &reg->peers[i];
+        fprintf(f, "    {\n");
+        fprintf(f, "      \"id\": \"%s\",\n", p->id);
+        fprintf(f, "      \"ip\": \"%s\",\n", p->ip);
+        fprintf(f, "      \"port\": \"%s\",\n", p->port);
+        fprintf(f, "      \"online\": %s,\n", p->online ? "true" : "false");
+        fprintf(f, "      \"last_seen\": %ld\n", (long)p->last_seen);
+        fprintf(f, "    }");
     }
-    f << "\n  ]\n}\n";
-    f.close();
+    
+    fprintf(f, "\n  ]\n}\n");
+    fclose(f);
 }
