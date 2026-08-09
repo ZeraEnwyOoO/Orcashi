@@ -1,4 +1,4 @@
- // main.c - បន្ថែមការពិនិត្យ g_ui
+ // main.c - check g_ui
 #include "orcashi.h"
 #include "ui.h"
 #include <signal.h>
