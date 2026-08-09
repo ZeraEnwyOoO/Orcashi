@@ -287,14 +287,15 @@ void ui_show_banner(void) {
         "",  // line 9
         "",  // line 10
         "",  // line 11
-        "",  // line 12 - Glitch will appear here
-        "",
-        "  Commands: /help, /peers, /register, /exit",  // line 14
-        "  > "  // line 15
+        "",  // line 12 - Glitch
+        "",  // line 13
+        "",  // line 14
+        "  Commands: /help, /peers, /register, /exit",  // line 15
+        "  > "  // line 16
     };
     printf("%s", COLOR_CLEAR);
     fflush(stdout);
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < 17; i++) {
         printf("%s%s%s\n", COLOR_BOLD, COLOR_CYAN, banner[i]);
     }
     printf("%s", COLOR_RESET);
