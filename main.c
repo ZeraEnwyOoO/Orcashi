@@ -9,6 +9,7 @@ static volatile int running = 1;
 
 // ===== Signal Handler =====
 void signal_handler(int sig) {
+    (void)sig;
     printf("\n");
     running = 0;
     if (g_orcashi) {
@@ -19,10 +20,10 @@ void signal_handler(int sig) {
     }
 }
 
-// ===== ORCASHI Callbacks (UI gets data from ORCASHI) =====
+// ===== ORCASHI Callbacks =====
 void on_peer_found(const char* id, const char* ip) {
     if (g_ui) {
-        ui_show_peer(g_ui, id, ip, true);  // ← បន្ថែម g_ui
+        ui_show_peer(g_ui, id, ip, true);
     }
 }
 
@@ -30,17 +31,17 @@ void on_message_received(const char* from, const char* msg) {
     if (g_ui) {
         char buffer[512];
         snprintf(buffer, sizeof(buffer), "[%s] %s", from, msg);
-        ui_show_message(g_ui, "MESSAGE", buffer);  // ← បន្ថែម g_ui
+        ui_show_message(g_ui, "MESSAGE", buffer);
     }
 }
 
 void on_status_change(const char* status) {
     if (g_ui) {
-        ui_show_status(g_ui, status);  // ← បន្ថែម g_ui
+        ui_show_status(g_ui, status);
     }
 }
 
-// ===== Command Handler (UI -> ORCASHI) =====
+// ===== Command Handler =====
 void command_handler(const char* cmd) {
     if (!cmd || !g_orcashi) return;
     
@@ -50,51 +51,74 @@ void command_handler(const char* cmd) {
         if (g_ui) ui_stop(g_ui);
     }
     else if (strcmp(cmd, "/help") == 0) {
-        if (g_ui) ui_show_help(g_ui);  // ← បន្ថែម g_ui
+        if (g_ui) ui_show_help(g_ui);
     }
     else if (strcmp(cmd, "/peers") == 0) {
-        if (g_ui) ui_show_status(g_ui, "Fetching peers...");  // ← បន្ថែម g_ui
+        if (g_ui) ui_show_status(g_ui, "Fetching peers...");
     }
     else if (strcmp(cmd, "/register") == 0) {
         if (orcashi_register_identity(g_orcashi)) {
-            if (g_ui) ui_show_status(g_ui, "Registered with DHT!");  // ← បន្ថែម g_ui
+            if (g_ui) ui_show_status(g_ui, "Registered with DHT!");
         } else {
-            if (g_ui) ui_show_message(g_ui, "ERROR", "Registration failed!");  // ← បន្ថែម g_ui
+            if (g_ui) ui_show_message(g_ui, "ERROR", "Registration failed!");
         }
     }
     else if (strcmp(cmd, "/connect") == 0) {
         if (g_ui) {
-            ui_show_message(g_ui, "INFO", "Enter peer ID: ");  // ← បន្ថែម g_ui
+            ui_show_message(g_ui, "INFO", "Enter peer ID: ");
             char* id = ui_get_input();
             if (id && strlen(id) > 0) {
                 if (orcashi_connect_peer(g_orcashi, id)) {
-                    ui_show_status(g_ui, "Connected!");  // ← បន្ថែម g_ui
+                    ui_show_status(g_ui, "Connected!");
                 } else {
-                    ui_show_message(g_ui, "ERROR", "Connection failed!");  // ← បន្ថែម g_ui
+                    ui_show_message(g_ui, "ERROR", "Connection failed!");
                 }
             }
             free(id);
         }
     }
+    else if (strcmp(cmd, "/create") == 0) {
+        if (orcashi_create_room(g_orcashi, 9000)) {
+            if (g_ui) ui_show_status(g_ui, "Room created! Waiting for connection...");
+        } else {
+            if (g_ui) ui_show_message(g_ui, "ERROR", "Failed to create room!");
+        }
+    }
+    else if (strcmp(cmd, "/join") == 0) {
+        if (g_ui) {
+            ui_show_message(g_ui, "INFO", "Enter IP: ");
+            char* ip = ui_get_input();
+            if (ip && strlen(ip) > 0) {
+                if (orcashi_join_room(g_orcashi, ip, 9000)) {
+                    ui_show_status(g_ui, "Connected!");
+                } else {
+                    ui_show_message(g_ui, "ERROR", "Connection failed!");
+                }
+            }
+            free(ip);
+        }
+    }
     else if (strlen(cmd) > 0 && cmd[0] == '/') {
-        if (g_ui) ui_show_message(g_ui, "ERROR", "Unknown command!");  // ← បន្ថែម g_ui
+        if (g_ui) ui_show_message(g_ui, "ERROR", "Unknown command!");
     }
     else if (strlen(cmd) > 0) {
-        // Send message via ORCASHI
         if (orcashi_is_connected(g_orcashi)) {
             orcashi_send_message(g_orcashi, cmd);
         } else {
-            if (g_ui) ui_show_message(g_ui, "WARNING", "Not connected!");  // ← បន្ថែម g_ui
+            if (g_ui) ui_show_message(g_ui, "WARNING", "Not connected!");
         }
     }
 }
 
 // ===== Main =====
 int main(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    // ===== Create ORCASHI (Application Layer) =====
+    // ===== Create ORCASHI =====
     g_orcashi = orcashi_create();
     if (!g_orcashi) {
         fprintf(stderr, "Failed to create ORCASHI!\n");
@@ -111,7 +135,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // ===== Create UI (Presentation Layer) =====
+    // ===== Create UI =====
     g_ui = ui_create();
     if (!g_ui) {
         fprintf(stderr, "Failed to create UI!\n");
@@ -119,7 +143,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Set callback (UI -> ORCASHI)
+    // Set callback
     ui_set_command_callback(g_ui, command_handler);
     
     // Initialize and start UI
