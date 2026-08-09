@@ -47,8 +47,10 @@ UI* ui_create(void) {
     ui->on_command = NULL;
     ui->on_message = NULL;
     ui->glitch_paused = false;
+    
     pthread_mutex_init(&ui->mutex, NULL);
-    pthread_mutex_init(&ui->stdout_mutex, NULL);  // ← ថ្មី!
+    pthread_mutex_init(&ui->stdout_mutex, NULL);
+    
     srand(time(NULL) ^ getpid());
     int default_count = sizeof(default_slogans) / sizeof(default_slogans[0]);
     ui_set_slogans(ui, default_slogans, default_count);
@@ -67,7 +69,7 @@ void ui_destroy(UI* ui) {
         ui->slogans = NULL;
     }
     pthread_mutex_destroy(&ui->mutex);
-    pthread_mutex_destroy(&ui->stdout_mutex);  // ← ថ្មី!
+    pthread_mutex_destroy(&ui->stdout_mutex);
     free(ui);
 }
 
@@ -107,14 +109,12 @@ void ui_next_slogan(UI* ui) {
     pthread_mutex_unlock(&ui->mutex);
 }
 
-// ===== GLITCH LOOP with pause support =====
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char* current_text = NULL;
     int line = 9;
     
     while (ui->running) {
-        // ★ ប្រសិនបើ paused, រង់ចាំ
         if (ui->glitch_paused) {
             usleep(50000);
             continue;
@@ -130,7 +130,6 @@ static void* glitch_loop(void* arg) {
         if (!current_text) {
             current_text = strdup(target_slogan);
             
-            // ★ stdout mutex lock
             pthread_mutex_lock(&ui->stdout_mutex);
             printf("\033[%d;0H", line);
             printf("\033[K  ");
@@ -139,9 +138,9 @@ static void* glitch_loop(void* arg) {
             
             int len = strlen(current_text);
             for (int i = 0; i < len && ui->running; i++) {
-                if (ui->glitch_paused) { 
-                    usleep(50000); 
-                    continue; 
+                if (ui->glitch_paused) {
+                    usleep(50000);
+                    continue;
                 }
                 
                 char* typed = strndup(current_text, i + 1);
@@ -149,7 +148,6 @@ static void* glitch_loop(void* arg) {
                 const char* colors[] = {COLOR_CYAN, COLOR_MAGENTA, COLOR_RED, COLOR_YELLOW, COLOR_GREEN};
                 const char* color = colors[ui_random_int(0, 4)];
                 
-                // ★ stdout mutex lock
                 pthread_mutex_lock(&ui->stdout_mutex);
                 printf("\033[%d;0H", line);
                 printf("\033[K  %s%s%s", COLOR_BOLD, color, glitched);
@@ -165,16 +163,15 @@ static void* glitch_loop(void* arg) {
         
         for (int burst = 0; burst < 3 && ui->running; burst++) {
             for (int frame = 0; frame < 15 && ui->running; frame++) {
-                if (ui->glitch_paused) { 
-                    usleep(50000); 
-                    break; 
+                if (ui->glitch_paused) {
+                    usleep(50000);
+                    break;
                 }
                 
                 char* glitched = ui_apply_glitch(current_text, 30 + (burst * 20));
                 const char* colors[] = {COLOR_MAGENTA, COLOR_RED, COLOR_YELLOW, COLOR_CYAN, COLOR_GREEN};
                 const char* color = colors[frame % 5];
                 
-                // ★ stdout mutex lock
                 pthread_mutex_lock(&ui->stdout_mutex);
                 printf("\033[%d;0H", line);
                 printf("\033[K  %s%s%s", COLOR_BOLD, color, glitched);
@@ -186,7 +183,6 @@ static void* glitch_loop(void* arg) {
             }
             if (!ui->running) break;
             
-            // ★ stdout mutex lock
             pthread_mutex_lock(&ui->stdout_mutex);
             printf("\033[%d;0H", line);
             printf("\033[K  %s%s%s", COLOR_BOLD, COLOR_WHITE, current_text);
@@ -197,7 +193,6 @@ static void* glitch_loop(void* arg) {
         
         if (!ui->running) break;
         
-        // ★ stdout mutex lock
         pthread_mutex_lock(&ui->stdout_mutex);
         printf("\033[%d;0H", line);
         printf("\033[K  %s%s%s", COLOR_BOLD, COLOR_WHITE, current_text);
@@ -207,7 +202,6 @@ static void* glitch_loop(void* arg) {
         
         if (!ui->running) break;
         
-        // ★ stdout mutex lock
         pthread_mutex_lock(&ui->stdout_mutex);
         printf("\033[%d;0H", line);
         printf("\033[K  ");
@@ -216,9 +210,9 @@ static void* glitch_loop(void* arg) {
         
         int len = strlen(current_text);
         for (int i = 0; i < len && ui->running; i++) {
-            if (ui->glitch_paused) { 
-                usleep(50000); 
-                continue; 
+            if (ui->glitch_paused) {
+                usleep(50000);
+                continue;
             }
             
             int remaining_len = len - i - 1;
@@ -227,7 +221,6 @@ static void* glitch_loop(void* arg) {
             const char* colors[] = {COLOR_RED, COLOR_MAGENTA, COLOR_YELLOW, COLOR_CYAN};
             const char* color = colors[ui_random_int(0, 3)];
             
-            // ★ stdout mutex lock
             pthread_mutex_lock(&ui->stdout_mutex);
             printf("\033[%d;0H", line);
             printf("\033[K  %s%s%s", COLOR_BOLD, color, glitched);
@@ -240,7 +233,6 @@ static void* glitch_loop(void* arg) {
         
         if (!ui->running) break;
         
-        // ★ stdout mutex lock
         pthread_mutex_lock(&ui->stdout_mutex);
         printf("\033[%d;0H", line);
         printf("\033[K  ");
@@ -262,7 +254,7 @@ void ui_init(UI* ui) {
     printf("%s", COLOR_HIDE);
     fflush(stdout);
     ui_show_banner();
-    ui_show_prompt();
+    ui_show_prompt(ui);
 }
 
 void ui_start(UI* ui) {
@@ -286,10 +278,10 @@ void ui_show_banner(void) {
     const char* banner[] = {
         "  ============================================",
         "        ██████╗ ██████╗  ██████╗ █████╗ ",
-        "       ██╔═══██╗██╔══██╗██╔════╝██╔══██╗",
-        "       ██║   ██║██████╔╝██║     ███████║",
-        "       ██║   ██║██╔══██╗██║     ██╔══██║",
-        "       ╚██████╔╝██║  ██║╚██████╗██║  ██║",
+        "       ██╔═══██╗██╔══██╗██╔════╝██╔══██╗ C",
+        "       ██║   ██║██████╔╝██║     ███████║ H",
+        "       ██║   ██║██╔══██╗██║     ██╔══██║ A",
+        "       ╚██████╔╝██║  ██║╚██████╗██║  ██║ T",
         "        ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
         "  ============================================",
         "",
@@ -307,8 +299,8 @@ void ui_show_banner(void) {
     fflush(stdout);
 }
 
-void ui_show_prompt(void) {
-    // ★ stdout mutex lock
+void ui_show_prompt(UI* ui) {
+    if (!ui) return;
     pthread_mutex_lock(&ui->stdout_mutex);
     printf("\033[12;0H");
     printf("  %s%sCommands: /help, /peers, /register, /exit%s\n", 
@@ -318,17 +310,16 @@ void ui_show_prompt(void) {
     pthread_mutex_unlock(&ui->stdout_mutex);
 }
 
-void ui_show_message(const char* level, const char* msg) {
+void ui_show_message(UI* ui, const char* level, const char* msg) {
+    if (!ui) return;
     const char* color = COLOR_GREEN;
     if (strcmp(level, "ERROR") == 0) color = COLOR_RED;
     else if (strcmp(level, "WARNING") == 0) color = COLOR_YELLOW;
     else if (strcmp(level, "INFO") == 0) color = COLOR_CYAN;
     
-    // ★ Pause glitch
     ui->glitch_paused = true;
     usleep(50000);
     
-    // ★ stdout mutex lock
     pthread_mutex_lock(&ui->stdout_mutex);
     printf("\n\033[K  %s%s[%s] %s%s%s\n", 
            COLOR_BOLD, color, level, COLOR_RESET, msg, COLOR_RESET);
@@ -336,17 +327,15 @@ void ui_show_message(const char* level, const char* msg) {
     fflush(stdout);
     pthread_mutex_unlock(&ui->stdout_mutex);
     
-    // ★ Resume glitch
     usleep(50000);
     ui->glitch_paused = false;
 }
 
-void ui_show_status(const char* status) {
-    // ★ Pause glitch
+void ui_show_status(UI* ui, const char* status) {
+    if (!ui) return;
     ui->glitch_paused = true;
     usleep(50000);
     
-    // ★ stdout mutex lock
     pthread_mutex_lock(&ui->stdout_mutex);
     printf("\n\033[K  %s%s✓ %s%s\n", 
            COLOR_BOLD, COLOR_GREEN, status, COLOR_RESET);
@@ -354,20 +343,18 @@ void ui_show_status(const char* status) {
     fflush(stdout);
     pthread_mutex_unlock(&ui->stdout_mutex);
     
-    // ★ Resume glitch
     usleep(50000);
     ui->glitch_paused = false;
 }
 
-void ui_show_peer(const char* id, const char* ip, bool online) {
+void ui_show_peer(UI* ui, const char* id, const char* ip, bool online) {
+    if (!ui) return;
     const char* status = online ? "ONLINE" : "OFFLINE";
     const char* color = online ? COLOR_GREEN : COLOR_RED;
     
-    // ★ Pause glitch
     ui->glitch_paused = true;
     usleep(50000);
     
-    // ★ stdout mutex lock
     pthread_mutex_lock(&ui->stdout_mutex);
     printf("\n\033[K  %s%s%s%s - %s %s%s\n",
            COLOR_BOLD, color, id, COLOR_RESET,
@@ -376,17 +363,15 @@ void ui_show_peer(const char* id, const char* ip, bool online) {
     fflush(stdout);
     pthread_mutex_unlock(&ui->stdout_mutex);
     
-    // ★ Resume glitch
     usleep(50000);
     ui->glitch_paused = false;
 }
 
-void ui_show_help(void) {
-    // ★ Pause glitch
+void ui_show_help(UI* ui) {
+    if (!ui) return;
     ui->glitch_paused = true;
     usleep(50000);
     
-    // ★ stdout mutex lock
     pthread_mutex_lock(&ui->stdout_mutex);
     printf("\n\033[K  %s%sORCASHI Commands:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
     printf("  %s  /help     - Show this help%s\n", COLOR_BOLD, COLOR_RESET);
@@ -400,7 +385,6 @@ void ui_show_help(void) {
     fflush(stdout);
     pthread_mutex_unlock(&ui->stdout_mutex);
     
-    // ★ Resume glitch
     usleep(50000);
     ui->glitch_paused = false;
 }
