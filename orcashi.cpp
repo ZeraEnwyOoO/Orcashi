@@ -1,4 +1,4 @@
-// orcashi.cpp - ORCASHI v3.1 with libtorrent
+ // orcashi.cpp - ORCASHI v3.1 with jech/dht
 #include "orcashi.hpp"
 #include "registry.hpp"
 #include "request.hpp"
@@ -43,9 +43,9 @@ ORCASHI::~ORCASHI() {
 
 bool ORCASHI::init() {
     if (dht.init()) {
-        cout << "[DHT] libtorrent DHT initialized!" << endl;
+        cout << "[DHT] jech/dht initialized!" << endl;
     } else {
-        cout << "[DHT] libtorrent DHT initialization failed!" << endl;
+        cout << "[DHT] jech/dht initialization failed!" << endl;
     }
     return true;
 }
@@ -241,12 +241,12 @@ bool ORCASHI::register_identity() {
         if (dht.is_initialized()) {
             string endpoint = ip + ":9000";
             if (dht.put(id, endpoint)) {
-                cout << "  [DHT] Stored in libtorrent DHT!" << endl;
+                cout << "  [DHT] Stored in jech/dht!" << endl;
             } else {
-                cout << "  [DHT] Failed to store in libtorrent DHT!" << endl;
+                cout << "  [DHT] Failed to store in jech/dht!" << endl;
             }
         } else {
-            cout << "  [DHT] libtorrent DHT not available!" << endl;
+            cout << "  [DHT] jech/dht not available!" << endl;
         }
         
         cout << "\n  Your friends can connect using:\n";
@@ -267,7 +267,7 @@ bool ORCASHI::connect_peer(const string& id) {
         return join_room(peer.ip);
     }
     
-    cout << "  [ORCA] Looking up " << id << " in libtorrent DHT..." << endl;
+    cout << "  [ORCA] Looking up " << id << " in jech/dht..." << endl;
     
     if (!dht.is_initialized()) {
         cout << "  [ORCA] DHT not initialized!" << endl;
@@ -378,7 +378,7 @@ void ORCASHI::show_banner() {
         cout << GREEN << "Mode: Linux (TCP Connect)" << RESET << endl;
     }
     if (dht.is_initialized()) {
-        cout << GREEN << "DHT: libtorrent" << RESET << endl;
+        cout << GREEN << "DHT: jech/dht" << RESET << endl;
     } else {
         cout << YELLOW << "DHT: Not connected" << RESET << endl;
     }
