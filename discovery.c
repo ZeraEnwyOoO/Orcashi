@@ -1,5 +1,10 @@
- // discovery.c - UDP Discovery Implementation in C
+ #define _POSIX_C_SOURCE 200809L
+
 #include "discovery.h"
+#include <sys/select.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <time.h>
 
 #define BUFFER_SIZE 4096
 #define BROADCAST_INTERVAL 30
@@ -188,7 +193,7 @@ void discovery_broadcast_search(Discovery* disc, const char* id) {
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip) {
     if (strncmp(msg, "ORCA_PRESENCE:", 14) == 0) {
         const char* rest = msg + 14;
-        char* colon = strchr(rest, ':');
+        const char* colon = strchr(rest, ':');
         if (colon) {
             char id[64];
             char endpoint[128];
@@ -199,7 +204,6 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
             
             pthread_mutex_lock(&disc->mutex);
             
-            // Check if peer exists
             int found = -1;
             for (int i = 0; i < disc->peer_count; i++) {
                 if (strcmp(disc->peers[i].id, id) == 0) {
@@ -220,7 +224,6 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
                 peer->last_seen = time(NULL);
                 peer->online = true;
                 
-                // Parse port from endpoint
                 char* port_colon = strchr(endpoint, ':');
                 if (port_colon) {
                     peer->port = atoi(port_colon + 1);
