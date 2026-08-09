@@ -1,35 +1,72 @@
-// plug.cpp
-#include "plug.hpp"
-#include <iostream>
-#include <cstring>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
+ // plug.c - TCP Plug Implementation in C
+#include "plug.h"
 #include <unistd.h>
 #include <fcntl.h>
-#include <errno.h>
 #include <netinet/tcp.h>
+#include <sys/select.h>
+#include <time.h>
 
-using namespace std;
+#define QUEUE_INITIAL_SIZE 100
+#define BUFFER_SIZE 4096
 
-TCPPlug::TCPPlug() : plug_socket(-1), client_socket(-1), connected(false), running(true) {}
+static void* receive_loop(void* arg);
+static void* send_loop(void* arg);
 
-TCPPlug::~TCPPlug() {
-    running = false;
-    if (receive_thread.joinable()) receive_thread.join();
-    if (send_thread.joinable()) send_thread.join();
-    close_connection();
+TCPPlug* plug_create(void) {
+    TCPPlug* plug = (TCPPlug*)calloc(1, sizeof(TCPPlug));
+    if (!plug) return NULL;
+    
+    plug->plug_socket = -1;
+    plug->client_socket = -1;
+    plug->connected = false;
+    plug->running = false;
+    plug->queue_capacity = QUEUE_INITIAL_SIZE;
+    
+    plug->message_queue = (char**)calloc(QUEUE_INITIAL_SIZE, sizeof(char*));
+    plug->send_queue = (char**)calloc(QUEUE_INITIAL_SIZE, sizeof(char*));
+    
+    pthread_mutex_init(&plug->queue_mutex, NULL);
+    pthread_cond_init(&plug->queue_cond, NULL);
+    
+    return plug;
 }
 
-bool TCPPlug::create_plug(int port) {
-    plug_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (plug_socket < 0) {
-        cout << "\033[31m[ERROR] Failed to create socket!\033[0m" << endl;
+void plug_destroy(TCPPlug* plug) {
+    if (!plug) return;
+    
+    plug_close_connection(plug);
+    
+    if (plug->message_queue) {
+        for (int i = 0; i < plug->message_count; i++) {
+            if (plug->message_queue[i]) free(plug->message_queue[i]);
+        }
+        free(plug->message_queue);
+    }
+    
+    if (plug->send_queue) {
+        for (int i = 0; i < plug->send_count; i++) {
+            if (plug->send_queue[i]) free(plug->send_queue[i]);
+        }
+        free(plug->send_queue);
+    }
+    
+    pthread_mutex_destroy(&plug->queue_mutex);
+    pthread_cond_destroy(&plug->queue_cond);
+    
+    free(plug);
+}
+
+bool plug_create_server(TCPPlug* plug, int port) {
+    if (!plug) return false;
+    
+    plug->plug_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (plug->plug_socket < 0) {
+        fprintf(stderr, "[ERROR] Failed to create socket!\n");
         return false;
     }
     
     int opt = 1;
-    setsockopt(plug_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(plug->plug_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -37,51 +74,53 @@ bool TCPPlug::create_plug(int port) {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(port);
     
-    if (bind(plug_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        cout << "\033[31m[ERROR] Failed to bind to port " << port << "!\033[0m" << endl;
-        close(plug_socket);
+    if (bind(plug->plug_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "[ERROR] Failed to bind to port %d!\n", port);
+        close(plug->plug_socket);
         return false;
     }
     
-    if (listen(plug_socket, 5) < 0) {
-        cout << "\033[31m[ERROR] Failed to listen!\033[0m" << endl;
-        close(plug_socket);
+    if (listen(plug->plug_socket, 5) < 0) {
+        fprintf(stderr, "[ERROR] Failed to listen!\n");
+        close(plug->plug_socket);
         return false;
     }
     
-    cout << "\033[32m[ORCA] TCP Plug is ready on port " << port << "!\033[0m" << endl;
-    cout << "\033[36m[ORCA] Waiting for connection...\033[0m" << endl;
+    printf("[ORCA] TCP Plug ready on port %d\n", port);
+    printf("[ORCA] Waiting for connection...\n");
     
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
-    client_socket = accept(plug_socket, (struct sockaddr*)&client_addr, &addr_len);
-    if (client_socket < 0) {
-        cout << "\033[31m[ERROR] Failed to accept connection!\033[0m" << endl;
-        close(plug_socket);
+    plug->client_socket = accept(plug->plug_socket, (struct sockaddr*)&client_addr, &addr_len);
+    
+    if (plug->client_socket < 0) {
+        fprintf(stderr, "[ERROR] Failed to accept connection!\n");
+        close(plug->plug_socket);
         return false;
     }
     
-    char ip[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
-    peer_ip = string(ip);
-    peer_id = peer_ip;
-    connected = true;
+    inet_ntop(AF_INET, &client_addr.sin_addr, plug->peer_ip, INET_ADDRSTRLEN);
+    strcpy(plug->peer_id, plug->peer_ip);
+    plug->connected = true;
+    plug->running = true;
     
-    cout << "\033[32m[ORCA] Client connected from " << peer_ip << "!\033[0m" << endl;
+    printf("[ORCA] Client connected from %s!\n", plug->peer_ip);
     
     int flag = 1;
-    setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+    setsockopt(plug->client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     
-    receive_thread = thread(&TCPPlug::receive_loop, this);
-    send_thread = thread(&TCPPlug::send_loop, this);
+    pthread_create(&plug->receive_thread, NULL, receive_loop, plug);
+    pthread_create(&plug->send_thread, NULL, send_loop, plug);
     
     return true;
 }
 
-bool TCPPlug::connect_to_plug(const std::string& target_ip, int port) {
-    client_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (client_socket < 0) {
-        cout << "\033[31m[ERROR] Failed to create socket!\033[0m" << endl;
+bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port) {
+    if (!plug) return false;
+    
+    plug->client_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (plug->client_socket < 0) {
+        fprintf(stderr, "[ERROR] Failed to create socket!\n");
         return false;
     }
     
@@ -89,111 +128,212 @@ bool TCPPlug::connect_to_plug(const std::string& target_ip, int port) {
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    inet_pton(AF_INET, target_ip.c_str(), &addr.sin_addr);
+    inet_pton(AF_INET, target_ip, &addr.sin_addr);
     
-    if (connect(client_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        cout << "\033[31m[ERROR] Failed to connect to " << target_ip << ":" << port << "!\033[0m" << endl;
-        close(client_socket);
+    if (connect(plug->client_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "[ERROR] Failed to connect to %s:%d!\n", target_ip, port);
+        close(plug->client_socket);
         return false;
     }
     
-    peer_ip = target_ip;
-    peer_id = target_ip;
-    connected = true;
+    strcpy(plug->peer_ip, target_ip);
+    strcpy(plug->peer_id, target_ip);
+    plug->connected = true;
+    plug->running = true;
     
-    cout << "\033[32m[ORCA] Connected to " << target_ip << ":" << port << "!\033[0m" << endl;
+    printf("[ORCA] Connected to %s:%d!\n", target_ip, port);
     
     int flag = 1;
-    setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+    setsockopt(plug->client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     
-    receive_thread = thread(&TCPPlug::receive_loop, this);
-    send_thread = thread(&TCPPlug::send_loop, this);
+    pthread_create(&plug->receive_thread, NULL, receive_loop, plug);
+    pthread_create(&plug->send_thread, NULL, send_loop, plug);
     
     return true;
 }
 
-void TCPPlug::send_loop() {
-    while (running && connected) {
-        string msg;
-        {
-            unique_lock<mutex> lock(queue_mtx);
-            if (!cv.wait_for(lock, chrono::milliseconds(100), [this] { return !send_queue.empty() || !running; })) {
-                continue;
-            }
-            if (!running) break;
-            msg = send_queue.front();
-            send_queue.pop();
-        }
-        
-        string msg_with_newline = msg + "\n";
-        lock_guard<mutex> lock(send_mtx);
-        int n = send(client_socket, msg_with_newline.c_str(), msg_with_newline.length(), MSG_NOSIGNAL);
-        if (n <= 0) {
-            cout << "\033[33m[ORCA] Send failed. Connection may be closed.\033[0m" << endl;
-            connected = false;
-            break;
-        }
-    }
-}
-
-void TCPPlug::receive_loop() {
-    char buffer[4096];
-    string accumulated;
+static void* receive_loop(void* arg) {
+    TCPPlug* plug = (TCPPlug*)arg;
+    char buffer[BUFFER_SIZE];
+    char* accumulated = (char*)calloc(1, BUFFER_SIZE * 2);
+    int acc_len = 0;
     
-    while (running && connected) {
-        int n = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+    while (plug->running && plug->connected) {
+        int n = recv(plug->client_socket, buffer, BUFFER_SIZE - 1, 0);
         if (n <= 0) {
-            cout << "\033[33m[ORCA] Connection closed by peer.\033[0m" << endl;
-            connected = false;
+            printf("[ORCA] Connection closed by peer.\n");
+            plug->connected = false;
             break;
         }
         
         buffer[n] = '\0';
-        accumulated += buffer;
         
-        size_t pos;
-        while ((pos = accumulated.find('\n')) != string::npos) {
-            string msg = accumulated.substr(0, pos);
-            accumulated.erase(0, pos + 1);
-            if (!msg.empty()) {
-                lock_guard<mutex> lock(queue_mtx);
-                message_queue.push(msg);
+        // Append to accumulated
+        if (acc_len + n < BUFFER_SIZE * 2) {
+            memcpy(accumulated + acc_len, buffer, n);
+            acc_len += n;
+        }
+        
+        // Process messages
+        char* pos = accumulated;
+        char* newline;
+        while ((newline = strchr(pos, '\n')) != NULL) {
+            *newline = '\0';
+            if (strlen(pos) > 0) {
+                char* msg = (char*)malloc(strlen(pos) + 1);
+                strcpy(msg, pos);
+                
+                pthread_mutex_lock(&plug->queue_mutex);
+                if (plug->message_count < plug->queue_capacity) {
+                    plug->message_queue[plug->message_count++] = msg;
+                } else {
+                    free(msg);
+                }
+                pthread_cond_signal(&plug->queue_cond);
+                pthread_mutex_unlock(&plug->queue_mutex);
             }
+            pos = newline + 1;
+        }
+        
+        // Keep remaining data
+        if (pos > accumulated) {
+            acc_len = strlen(pos);
+            memmove(accumulated, pos, acc_len + 1);
         }
     }
+    
+    free(accumulated);
+    return NULL;
 }
 
-bool TCPPlug::send_message(const std::string& msg) {
-    if (!connected) return false;
-    lock_guard<mutex> lock(queue_mtx);
-    send_queue.push(msg);
-    cv.notify_one();
+static void* send_loop(void* arg) {
+    TCPPlug* plug = (TCPPlug*)arg;
+    
+    while (plug->running && plug->connected) {
+        char* msg = NULL;
+        
+        pthread_mutex_lock(&plug->queue_mutex);
+        while (plug->send_count == 0 && plug->running) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 1;
+            pthread_cond_timedwait(&plug->queue_cond, &plug->queue_mutex, &ts);
+        }
+        
+        if (!plug->running) {
+            pthread_mutex_unlock(&plug->queue_mutex);
+            break;
+        }
+        
+        if (plug->send_count > 0) {
+            msg = plug->send_queue[0];
+            for (int i = 0; i < plug->send_count - 1; i++) {
+                plug->send_queue[i] = plug->send_queue[i + 1];
+            }
+            plug->send_count--;
+        }
+        pthread_mutex_unlock(&plug->queue_mutex);
+        
+        if (msg) {
+            char* msg_with_newline = (char*)malloc(strlen(msg) + 2);
+            sprintf(msg_with_newline, "%s\n", msg);
+            free(msg);
+            
+            send(plug->client_socket, msg_with_newline, strlen(msg_with_newline), MSG_NOSIGNAL);
+            free(msg_with_newline);
+        }
+    }
+    
+    return NULL;
+}
+
+bool plug_send_message(TCPPlug* plug, const char* msg) {
+    if (!plug || !plug->connected) return false;
+    
+    pthread_mutex_lock(&plug->queue_mutex);
+    if (plug->send_count >= plug->queue_capacity) {
+        pthread_mutex_unlock(&plug->queue_mutex);
+        return false;
+    }
+    
+    char* msg_copy = (char*)malloc(strlen(msg) + 1);
+    strcpy(msg_copy, msg);
+    plug->send_queue[plug->send_count++] = msg_copy;
+    pthread_cond_signal(&plug->queue_cond);
+    pthread_mutex_unlock(&plug->queue_mutex);
+    
     return true;
 }
 
-bool TCPPlug::receive_message(std::string& msg, int timeout_ms) {
-    unique_lock<mutex> lock(queue_mtx);
-    if (timeout_ms > 0) {
-        if (!cv.wait_for(lock, chrono::milliseconds(timeout_ms), [this] { return !message_queue.empty(); })) {
-            return false;
+bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms) {
+    if (!plug) return false;
+    
+    pthread_mutex_lock(&plug->queue_mutex);
+    
+    if (plug->message_count == 0) {
+        if (timeout_ms > 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += timeout_ms / 1000;
+            ts.tv_nsec += (timeout_ms % 1000) * 1000000;
+            if (ts.tv_nsec >= 1000000000) {
+                ts.tv_sec++;
+                ts.tv_nsec -= 1000000000;
+            }
+            pthread_cond_timedwait(&plug->queue_cond, &plug->queue_mutex, &ts);
+        } else {
+            pthread_cond_wait(&plug->queue_cond, &plug->queue_mutex);
         }
-    } else {
-        cv.wait(lock, [this] { return !message_queue.empty(); });
     }
-    if (message_queue.empty()) return false;
-    msg = message_queue.front();
-    message_queue.pop();
+    
+    if (plug->message_count == 0) {
+        pthread_mutex_unlock(&plug->queue_mutex);
+        return false;
+    }
+    
+    char* msg_ptr = plug->message_queue[0];
+    strncpy(msg, msg_ptr, msg_size - 1);
+    msg[msg_size - 1] = '\0';
+    free(msg_ptr);
+    
+    for (int i = 0; i < plug->message_count - 1; i++) {
+        plug->message_queue[i] = plug->message_queue[i + 1];
+    }
+    plug->message_count--;
+    
+    pthread_mutex_unlock(&plug->queue_mutex);
     return true;
 }
 
-bool TCPPlug::is_connected() const { return connected; }
-std::string TCPPlug::get_peer_id() const { return peer_id; }
-std::string TCPPlug::get_peer_ip() const { return peer_ip; }
+bool plug_is_connected(TCPPlug* plug) {
+    return plug && plug->connected;
+}
 
-void TCPPlug::close_connection() {
-    running = false;
-    if (client_socket >= 0) close(client_socket);
-    if (plug_socket >= 0) close(plug_socket);
-    connected = false;
-    cv.notify_all();
+const char* plug_get_peer_ip(TCPPlug* plug) {
+    return plug ? plug->peer_ip : NULL;
+}
+
+void plug_close_connection(TCPPlug* plug) {
+    if (!plug) return;
+    
+    plug->running = false;
+    plug->connected = false;
+    
+    if (plug->client_socket >= 0) {
+        close(plug->client_socket);
+        plug->client_socket = -1;
+    }
+    if (plug->plug_socket >= 0) {
+        close(plug->plug_socket);
+        plug->plug_socket = -1;
+    }
+    
+    pthread_cond_broadcast(&plug->queue_cond);
+    
+    if (plug->receive_thread) {
+        pthread_join(plug->receive_thread, NULL);
+    }
+    if (plug->send_thread) {
+        pthread_join(plug->send_thread, NULL);
+    }
 }
