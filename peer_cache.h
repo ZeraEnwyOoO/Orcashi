@@ -1,5 +1,4 @@
- // peer_cache.h - Peer Cache in C (REAL)
-#ifndef PEER_CACHE_H
+ #ifndef PEER_CACHE_H
 #define PEER_CACHE_H
 
 #include <stdio.h>
@@ -11,6 +10,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define MAX_CACHE_PEERS 1024
 #define CACHE_FILE "/tmp/.orcashi/peers.cache"
@@ -34,7 +35,6 @@ typedef struct {
     bool dirty;
 } PeerCache;
 
-// Functions
 PeerCache* peer_cache_create(void);
 void peer_cache_destroy(PeerCache* pc);
 
