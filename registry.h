@@ -1,5 +1,4 @@
- // registry.h - Peer Registry in C
-#ifndef REGISTRY_H
+ #ifndef REGISTRY_H
 #define REGISTRY_H
 
 #include <stdio.h>
@@ -7,6 +6,8 @@
 #include <string.h>
 #include <stdbool.h>
 #include <time.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define MAX_REGISTRY_PEERS 1024
 
@@ -24,7 +25,6 @@ typedef struct {
     char registry_file[512];
 } Registry;
 
-// Functions
 Registry* registry_create(void);
 void registry_destroy(Registry* reg);
 
