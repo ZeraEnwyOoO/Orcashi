@@ -7,7 +7,6 @@ static ORCASHI* g_orcashi = NULL;
 static UI* g_ui = NULL;
 static volatile int running = 1;
 
-// ===== Signal Handler =====
 void signal_handler(int sig) {
     (void)sig;
     printf("\n");
@@ -16,7 +15,6 @@ void signal_handler(int sig) {
     if (g_ui) ui_stop(g_ui);
 }
 
-// ===== ORCASHI Callbacks =====
 void on_peer_found(const char* id, const char* ip) {
     if (g_ui) ui_show_peer(g_ui, id, ip, true);
 }
@@ -33,7 +31,6 @@ void on_status_change(const char* status) {
     if (g_ui) ui_show_status(g_ui, status);
 }
 
-// ===== Command Handler (Interactive Mode) =====
 void command_handler(const char* cmd) {
     if (!cmd || !g_orcashi) return;
     
@@ -44,16 +41,16 @@ void command_handler(const char* cmd) {
     }
     else if (strcmp(cmd, "/help") == 0) {
         printf("\n");
-        printf("  %s%sORCASHI Commands:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-        printf("  %s  /help     - Show this help%s\n", COLOR_BOLD, COLOR_RESET);
-        printf("  %s  /peers    - List connected peers%s\n", COLOR_BOLD, COLOR_RESET);
-        printf("  %s  /register - Register with DHT%s\n", COLOR_BOLD, COLOR_RESET);
-        printf("  %s  /connect  - Connect to peer by ID%s\n", COLOR_BOLD, COLOR_RESET);
-        printf("  %s  /search   - Search peer in DHT%s\n", COLOR_BOLD, COLOR_RESET);
-        printf("  %s  /create   - Create room%s\n", COLOR_BOLD, COLOR_RESET);
-        printf("  %s  /join     - Join room by IP or ID%s\n", COLOR_BOLD, COLOR_RESET);
-        printf("  %s  /status   - Show status%s\n", COLOR_BOLD, COLOR_RESET);
-        printf("  %s  /exit     - Exit program%s\n", COLOR_BOLD, COLOR_RESET);
+        printf("  ORCASHI Commands:\n");
+        printf("    /help     - Show this help\n");
+        printf("    /peers    - List connected peers\n");
+        printf("    /register - Register with DHT\n");
+        printf("    /connect  - Connect to peer by ID\n");
+        printf("    /search   - Search peer in DHT\n");
+        printf("    /create   - Create room\n");
+        printf("    /join     - Join room by IP or ID\n");
+        printf("    /status   - Show status\n");
+        printf("    /exit     - Exit program\n");
         printf("\n");
         fflush(stdout);
     }
@@ -128,15 +125,16 @@ void command_handler(const char* cmd) {
         }
     }
     else if (strcmp(cmd, "/status") == 0) {
-        printf("\n  %sStatus:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-        printf("  ID: %s\n", orcashi_get_my_id(g_orcashi));
-        printf("  Connected: %s\n", orcashi_is_connected(g_orcashi) ? "Yes" : "No");
-        printf("  Registered: %s\n", g_orcashi->registered ? "Yes" : "No");
-        printf("  DHT: %s\n", g_orcashi->dht_enabled ? "Enabled" : "Disabled");
-        printf("  Local IP: %s\n", orcashi_get_local_ip());
+        printf("\n");
+        printf("  Status:\n");
+        printf("    ID: %s\n", orcashi_get_my_id(g_orcashi));
+        printf("    Connected: %s\n", orcashi_is_connected(g_orcashi) ? "Yes" : "No");
+        printf("    Registered: %s\n", g_orcashi->registered ? "Yes" : "No");
+        printf("    DHT: %s\n", g_orcashi->dht_enabled ? "Enabled" : "Disabled");
+        printf("    Local IP: %s\n", orcashi_get_local_ip());
         if (orcashi_is_connected(g_orcashi)) {
-            printf("  Peer ID: %s\n", orcashi_get_peer_id(g_orcashi));
-            printf("  Peer IP: %s\n", orcashi_get_peer_ip(g_orcashi));
+            printf("    Peer ID: %s\n", orcashi_get_peer_id(g_orcashi));
+            printf("    Peer IP: %s\n", orcashi_get_peer_ip(g_orcashi));
         }
         printf("\n");
         fflush(stdout);
@@ -153,86 +151,82 @@ void command_handler(const char* cmd) {
     }
 }
 
-// ===== Show Info Screen (Default) =====
 void show_info_screen(void) {
     printf("%s", COLOR_CLEAR);
     printf("\n");
-    printf("  %s============================================%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("  %s        ██████╗ ██████╗  ██████╗ █████╗ %s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("  %s       ██╔═══██╗██╔══██╗██╔════╝██╔══██╗%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("  %s       ██║   ██║██████╔╝██║     ███████║%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("  %s       ██║   ██║██╔══██╗██║     ██╔══██║%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("  %s       ╚██████╔╝██║  ██║╚██████╗██║  ██║%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("  %s        ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("  %s============================================%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+    printf("  ============================================\n");
+    printf("        ██████╗ ██████╗  ██████╗ █████╗ \n");
+    printf("       ██╔═══██╗██╔══██╗██╔════╝██╔══██╗\n");
+    printf("       ██║   ██║██████╔╝██║     ███████║\n");
+    printf("       ██║   ██║██╔══██╗██║     ██╔══██║\n");
+    printf("       ╚██████╔╝██║  ██║╚██████╗██║  ██║\n");
+    printf("        ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝\n");
+    printf("  ============================================\n");
     printf("\n");
-    printf("  %sORCASHI v3.1 - P2P Encrypted Chat%s\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("  %sNo Servers, No Tracking, No Censorship%s\n", COLOR_BOLD, COLOR_YELLOW, COLOR_RESET);
+    printf("  ORCASHI v3.1 - P2P Encrypted Chat\n");
+    printf("  No Servers, No Tracking, No Censorship\n");
     printf("\n");
-    printf("  %sUsage:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("    %s./orcashi%s              - Interactive mode with glitch animation\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi help%s         - Show help\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi register%s     - Register identity with DHT\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi peers%s        - List all saved peers\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi connect <id>%s - Connect to peer by ID\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi search <id>%s  - Search peer in DHT\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi create%s       - Create a room (server)\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi join <id/ip>%s - Join room by ID or IP\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
+    printf("  Usage:\n");
+    printf("    ./orcashi              - Interactive mode with glitch animation\n");
+    printf("    ./orcashi help         - Show help\n");
+    printf("    ./orcashi register     - Register identity with DHT\n");
+    printf("    ./orcashi peers        - List all saved peers\n");
+    printf("    ./orcashi connect <id> - Connect to peer by ID\n");
+    printf("    ./orcashi search <id>  - Search peer in DHT\n");
+    printf("    ./orcashi create       - Create a room (server)\n");
+    printf("    ./orcashi join <id/ip> - Join room by ID or IP\n");
     printf("\n");
-    printf("  %sInteractive Commands:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("    %s/help%s     - Show commands\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/peers%s    - List connected peers\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/register%s - Register with DHT\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/connect%s  - Connect to peer by ID\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/search%s   - Search peer in DHT\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/create%s   - Create room\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/join%s     - Join room by IP or ID\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/status%s   - Show status\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/exit%s     - Exit program\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
+    printf("  Interactive Commands:\n");
+    printf("    /help     - Show commands\n");
+    printf("    /peers    - List connected peers\n");
+    printf("    /register - Register with DHT\n");
+    printf("    /connect  - Connect to peer by ID\n");
+    printf("    /search   - Search peer in DHT\n");
+    printf("    /create   - Create room\n");
+    printf("    /join     - Join room by IP or ID\n");
+    printf("    /status   - Show status\n");
+    printf("    /exit     - Exit program\n");
     printf("\n");
-    printf("  %sPress Ctrl+C to exit anytime%s\n", COLOR_BOLD, COLOR_YELLOW, COLOR_RESET);
+    printf("  Press Ctrl+C to exit anytime\n");
     printf("\n");
     fflush(stdout);
 }
 
-// ===== Show Help =====
 void show_help(void) {
     printf("\n");
-    printf("  %sORCASHI v3.1 - Help%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("  %s================================%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+    printf("  ORCASHI v3.1 - Help\n");
+    printf("  ================================\n");
     printf("\n");
-    printf("  %sCommands:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("    %s./orcashi%s              - Interactive mode with glitch animation\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi help%s         - Show this help\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi register%s     - Register identity with DHT\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi peers%s        - List all saved peers\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi connect <id>%s - Connect to peer by ID\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi search <id>%s  - Search peer in DHT\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi create%s       - Create a room (server)\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s./orcashi join <id/ip>%s - Join room by ID or IP\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
+    printf("  Commands:\n");
+    printf("    ./orcashi              - Interactive mode with glitch animation\n");
+    printf("    ./orcashi help         - Show help\n");
+    printf("    ./orcashi register     - Register identity with DHT\n");
+    printf("    ./orcashi peers        - List all saved peers\n");
+    printf("    ./orcashi connect <id> - Connect to peer by ID\n");
+    printf("    ./orcashi search <id>  - Search peer in DHT\n");
+    printf("    ./orcashi create       - Create a room (server)\n");
+    printf("    ./orcashi join <id/ip> - Join room by ID or IP\n");
     printf("\n");
-    printf("  %sInteractive Commands:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-    printf("    %s/help%s     - Show commands\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/peers%s    - List connected peers\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/register%s - Register with DHT\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/connect%s  - Connect to peer by ID\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/search%s   - Search peer in DHT\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/create%s   - Create room\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/join%s     - Join room by IP or ID\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/status%s   - Show status\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
-    printf("    %s/exit%s     - Exit program\n", COLOR_BOLD, COLOR_GREEN, COLOR_RESET);
+    printf("  Interactive Commands:\n");
+    printf("    /help     - Show commands\n");
+    printf("    /peers    - List connected peers\n");
+    printf("    /register - Register with DHT\n");
+    printf("    /connect  - Connect to peer by ID\n");
+    printf("    /search   - Search peer in DHT\n");
+    printf("    /create   - Create room\n");
+    printf("    /join     - Join room by IP or ID\n");
+    printf("    /status   - Show status\n");
+    printf("    /exit     - Exit program\n");
     printf("\n");
-    printf("  %sPress Ctrl+C to exit anytime%s\n", COLOR_BOLD, COLOR_YELLOW, COLOR_RESET);
+    printf("  Press Ctrl+C to exit anytime\n");
     printf("\n");
     fflush(stdout);
 }
 
-// ===== Main =====
 int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    // ===== Parse Command Line Arguments (No Dash Style) =====
     if (argc > 1) {
         g_orcashi = orcashi_create();
         if (!g_orcashi) {
@@ -265,7 +259,7 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         else if (strcmp(cmd, "peers") == 0) {
-            printf("\n  %sSaved Peers:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+            printf("\n  Saved Peers:\n");
             orcashi_show_peers(g_orcashi);
             orcashi_destroy(g_orcashi);
             return 0;
@@ -420,7 +414,7 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // ===== Interactive Mode (Default) =====
+    // Interactive Mode
     g_orcashi = orcashi_create();
     if (!g_orcashi) {
         fprintf(stderr, "Failed to create ORCASHI!\n");
@@ -435,19 +429,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // ===== Show Info Screen with Glitch Animation =====
     g_ui = ui_create();
     if (g_ui) {
         ui_set_command_callback(g_ui, command_handler);
         ui_init(g_ui);
-        ui_start(g_ui);  // Glitch animation starts here
+        ui_start(g_ui);
     }
     
-    // Show info screen after glitch starts
     show_info_screen();
     
-    // Show prompt
-    printf("  %s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+    printf("  > ");
     fflush(stdout);
     
     while (running) {
@@ -456,7 +447,7 @@ int main(int argc, char* argv[]) {
         if (strlen(input) > 0) command_handler(input);
         free(input);
         if (running) {
-            printf("  %s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+            printf("  > ");
             fflush(stdout);
         }
     }
@@ -473,7 +464,7 @@ int main(int argc, char* argv[]) {
         g_orcashi = NULL;
     }
     
-    printf("\n  %s%sGoodbye!%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+    printf("\n  Goodbye!\n");
     
     return 0;
 }
