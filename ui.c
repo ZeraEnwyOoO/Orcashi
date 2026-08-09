@@ -47,10 +47,8 @@ UI* ui_create(void) {
     ui->on_command = NULL;
     ui->on_message = NULL;
     ui->glitch_paused = false;
-    
     pthread_mutex_init(&ui->mutex, NULL);
     pthread_mutex_init(&ui->stdout_mutex, NULL);
-    
     srand(time(NULL) ^ getpid());
     int default_count = sizeof(default_slogans) / sizeof(default_slogans[0]);
     ui_set_slogans(ui, default_slogans, default_count);
@@ -112,7 +110,7 @@ void ui_next_slogan(UI* ui) {
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char* current_text = NULL;
-    int line = 9;
+    int line = 9;  // Glitch at line 9
     
     while (ui->running) {
         if (ui->glitch_paused) {
@@ -278,21 +276,22 @@ void ui_show_banner(void) {
     const char* banner[] = {
         "  ============================================",
         "        ██████╗ ██████╗  ██████╗ █████╗ ",
-        "       ██╔═══██╗██╔══██╗██╔════╝██╔══██╗ C",
-        "       ██║   ██║██████╔╝██║     ███████║ H",
-        "       ██║   ██║██╔══██╗██║     ██╔══██║ A",
-        "       ╚██████╔╝██║  ██║╚██████╗██║  ██║ T",
+        "       ██╔═══██╗██╔══██╗██╔════╝██╔══██╗",
+        "       ██║   ██║██████╔╝██║     ███████║",
+        "       ██║   ██║██╔══██╗██║     ██╔══██║",
+        "       ╚██████╔╝██║  ██║╚██████╗██║  ██║",
         "        ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
         "  ============================================",
         "",
         "",  // Glitch at line 9
-        "",
+        "",  // Empty line
+        "",  // Empty line
         "  Commands: /help, /peers, /register, /exit",
         "  > "
     };
     printf("%s", COLOR_CLEAR);
     fflush(stdout);
-    for (int i = 0; i < 13; i++) {
+    for (int i = 0; i < 15; i++) {
         printf("%s%s%s\n", COLOR_BOLD, COLOR_CYAN, banner[i]);
     }
     printf("%s", COLOR_RESET);
@@ -302,7 +301,7 @@ void ui_show_banner(void) {
 void ui_show_prompt(UI* ui) {
     if (!ui) return;
     pthread_mutex_lock(&ui->stdout_mutex);
-    printf("\033[12;0H");
+    printf("\033[13;0H");  // Prompt at line 13
     printf("  %s%sCommands: /help, /peers, /register, /exit%s\n", 
            COLOR_BOLD, COLOR_YELLOW, COLOR_RESET);
     printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
