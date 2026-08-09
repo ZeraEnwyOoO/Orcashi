@@ -1,4 +1,5 @@
- #define _POSIX_C_SOURCE 200809L
+ // ui.c - Fixed Glitch UI (Input works!)
+#define _POSIX_C_SOURCE 200809L
 #include "ui.h"
 #include <unistd.h>
 #include <time.h>
@@ -106,62 +107,90 @@ void ui_next_slogan(UI* ui) {
     pthread_mutex_unlock(&ui->mutex);
 }
 
+// ===== GLITCH LOOP - it work on line 2(not touch input) =====
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char prefix[32] = "[ORCA] ";
     char* current_text = NULL;
+    int line = 5; // hey here what i find i know it
+    
     while (ui->running) {
         if (ui->slogan_count == 0) { sleep(1); continue; }
+        
         pthread_mutex_lock(&ui->mutex);
         char* target_slogan = ui->slogans[ui->slogan_index];
         pthread_mutex_unlock(&ui->mutex);
         if (!target_slogan) { sleep(1); continue; }
+        
         if (!current_text) {
             current_text = strdup(target_slogan);
-            printf("\r\033[K  %s%s%s", COLOR_BOLD, COLOR_CYAN, prefix);
+            
+            // you can move the line it show
+            printf("\033[%d;0H", line);
+            printf("\033[K  %s%s%s", COLOR_BOLD, COLOR_CYAN, prefix);
             fflush(stdout);
+            
             int len = strlen(current_text);
             for (int i = 0; i < len && ui->running; i++) {
                 char* typed = strndup(current_text, i + 1);
                 char* glitched = ui_apply_glitch(typed, ui_random_int(30, 60));
                 const char* colors[] = {COLOR_CYAN, COLOR_MAGENTA, COLOR_RED, COLOR_YELLOW, COLOR_GREEN};
                 const char* color = colors[ui_random_int(0, 4)];
-                printf("\r\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
+                
+                printf("\033[%d;0H", line);
+                printf("\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
                 printf("%s%s%s%s", COLOR_BOLD, color, glitched, COLOR_RESET);
                 if (i < len - 1) printf("%s%s|%s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
                 else printf(" ");
                 fflush(stdout);
+                
                 free(typed); free(glitched);
                 usleep(ui_random_int(30000, 70000));
             }
         }
+        
         if (!ui->running) break;
+        
+        // Glitch burst
         for (int burst = 0; burst < 3 && ui->running; burst++) {
             for (int frame = 0; frame < 15 && ui->running; frame++) {
                 char* glitched = ui_apply_glitch(current_text, 30 + (burst * 20));
                 const char* colors[] = {COLOR_MAGENTA, COLOR_RED, COLOR_YELLOW, COLOR_CYAN, COLOR_GREEN};
                 const char* color = colors[frame % 5];
-                printf("\r\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
+                
+                printf("\033[%d;0H", line);
+                printf("\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
                 printf("%s%s%s%s", COLOR_BOLD, color, glitched, COLOR_RESET);
                 fflush(stdout);
                 free(glitched);
                 usleep(ui_random_int(20000, 50000));
             }
             if (!ui->running) break;
-            printf("\r\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
+            
+            printf("\033[%d;0H", line);
+            printf("\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
             printf("%s%s%s%s", COLOR_BOLD, COLOR_WHITE, current_text, COLOR_RESET);
             fflush(stdout);
             usleep(100000);
         }
+        
         if (!ui->running) break;
-        printf("\r\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
+        
+        // Show clean
+        printf("\033[%d;0H", line);
+        printf("\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
         printf("%s%s %s", COLOR_BOLD, COLOR_WHITE, current_text);
         fflush(stdout);
         sleep(2);
+        
         if (!ui->running) break;
-        printf("\r\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
+        
+        // Delete with glitch
+        printf("\033[%d;0H", line);
+        printf("\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
         printf("%s%s%s", COLOR_BOLD, current_text, COLOR_RESET);
         fflush(stdout);
+        
         int len = strlen(current_text);
         for (int i = 0; i < len && ui->running; i++) {
             int remaining_len = len - i - 1;
@@ -169,29 +198,35 @@ static void* glitch_loop(void* arg) {
             char* glitched = ui_apply_glitch(remaining, ui_random_int(40, 70));
             const char* colors[] = {COLOR_RED, COLOR_MAGENTA, COLOR_YELLOW, COLOR_CYAN};
             const char* color = colors[ui_random_int(0, 3)];
-            printf("\r\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
+            
+            printf("\033[%d;0H", line);
+            printf("\033[K  %s%s%s%s", COLOR_BOLD, COLOR_CYAN, prefix, COLOR_RESET);
             printf("%s%s%s%s", COLOR_BOLD, color, glitched, COLOR_RESET);
             if (i < len - 1) printf("%s%s|%s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
             else printf(" ");
             fflush(stdout);
+            
             free(remaining); free(glitched);
             usleep(ui_random_int(20000, 50000));
         }
+        
         if (!ui->running) break;
-        printf("\r\033[K  %s%s%s", COLOR_BOLD, COLOR_CYAN, prefix);
+        
+        printf("\033[%d;0H", line);
+        printf("\033[K  %s%s%s", COLOR_BOLD, COLOR_CYAN, prefix);
         fflush(stdout);
         usleep(300000);
-        printf("\n  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
-        fflush(stdout);
-        printf("\033[1A");
-        fflush(stdout);
+        
         free(current_text);
         current_text = NULL;
         ui_next_slogan(ui);
     }
+    
     if (current_text) free(current_text);
     return NULL;
 }
+
+// ===== UI Control =====
 
 void ui_init(UI* ui) {
     if (!ui) return;
@@ -255,14 +290,16 @@ void ui_show_message(const char* level, const char* msg) {
     if (strcmp(level, "ERROR") == 0) color = COLOR_RED;
     else if (strcmp(level, "WARNING") == 0) color = COLOR_YELLOW;
     else if (strcmp(level, "INFO") == 0) color = COLOR_CYAN;
-    printf("\r\033[K  %s%s[%s] %s%s%s\n", 
+    
+    // ផ្លាស់ទីទៅបន្ទាត់ខាងក្រោម
+    printf("\n\033[K  %s%s[%s] %s%s%s\n", 
            COLOR_BOLD, color, level, COLOR_RESET, msg, COLOR_RESET);
     printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
     fflush(stdout);
 }
 
 void ui_show_status(const char* status) {
-    printf("\r\033[K  %s%s✓ %s%s\n", 
+    printf("\n\033[K  %s%s✓ %s%s\n", 
            COLOR_BOLD, COLOR_GREEN, status, COLOR_RESET);
     printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
     fflush(stdout);
@@ -271,7 +308,7 @@ void ui_show_status(const char* status) {
 void ui_show_peer(const char* id, const char* ip, bool online) {
     const char* status = online ? "ONLINE" : "OFFLINE";
     const char* color = online ? COLOR_GREEN : COLOR_RED;
-    printf("\r\033[K  %s%s%s%s - %s %s%s\n",
+    printf("\n\033[K  %s%s%s%s - %s %s%s\n",
            COLOR_BOLD, color, id, COLOR_RESET,
            ip, COLOR_BOLD, status);
     printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
@@ -279,11 +316,13 @@ void ui_show_peer(const char* id, const char* ip, bool online) {
 }
 
 void ui_show_help(void) {
-    printf("\r\033[K  %s%sORCASHI Commands:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
+    printf("\n\033[K  %s%sORCASHI Commands:%s\n", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
     printf("  %s  /help     - Show this help%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /peers    - List connected peers%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /register - Register with DHT%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /connect  - Connect to peer by ID%s\n", COLOR_BOLD, COLOR_RESET);
+    printf("  %s  /create   - Create room%s\n", COLOR_BOLD, COLOR_RESET);
+    printf("  %s  /join     - Join room by IP%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /exit     - Exit program%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s%s> %s", COLOR_BOLD, COLOR_CYAN, COLOR_RESET);
     fflush(stdout);
