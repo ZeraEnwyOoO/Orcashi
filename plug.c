@@ -1,10 +1,11 @@
- // plug.c - TCP Plug Implementation in C
+ #define _POSIX_C_SOURCE 200809L
+
 #include "plug.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <sys/select.h>
-#include <time.h>
+#include <sys/time.h>
 
 #define QUEUE_INITIAL_SIZE 100
 #define BUFFER_SIZE 4096
@@ -168,13 +169,11 @@ static void* receive_loop(void* arg) {
         
         buffer[n] = '\0';
         
-        // Append to accumulated
         if (acc_len + n < BUFFER_SIZE * 2) {
             memcpy(accumulated + acc_len, buffer, n);
             acc_len += n;
         }
         
-        // Process messages
         char* pos = accumulated;
         char* newline;
         while ((newline = strchr(pos, '\n')) != NULL) {
@@ -195,7 +194,6 @@ static void* receive_loop(void* arg) {
             pos = newline + 1;
         }
         
-        // Keep remaining data
         if (pos > accumulated) {
             acc_len = strlen(pos);
             memmove(accumulated, pos, acc_len + 1);
@@ -332,8 +330,10 @@ void plug_close_connection(TCPPlug* plug) {
     
     if (plug->receive_thread) {
         pthread_join(plug->receive_thread, NULL);
+        plug->receive_thread = 0;
     }
     if (plug->send_thread) {
         pthread_join(plug->send_thread, NULL);
+        plug->send_thread = 0;
     }
 }
