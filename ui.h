@@ -29,8 +29,6 @@ typedef struct {
     int glitch_intensity;
     pthread_t glitch_thread;
     pthread_mutex_t mutex;
-    
-    // ★ បន្ថែមពីរនេះ!
     pthread_mutex_t stdout_mutex;
     bool glitch_paused;
     
@@ -50,7 +48,6 @@ void ui_init(UI* ui);
 void ui_start(UI* ui);
 void ui_stop(UI* ui);
 
-// ★ បន្ថែម UI* ui ទៅ functions ទាំងអស់!
 void ui_show_banner(void);
 void ui_show_prompt(UI* ui);
 void ui_show_message(UI* ui, const char* level, const char* msg);
