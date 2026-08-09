@@ -2,7 +2,7 @@
 #define ORCASHI_HPP
 
 #include "plug.hpp"
-#include "dht_libtorrent.hpp"
+#include "dht_wrapper.hpp"
 #include <string>
 #include <atomic>
 #include <thread>
@@ -44,7 +44,7 @@ public:
     
 private:
     TCPPlug plug;
-    DHTLibtorrent dht;
+    DHTWrapper dht;
     std::string my_id;
     std::atomic<bool> running;
     std::thread ui_thread;
