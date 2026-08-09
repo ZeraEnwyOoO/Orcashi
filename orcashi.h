@@ -1,4 +1,4 @@
- // orcashi.h - ORCASHI Main Header with DHT
+ // orcashi.h - APPLICATION LAYER (No UI)
 #ifndef ORCASHI_H
 #define ORCASHI_H
 
@@ -13,7 +13,6 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netdb.h>
-#include <ctype.h>
 
 #include "plug.h"
 #include "discovery.h"
@@ -21,14 +20,15 @@
 #include "request.h"
 #include "peer_cache.h"
 #include "endpoint.h"
+#include "dht.h"
+#include "dht_impl.h"
 
-// DHT Forward declaration (will be added in v2.0)
-// #include "dht.h"
-
-#define ORCASHI_VERSION "1.0"
+#define ORCASHI_VERSION "3.1"
 #define ORCASHI_PORT 9000
+#define DHT_PORT 6881
 
 typedef struct {
+    // Network Layer
     TCPPlug* plug;
     Discovery* discovery;
     Registry* registry;
@@ -36,21 +36,38 @@ typedef struct {
     PeerCache* cache;
     EndpointRegistry* endpoints;
     
+    // DHT
+    int dht_socket;
+    unsigned char dht_id[20];
+    char dht_id_hex[41];
+    bool dht_initialized;
+    pthread_t dht_thread;
+    pthread_mutex_t dht_mutex;
+    
+    // Identity
     char my_id[64];
     char peer_id[64];
     char local_ip[INET_ADDRSTRLEN];
     char peer_ip[INET_ADDRSTRLEN];
     
+    // State
     bool connected;
     bool running;
     bool registered;
+    bool dht_enabled;
     
+    // Threads
     pthread_t chat_thread;
     pthread_t heartbeat_thread;
     pthread_mutex_t mutex;
+    
+    // Callbacks (for UI layer)
+    void (*on_peer_found)(const char* id, const char* ip);
+    void (*on_message_received)(const char* from, const char* msg);
+    void (*on_status_change)(const char* status);
 } ORCASHI;
 
-// Main functions
+// Application functions
 ORCASHI* orcashi_create(void);
 void orcashi_destroy(ORCASHI* orcashi);
 
@@ -67,25 +84,25 @@ const char* orcashi_get_my_id(ORCASHI* orcashi);
 const char* orcashi_get_peer_id(ORCASHI* orcashi);
 const char* orcashi_get_peer_ip(ORCASHI* orcashi);
 
+// DHT Functions
+bool orcashi_dht_init(ORCASHI* orcashi);
+void orcashi_dht_shutdown(ORCASHI* orcashi);
+bool orcashi_dht_register(ORCASHI* orcashi);
+char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id);
+
 // Identity
 bool orcashi_register_identity(ORCASHI* orcashi);
 bool orcashi_connect_peer(ORCASHI* orcashi, const char* id);
 
-// Discovery
-void orcashi_broadcast_presence(ORCASHI* orcashi);
-void orcashi_search_peer(ORCASHI* orcashi, const char* id);
-
-// Peers
-void orcashi_show_peers(ORCASHI* orcashi);
-void orcashi_show_requests(ORCASHI* orcashi);
-bool orcashi_accept_request(ORCASHI* orcashi, const char* from_id);
-
-// UI
-void orcashi_show_banner(ORCASHI* orcashi);
-void orcashi_show_help(void);
+// Callbacks (for UI)
+void orcashi_set_callbacks(ORCASHI* orcashi,
+                          void (*on_peer_found)(const char*, const char*),
+                          void (*on_message_received)(const char*, const char*),
+                          void (*on_status_change)(const char*));
 
 // Helpers
 char* orcashi_generate_id(void);
 char* orcashi_get_local_ip(void);
+char* orcashi_bytes_to_hex(const unsigned char* bytes, int len);
 
 #endif
