@@ -175,10 +175,31 @@ void show_info_screen(void) {
     fflush(stdout);
 }
 
+// ===== Chat Loop with Prompt =====
+void chat_loop(void) {
+    printf("\n  Type /help for commands\n");
+    printf("  > ");
+    fflush(stdout);
+    
+    while (running && orcashi_is_connected(g_orcashi)) {
+        char* input = ui_get_input();
+        if (!input) break;
+        if (strlen(input) > 0) {
+            command_handler(input);
+        }
+        free(input);
+        if (running && orcashi_is_connected(g_orcashi)) {
+            printf("  > ");
+            fflush(stdout);
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
+    // ===== Non-interactive mode =====
     if (argc > 1) {
         g_orcashi = orcashi_create();
         if (!g_orcashi) {
@@ -217,6 +238,7 @@ int main(int argc, char* argv[]) {
         }
         else if (strcmp(cmd, "connect") == 0 && argc >= 3) {
             char* id = argv[2];
+            printf("  [ORCA] Connecting to %s...\n", id);
             if (orcashi_connect_peer(g_orcashi, id)) {
                 printf("  [SUCCESS] Connected!\n");
                 g_ui = ui_create();
@@ -224,12 +246,7 @@ int main(int argc, char* argv[]) {
                     ui_set_command_callback(g_ui, command_handler);
                     ui_init(g_ui);
                     ui_start(g_ui);
-                    while (running && orcashi_is_connected(g_orcashi)) {
-                        char* input = ui_get_input();
-                        if (!input) break;
-                        if (strlen(input) > 0) command_handler(input);
-                        free(input);
-                    }
+                    chat_loop();
                     if (g_ui) {
                         ui_stop(g_ui);
                         ui_destroy(g_ui);
@@ -244,6 +261,7 @@ int main(int argc, char* argv[]) {
         }
         else if (strcmp(cmd, "search") == 0 && argc >= 3) {
             char* id = argv[2];
+            printf("  [DHT] Searching for %s...\n", id);
             char* result = orcashi_dht_lookup(g_orcashi, id);
             if (result) {
                 printf("  [FOUND] %s\n", result);
@@ -255,6 +273,7 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         else if (strcmp(cmd, "create") == 0) {
+            printf("  [ORCA] Creating room on port 9000...\n");
             if (orcashi_create_room(g_orcashi, 9000)) {
                 printf("  [SUCCESS] Room created!\n");
                 printf("  ID: %s\n", orcashi_get_my_id(g_orcashi));
@@ -264,12 +283,7 @@ int main(int argc, char* argv[]) {
                     ui_set_command_callback(g_ui, command_handler);
                     ui_init(g_ui);
                     ui_start(g_ui);
-                    while (running) {
-                        char* input = ui_get_input();
-                        if (!input) break;
-                        if (strlen(input) > 0) command_handler(input);
-                        free(input);
-                    }
+                    chat_loop();
                     if (g_ui) {
                         ui_stop(g_ui);
                         ui_destroy(g_ui);
@@ -285,6 +299,7 @@ int main(int argc, char* argv[]) {
         else if (strcmp(cmd, "join") == 0 && argc >= 3) {
             char* target = argv[2];
             int port = (argc >= 4) ? atoi(argv[3]) : 9000;
+            printf("  [ORCA] Joining %s:%d...\n", target, port);
             if (orcashi_join_room(g_orcashi, target, port)) {
                 printf("  [SUCCESS] Connected!\n");
                 g_ui = ui_create();
@@ -292,12 +307,7 @@ int main(int argc, char* argv[]) {
                     ui_set_command_callback(g_ui, command_handler);
                     ui_init(g_ui);
                     ui_start(g_ui);
-                    while (running && orcashi_is_connected(g_orcashi)) {
-                        char* input = ui_get_input();
-                        if (!input) break;
-                        if (strlen(input) > 0) command_handler(input);
-                        free(input);
-                    }
+                    chat_loop();
                     if (g_ui) {
                         ui_stop(g_ui);
                         ui_destroy(g_ui);
@@ -318,7 +328,7 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // Interactive Mode
+    // ===== Interactive Mode =====
     g_orcashi = orcashi_create();
     if (!g_orcashi) {
         fprintf(stderr, "Failed to create ORCASHI!\n");
