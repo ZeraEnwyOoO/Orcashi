@@ -111,7 +111,7 @@ void ui_next_slogan(UI* ui) {
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char* current_text = NULL;
-    int line = 3;  // Glitch at line 3 (top area)
+    int line = 12;  // Glitch at line 12 (below banner)
     
     while (ui->running) {
         if (ui->glitch_paused) {
@@ -250,10 +250,10 @@ static void* glitch_loop(void* arg) {
 
 void ui_init(UI* ui) {
     if (!ui) return;
-    printf("%s", COLOR_HIDE);
+    // ★ មិនលាក់ cursor - ទុកឱ្យ Fish បង្ហាញ prompt!
     fflush(stdout);
     ui_show_banner();
-    // មិនហៅ ui_show_prompt() - ទុកឱ្យ Fish Shell!
+    // ★ មិនហៅ ui_show_prompt() - Fish គ្រប់គ្រង prompt!
 }
 
 void ui_start(UI* ui) {
@@ -269,7 +269,7 @@ void ui_stop(UI* ui) {
         pthread_join(ui->glitch_thread, NULL);
         ui->glitch_thread = 0;
     }
-    printf("%s", COLOR_SHOW);
+    // ★ មិនបង្ហាញ cursor - Fish គ្រប់គ្រង!
     fflush(stdout);
 }
 
@@ -287,7 +287,7 @@ void ui_show_banner(void) {
         "",  // line 9
         "",  // line 10
         "",  // line 11
-        "",  // line 12 - Glitch
+        "",  // line 12 - Glitch!
         "",
         "",
         ""
@@ -301,9 +301,9 @@ void ui_show_banner(void) {
     fflush(stdout);
 }
 
-// ★ មិនប្រើ Prompt - ទុកឱ្យ Fish Shell!
+// ★ មិនប្រើ - ទុកឱ្យ Fish!
 void ui_show_prompt(UI* ui) {
-    (void)ui;  // មិនធ្វើអ្វីទាំងអស់!
+    (void)ui;
 }
 
 void ui_show_message(UI* ui, const char* level, const char* msg) {
