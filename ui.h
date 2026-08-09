@@ -30,6 +30,10 @@ typedef struct {
     pthread_t glitch_thread;
     pthread_mutex_t mutex;
     
+    // ★ បន្ថែមពីរនេះ!
+    pthread_mutex_t stdout_mutex;   // ការពារ stdout
+    bool glitch_paused;             // បញ្ឈប់ glitch បណ្តោះអាសន្ន
+    
     char* current_slogan;
     char** slogans;
     int slogan_count;
@@ -39,6 +43,7 @@ typedef struct {
     void (*on_message)(const char* msg);
 } UI;
 
+// Functions
 UI* ui_create(void);
 void ui_destroy(UI* ui);
 
