@@ -1,4 +1,4 @@
- // dht_impl.c - DHT Implementation for jech/dht (EVP API)
+ // dht_impl.c - DHT Implementation for jech/dht
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,5 +43,6 @@ void dht_hash(void *hash_return, int hash_size,
 
 int dht_sendto(int sockfd, const void *buf, int len, int flags,
                const struct sockaddr *dest_addr, int addrlen) {
+    printf("[DHT] Sending %d bytes to DHT network\n", len);
     return sendto(sockfd, buf, len, flags, dest_addr, addrlen);
 }
