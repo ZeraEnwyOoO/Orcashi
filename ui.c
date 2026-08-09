@@ -5,8 +5,8 @@
 
 static const char* glitch_chars = "!@#$%^&*()_+-=[]{}|;:,.<>?/01";
 static const char* default_slogans[] = {
-    "You are not alone here.",
     "Welcome to ORCASHI v3.1",
+    "You are not alone here.",
     "Talk Freely, Stay Anonymous"
 };
 
@@ -111,7 +111,7 @@ void ui_next_slogan(UI* ui) {
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char* current_text = NULL;
-    int line = 12;
+    int line = 3;
     
     while (ui->running) {
         if (ui->glitch_paused) {
@@ -250,10 +250,8 @@ static void* glitch_loop(void* arg) {
 
 void ui_init(UI* ui) {
     if (!ui) return;
-    // ★ មិនលាក់ cursor - ទុកឱ្យ Fish បង្ហាញ prompt!
     fflush(stdout);
     ui_show_banner();
-    // ★ មិនហៅ ui_show_prompt() - Fish គ្រប់គ្រង prompt!
 }
 
 void ui_start(UI* ui) {
@@ -283,24 +281,20 @@ void ui_show_banner(void) {
         "        ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
         "  ============================================",
         "",
-        "",  // line 9
-        "",  // line 10
-        "",  // line 11
-        "",  // line 12 - Glitch!
+        "",  // Glitch line
         "",
         "",
         ""
     };
     printf("%s", COLOR_CLEAR);
     fflush(stdout);
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < 13; i++) {
         printf("%s%s%s\n", COLOR_BOLD, COLOR_CYAN, banner[i]);
     }
     printf("%s", COLOR_RESET);
     fflush(stdout);
 }
 
-// ★ មិនប្រើ - ទុកឱ្យ Fish គ្រប់គ្រង!
 void ui_show_prompt(UI* ui) {
     (void)ui;
 }
@@ -331,8 +325,8 @@ void ui_show_status(UI* ui, const char* status) {
     usleep(50000);
     
     pthread_mutex_lock(&ui->stdout_mutex);
-    printf("\n\033[K  %s%s✓ %s%s\n", 
-           COLOR_BOLD, COLOR_GREEN, status, COLOR_RESET);
+    printf("\n\033[K  %s%s%s %s%s\n", 
+           COLOR_BOLD, COLOR_GREEN, "[STATUS]", status, COLOR_RESET);
     fflush(stdout);
     pthread_mutex_unlock(&ui->stdout_mutex);
     
@@ -370,8 +364,10 @@ void ui_show_help(UI* ui) {
     printf("  %s  /peers    - List connected peers%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /register - Register with DHT%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /connect  - Connect to peer by ID%s\n", COLOR_BOLD, COLOR_RESET);
+    printf("  %s  /search   - Search peer in DHT%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /create   - Create room%s\n", COLOR_BOLD, COLOR_RESET);
-    printf("  %s  /join     - Join room by IP%s\n", COLOR_BOLD, COLOR_RESET);
+    printf("  %s  /join     - Join room by IP or ID%s\n", COLOR_BOLD, COLOR_RESET);
+    printf("  %s  /status   - Show status%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s  /exit     - Exit program%s\n", COLOR_BOLD, COLOR_RESET);
     printf("  %s\n", COLOR_RESET);
     fflush(stdout);
