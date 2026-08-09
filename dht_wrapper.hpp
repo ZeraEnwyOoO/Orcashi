@@ -1,4 +1,4 @@
- #ifndef DHT_WRAPPER_HPP
+#ifndef DHT_WRAPPER_HPP
 #define DHT_WRAPPER_HPP
 
 #include <string>
