@@ -6,8 +6,7 @@
 static const char* glitch_chars = "!@#$%^&*()_+-=[]{}|;:,.<>?/01";
 static const char* default_slogans[] = {
     "Welcome to ORCASHI v3.1",
-    "P2P Encrypted Chat",
-    "No Servers, No Tracking",
+    "You are not alone here.",
     "Talk Freely, Stay Anonymous"
 };
 
@@ -106,10 +105,11 @@ void ui_next_slogan(UI* ui) {
     pthread_mutex_unlock(&ui->mutex);
 }
 
+// ===== GLITCH LOOP - Only AFTER banner (line 10) =====
 static void* glitch_loop(void* arg) {
     UI* ui = (UI*)arg;
     char* current_text = NULL;
-    int line = 2;
+    int line = 10; // បន្ទាប់ពី banner ចប់
     
     while (ui->running) {
         if (ui->slogan_count == 0) { sleep(1); continue; }
@@ -121,6 +121,7 @@ static void* glitch_loop(void* arg) {
         
         if (!current_text) {
             current_text = strdup(target_slogan);
+            
             printf("\033[%d;0H", line);
             printf("\033[K  ");
             fflush(stdout);
@@ -244,13 +245,14 @@ void ui_show_banner(void) {
         "        ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝",
         "  ============================================",
         "",
+        "",  // Glitch will appear here (line 10)
         "",
         "  Commands: /help, /peers, /register, /exit",
         "  > "
     };
     printf("%s", COLOR_CLEAR);
     fflush(stdout);
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 13; i++) {
         printf("%s%s%s\n", COLOR_BOLD, COLOR_CYAN, banner[i]);
     }
     printf("%s", COLOR_RESET);
