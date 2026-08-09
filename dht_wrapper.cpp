@@ -112,6 +112,7 @@ bool DHTWrapper::init() {
         cerr << "[DHT] Failed to create socket!" << endl;
         return false;
     }
+    cout << "[DHT] Socket created: " << sock << endl;
     
     int opt = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
@@ -131,13 +132,17 @@ bool DHTWrapper::init() {
         close(sock);
         return false;
     }
+    cout << "[DHT] Socket bound to port " << local_port << endl;
     
     // ===== CREATE DHT ID (20 bytes) =====
     unsigned char my_id[20];
     dht_random_bytes(my_id, 20);
     
     // ===== INITIALIZE DHT =====
+    cout << "[DHT] Calling dht_init with sock=" << sock << endl;
     int result = dht_init(sock, 0, my_id, NULL);
+    cout << "[DHT] dht_init returned: " << result << endl;
+    
     if (result < 0) {
         cerr << "[DHT] Failed to initialize DHT node (error: " << result << ")" << endl;
         close(sock);
