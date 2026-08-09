@@ -198,7 +198,7 @@ const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
     return orcashi ? orcashi->peer_ip : NULL;
 }
 
-// ===== DHT Functions =====
+// ===== DHT Functions (ប្រើ dht.c ដោយផ្ទាល់) =====
 
 bool orcashi_dht_init(ORCASHI* orcashi) {
     if (!orcashi) return false;
@@ -225,6 +225,7 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
         return false;
     }
     
+    // ===== ហៅ dht_init ពី dht.c =====
     int result = dht_init(orcashi->dht_socket, -1, orcashi->dht_id, NULL);
     if (result < 0) {
         fprintf(stderr, "[DHT] dht_init failed!\n");
@@ -239,7 +240,7 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
     dht_set_debug(1);
     dht_set_log_file("/tmp/.orcashi/dht.log");
     
-    // Bootstrap
+    // ===== Bootstrap =====
     const char* bootstrap_nodes[] = {
         "router.bittorrent.com",
         "dht.transmissionbt.com",
@@ -254,6 +255,7 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
             memcpy(&boot_addr.sin_addr, he->h_addr_list[0], he->h_length);
             boot_addr.sin_family = AF_INET;
             boot_addr.sin_port = htons(6881);
+            // ===== ហៅ dht_ping_node ពី dht.c =====
             dht_ping_node((struct sockaddr*)&boot_addr, sizeof(boot_addr));
         }
         usleep(100000);
@@ -269,6 +271,7 @@ void orcashi_dht_shutdown(ORCASHI* orcashi) {
     if (!orcashi || !orcashi->dht_initialized) return;
     orcashi->dht_initialized = false;
     orcashi->dht_enabled = false;
+    // ===== ហៅ dht_uninit ពី dht.c =====
     dht_uninit();
     if (orcashi->dht_socket >= 0) {
         close(orcashi->dht_socket);
@@ -365,7 +368,6 @@ void orcashi_set_callbacks(ORCASHI* orcashi,
                           void (*on_message_received)(const char*, const char*),
                           void (*on_status_change)(const char*)) {
     if (!orcashi) return;
-    // Store callbacks (simplified)
     (void)on_peer_found;
     (void)on_message_received;
     (void)on_status_change;
@@ -422,14 +424,7 @@ static void orcashi_show_banner(ORCASHI* orcashi) {
 
 static void on_peer_found_callback(PeerInfo* peer) {
     if (!peer) return;
-    CachePeer cache_peer;
-    strcpy(cache_peer.id, peer->id);
-    strcpy(cache_peer.endpoint, peer->endpoint);
-    strcpy(cache_peer.ip, peer->ip);
-    cache_peer.port = peer->port;
-    cache_peer.online = true;
-    cache_peer.last_seen = peer->last_seen;
-    // Save would need global ORCASHI pointer
+    (void)peer;
 }
 
 static void on_peer_offline_callback(PeerInfo* peer) {
