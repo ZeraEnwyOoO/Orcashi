@@ -1,4 +1,4 @@
- // dht_wrapper.cpp - DHT Wrapper for jech/dht (FIXED)
+ // dht_wrapper.cpp - DHT Wrapper for jech/dht (FIXED - using dht_search)
 #include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
@@ -159,7 +159,7 @@ bool DHTWrapper::init() {
     return true;
 }
 
-// ==================== FIXED PUT() ====================
+// ==================== PUT (Store ID → Endpoint) ====================
 bool DHTWrapper::put(const string& key, const string& value) {
     if (!initialized) {
         cerr << "[DHT] Cannot store: DHT not initialized!" << endl;
@@ -175,14 +175,14 @@ bool DHTWrapper::put(const string& key, const string& value) {
         info_hash[i] = stoi(key_hash.substr(i*2, 2), nullptr, 16);
     }
     
-    // ===== ANNOUNCE TO DHT =====
-    int result = dht_announce(info_hash, 9000, NULL, 0);
-    cout << "[DHT] dht_announce returned: " << result << endl;
+    // Announce to DHT
+    int result = dht_search(info_hash, 9000, AF_INET, NULL, NULL);
+    cout << "[DHT] dht_search (announce) returned: " << result << endl;
     
-    return result == 0;
+    return result >= 0;
 }
 
-// ==================== FIXED GET() ====================
+// ==================== GET (Lookup ID → Endpoint) ====================
 string DHTWrapper::get(const string& key) {
     if (!initialized) {
         cerr << "[DHT] Cannot lookup: DHT not initialized!" << endl;
@@ -198,11 +198,11 @@ string DHTWrapper::get(const string& key) {
         info_hash[i] = stoi(key_hash.substr(i*2, 2), nullptr, 16);
     }
     
-    // ===== GET PEERS FROM DHT =====
-    int result = dht_get_peers(info_hash, NULL, 0);
-    cout << "[DHT] dht_get_peers returned: " << result << endl;
+    // Search in DHT
+    int result = dht_search(info_hash, 0, AF_INET, NULL, NULL);
+    cout << "[DHT] dht_search (lookup) returned: " << result << endl;
     
-    // Wait for response (3 seconds)
+    // Wait for response
     this_thread::sleep_for(chrono::seconds(3));
     
     return "";
