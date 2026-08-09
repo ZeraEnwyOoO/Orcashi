@@ -1,4 +1,4 @@
- // dht_wrapper.cpp - DHT Wrapper (Fixed: ID != NULL)
+ // dht_wrapper.cpp - DHT Wrapper for jech/dht
 #include "dht_wrapper.hpp"
 #include <iostream>
 #include <cstring>
@@ -85,11 +85,18 @@ void DHTWrapper::parse_callback(int event, const unsigned char* info_hash,
 }
 
 void DHTWrapper::periodic_loop() {
+    time_t tosleep = 0;
     while (running) {
         if (node) {
-            dht_periodic(NULL, 0, NULL, 0, NULL, NULL, NULL);
+            dht_periodic(NULL, 0, NULL, 0, &tosleep, NULL, NULL);
+            if (tosleep > 0) {
+                this_thread::sleep_for(chrono::seconds(tosleep));
+            } else {
+                this_thread::sleep_for(chrono::seconds(5));
+            }
+        } else {
+            this_thread::sleep_for(chrono::seconds(5));
         }
-        this_thread::sleep_for(chrono::seconds(5));
     }
 }
 
@@ -127,10 +134,10 @@ bool DHTWrapper::init() {
     
     // ===== CREATE DHT ID (20 bytes) =====
     unsigned char my_id[20];
-    dht_random_bytes(my_id, 20);  // Generate random ID
+    dht_random_bytes(my_id, 20);
     
-    // ===== INITIALIZE DHT WITH ID =====
-    int result = dht_init(sock, 0, my_id, NULL);  // Pass ID!
+    // ===== INITIALIZE DHT =====
+    int result = dht_init(sock, 0, my_id, NULL);
     if (result < 0) {
         cerr << "[DHT] Failed to initialize DHT node (error: " << result << ")" << endl;
         close(sock);
