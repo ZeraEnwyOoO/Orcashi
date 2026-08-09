@@ -1,5 +1,4 @@
- // orcashi.h - APPLICATION LAYER (No UI)
-#ifndef ORCASHI_H
+ #ifndef ORCASHI_H
 #define ORCASHI_H
 
 #include <stdio.h>
@@ -93,6 +92,9 @@ char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id);
 // Identity
 bool orcashi_register_identity(ORCASHI* orcashi);
 bool orcashi_connect_peer(ORCASHI* orcashi, const char* id);
+
+// Peers
+void orcashi_show_peers(ORCASHI* orcashi);
 
 // Callbacks (for UI)
 void orcashi_set_callbacks(ORCASHI* orcashi,
