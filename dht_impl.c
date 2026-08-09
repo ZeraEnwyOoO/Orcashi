@@ -1,5 +1,4 @@
- // dht_impl.c - DHT Implementation for ORCASHI
-#define _GNU_SOURCE
+ #define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +17,6 @@
 
 #include "dht.h"
 
-// ===== DEBUG LOGGING =====
 static FILE* dht_log_file = NULL;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int debug_enabled = 1;
@@ -42,52 +40,17 @@ void dht_set_debug(int enabled) {
     debug_enabled = enabled;
 }
 
-static void dht_log(const char* level, const char* format, ...) {
-    if (!dht_log_file && debug_enabled) {
-        fprintf(stderr, "[%s] ", level);
-        va_list args;
-        va_start(args, format);
-        vfprintf(stderr, format, args);
-        va_end(args);
-        fprintf(stderr, "\n");
-        return;
-    }
-    if (!dht_log_file) return;
-    
-    pthread_mutex_lock(&log_mutex);
-    time_t now = time(NULL);
-    struct tm* tm_info = localtime(&now);
-    char time_buf[64];
-    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
-    fprintf(dht_log_file, "[%s] [%s] ", time_buf, level);
-    va_list args;
-    va_start(args, format);
-    vfprintf(dht_log_file, format, args);
-    va_end(args);
-    fprintf(dht_log_file, "\n");
-    fflush(dht_log_file);
-    pthread_mutex_unlock(&log_mutex);
-}
-
-// ===== REQUIRED FUNCTIONS =====
-
 int dht_blacklisted(const struct sockaddr *sa, int salen) {
-    dht_log("DEBUG", "dht_blacklisted called for family %d", sa->sa_family);
+    (void)sa; (void)salen;
     return 0;
 }
 
 int dht_random_bytes(void *buf, size_t size) {
     int result = RAND_bytes((unsigned char*)buf, (int)size);
-    if (result == 1) {
-        dht_log("DEBUG", "dht_random_bytes: generated %zu bytes", size);
-        return 0;
-    }
-    dht_log("ERROR", "dht_random_bytes: RAND_bytes failed!");
+    if (result == 1) return 0;
     unsigned char* b = (unsigned char*)buf;
     srand(time(NULL) ^ getpid());
-    for (size_t i = 0; i < size; i++) {
-        b[i] = rand() & 0xFF;
-    }
+    for (size_t i = 0; i < size; i++) b[i] = rand() & 0xFF;
     return -1;
 }
 
@@ -97,10 +60,7 @@ void dht_hash(void *hash_return, int hash_size,
               const void *data3, int len3) {
     unsigned char hash[32];
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) {
-        memset(hash_return, 0, hash_size);
-        return;
-    }
+    if (!ctx) { memset(hash_return, 0, hash_size); return; }
     EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
     EVP_DigestUpdate(ctx, data1, len1);
     if (data2 && len2 > 0) EVP_DigestUpdate(ctx, data2, len2);
@@ -110,27 +70,11 @@ void dht_hash(void *hash_return, int hash_size,
     EVP_MD_CTX_free(ctx);
     int copy_size = (hash_size < 32) ? hash_size : 32;
     memcpy(hash_return, hash, copy_size);
-    dht_log("DEBUG", "dht_hash: computed hash (size=%d)", hash_size);
 }
 
 int dht_sendto(int sockfd, const void *buf, int len, int flags,
                const struct sockaddr *dest_addr, int addrlen) {
-    char ip_str[INET6_ADDRSTRLEN];
-    int port = 0;
-    if (dest_addr->sa_family == AF_INET) {
-        struct sockaddr_in* sin = (struct sockaddr_in*)dest_addr;
-        inet_ntop(AF_INET, &sin->sin_addr, ip_str, sizeof(ip_str));
-        port = ntohs(sin->sin_port);
-    } else if (dest_addr->sa_family == AF_INET6) {
-        struct sockaddr_in6* sin6 = (struct sockaddr_in6*)dest_addr;
-        inet_ntop(AF_INET6, &sin6->sin6_addr, ip_str, sizeof(ip_str));
-        port = ntohs(sin6->sin6_port);
-    }
-    dht_log("DEBUG", "dht_sendto: sending %d bytes to %s:%d", len, ip_str, port);
     ssize_t sent = sendto(sockfd, buf, len, flags, dest_addr, addrlen);
-    if (sent < 0) {
-        dht_log("ERROR", "sendto failed: %s", strerror(errno));
-        return -1;
-    }
+    if (sent < 0) return -1;
     return (int)sent;
 }
