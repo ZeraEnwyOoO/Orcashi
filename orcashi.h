@@ -28,12 +28,6 @@
 #define ORCASHI_VERSION "3.1"
 #define ORCASHI_PORT 9000
 
-// ===== Bootstrap Node Structure =====
-typedef struct {
-    char host[128];
-    int port;
-} BootstrapNode;
-
 // ===== ORCASHI Struct =====
 typedef struct ORCASHI {
     // Core
