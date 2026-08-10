@@ -382,7 +382,8 @@ bool orcashi_dht_register(ORCASHI* orcashi) {
     
     unsigned char info_hash[20];
     memset(info_hash, 0, 20);
-    memcpy(info_hash, orcashi->my_id, strlen(orcashi->my_id) > 20 ? 20 : strlen(orcashi->my_id));
+    size_t id_len = strlen(orcashi->my_id);
+    memcpy(info_hash, orcashi->my_id, id_len > 20 ? 20 : id_len);
     
     int result = dht_search(info_hash, 9000, AF_INET, NULL, NULL);
     fprintf(stderr, "[DHT] Register announced (port 9000)\n");
@@ -396,7 +397,8 @@ char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
     
     unsigned char info_hash[20];
     memset(info_hash, 0, 20);
-    memcpy(info_hash, id, strlen(id) > 20 ? 20 : strlen(id));
+    size_t id_len = strlen(id);
+    memcpy(info_hash, id, id_len > 20 ? 20 : id_len);
     
     DHTLookup lookup;
     memset(&lookup, 0, sizeof(lookup));
@@ -428,6 +430,7 @@ char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
     return NULL;
 }
 
+// ===== REGISTER IDENTITY (WITH IP INPUT) =====
 bool orcashi_register_identity(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
@@ -438,16 +441,29 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     printf("\n");
     
     printf("  Your ID: %s\n", orcashi->my_id);
-    printf("  Your IP: %s\n", orcashi->local_ip);
+    printf("  Detected IP: %s\n", orcashi->local_ip);
+    printf("  Enter IP (or press Enter to use detected): ");
+    fflush(stdout);
+    
+    char input_ip[INET_ADDRSTRLEN];
+    char* ip_to_use = orcashi->local_ip;
+    
+    if (fgets(input_ip, sizeof(input_ip), stdin)) {
+        input_ip[strcspn(input_ip, "\n")] = '\0';
+        if (strlen(input_ip) > 0) {
+            ip_to_use = input_ip;
+            printf("  Using IP: %s\n", ip_to_use);
+        }
+    }
     
     if (registry_register_peer(orcashi->registry, orcashi->my_id, 
-                               orcashi->local_ip, "9000")) {
+                               ip_to_use, "9000")) {
         orcashi->registered = true;
         
         CachePeer peer;
         strcpy(peer.id, orcashi->my_id);
-        snprintf(peer.endpoint, sizeof(peer.endpoint), "%s:9000", orcashi->local_ip);
-        strcpy(peer.ip, orcashi->local_ip);
+        snprintf(peer.endpoint, sizeof(peer.endpoint), "%s:9000", ip_to_use);
+        strcpy(peer.ip, ip_to_use);
         peer.port = 9000;
         peer.online = true;
         peer.last_seen = time(NULL);
@@ -462,6 +478,8 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         }
         
         printf("\n  [SUCCESS] Registered!\n");
+        printf("  Your ID: %s\n", orcashi->my_id);
+        printf("  Your IP: %s\n", ip_to_use);
         printf("  Your friends can connect using:\n");
         printf("    ./orcashi connect %s\n", orcashi->my_id);
         return true;
@@ -471,6 +489,7 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     return false;
 }
 
+// ===== CONNECT PEER =====
 bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     if (!orcashi) return false;
     
