@@ -1,242 +1,550 @@
- // peer_cache.c - Peer Cache Implementation in C (REAL)
-#include "peer_cache.h"
+ #define _POSIX_C_SOURCE 200809L
 
-PeerCache* peer_cache_create(void) {
-    PeerCache* pc = (PeerCache*)calloc(1, sizeof(PeerCache));
-    if (!pc) return NULL;
+#include "orcashi.h"
+#include <unistd.h>
+#include <time.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <netdb.h>
+#include <sys/select.h>
+#include <ifaddrs.h>
+
+#define ORCASHI_HOME "/tmp/.orcashi/"
+#define ID_FILE ORCASHI_HOME "id"
+#define MAX_MSG_LEN 4096
+
+// ===== Forward declarations =====
+static void orcashi_broadcast_presence(ORCASHI* orcashi);
+static void orcashi_show_banner(ORCASHI* orcashi);
+static void* heartbeat_loop(void* arg);
+static void on_peer_found_callback(PeerInfo* peer);
+static void on_peer_offline_callback(PeerInfo* peer);
+
+// ===== Create =====
+ORCASHI* orcashi_create(void) {
+    ORCASHI* orcashi = (ORCASHI*)calloc(1, sizeof(ORCASHI));
+    if (!orcashi) return NULL;
     
-    strcpy(pc->cache_file, CACHE_FILE);
-    pc->peer_count = 0;
-    pc->dirty = false;
+    orcashi->plug = plug_create();
+    orcashi->discovery = discovery_create();
+    orcashi->registry = registry_create();
+    orcashi->requests = request_manager_create();
+    orcashi->cache = peer_cache_create();
+    orcashi->endpoints = endpoint_registry_create();
+    orcashi->punch = (PunchState*)calloc(1, sizeof(PunchState));
     
-    // Create directory
-    mkdir("/tmp/.orcashi/", 0700);
+    if (!orcashi->plug || !orcashi->discovery || !orcashi->registry ||
+        !orcashi->requests || !orcashi->cache || !orcashi->endpoints || !orcashi->punch) {
+        orcashi_destroy(orcashi);
+        return NULL;
+    }
     
-    pthread_mutex_init(&pc->mutex, NULL);
+    mkdir(ORCASHI_HOME, 0700);
     
-    peer_cache_load(pc);
+    char* id = orcashi_generate_id();
+    strcpy(orcashi->my_id, id);
+    free(id);
     
-    return pc;
+    strcpy(orcashi->local_ip, "0.0.0.0");
+    
+    orcashi->connected = false;
+    orcashi->running = false;
+    orcashi->registered = false;
+    
+    pthread_mutex_init(&orcashi->mutex, NULL);
+    
+    discovery_set_on_peer_found(orcashi->discovery, on_peer_found_callback);
+    discovery_set_on_peer_offline(orcashi->discovery, on_peer_offline_callback);
+    
+    // ===== Initialize DHT Wrapper =====
+    orcashi->dht_wrapper = NULL;
+    orcashi->peer_finder = NULL;
+    orcashi->connector = NULL;
+    
+    return orcashi;
 }
 
-void peer_cache_destroy(PeerCache* pc) {
-    if (!pc) return;
+// ===== Destroy =====
+void orcashi_destroy(ORCASHI* orcashi) {
+    if (!orcashi) return;
     
-    if (pc->dirty) {
-        peer_cache_save(pc);
-    }
+    orcashi_disconnect(orcashi);
+    orcashi_dht_shutdown(orcashi);
     
-    pthread_mutex_destroy(&pc->mutex);
-    free(pc);
+    if (orcashi->plug) { plug_destroy(orcashi->plug); orcashi->plug = NULL; }
+    if (orcashi->discovery) { discovery_destroy(orcashi->discovery); orcashi->discovery = NULL; }
+    if (orcashi->registry) { registry_destroy(orcashi->registry); orcashi->registry = NULL; }
+    if (orcashi->requests) { request_manager_destroy(orcashi->requests); orcashi->requests = NULL; }
+    if (orcashi->cache) { peer_cache_destroy(orcashi->cache); orcashi->cache = NULL; }
+    if (orcashi->endpoints) { endpoint_registry_destroy(orcashi->endpoints); orcashi->endpoints = NULL; }
+    if (orcashi->punch) { punch_close(orcashi->punch); free(orcashi->punch); orcashi->punch = NULL; }
+    
+    // ===== Destroy DHT =====
+    if (orcashi->dht_wrapper) { dht_wrapper_destroy(orcashi->dht_wrapper); orcashi->dht_wrapper = NULL; }
+    if (orcashi->peer_finder) { peer_finder_destroy(orcashi->peer_finder); orcashi->peer_finder = NULL; }
+    if (orcashi->connector) { connector_destroy(orcashi->connector); orcashi->connector = NULL; }
+    
+    pthread_mutex_destroy(&orcashi->mutex);
+    free(orcashi);
 }
 
-void peer_cache_save_peer(PeerCache* pc, const CachePeer* peer) {
-    if (!pc || !peer) return;
+// ===== Init =====
+bool orcashi_init(ORCASHI* orcashi) {
+    if (!orcashi) return false;
     
-    pthread_mutex_lock(&pc->mutex);
+    if (!discovery_init(orcashi->discovery, DISCOVERY_PORT)) {
+        fprintf(stderr, "[ERROR] Failed to init discovery!\n");
+        return false;
+    }
+    discovery_start(orcashi->discovery);
     
-    // Check if peer exists
-    int found = -1;
-    for (int i = 0; i < pc->peer_count; i++) {
-        if (strcmp(pc->peers[i].id, peer->id) == 0) {
-            found = i;
-            break;
-        }
+    registry_load(orcashi->registry);
+    request_load(orcashi->requests);
+    
+    if (punch_init(orcashi->punch, PUNCH_PORT) < 0) {
+        fprintf(stderr, "[ERROR] Failed to init NAT punch!\n");
+        return false;
     }
     
-    if (found == -1 && pc->peer_count < MAX_CACHE_PEERS) {
-        found = pc->peer_count++;
+    bootstrap_init();
+    
+    // ===== Initialize DHT Wrapper =====
+    orcashi->dht_wrapper = dht_wrapper_create(orcashi);
+    if (!orcashi->dht_wrapper) {
+        fprintf(stderr, "[WARN] Failed to init DHT Wrapper!\n");
     }
     
-    if (found >= 0) {
-        pc->peers[found] = *peer;
-        pc->dirty = true;
+    // ===== Initialize Peer Finder =====
+    orcashi->peer_finder = peer_finder_create(orcashi);
+    if (!orcashi->peer_finder) {
+        fprintf(stderr, "[WARN] Failed to init Peer Finder!\n");
+    }
+    
+    // ===== Initialize Connector =====
+    orcashi->connector = connector_create(orcashi);
+    if (!orcashi->connector) {
+        fprintf(stderr, "[WARN] Failed to init Connector!\n");
+    }
+    
+    printf("[ORCA] Initialized with ID: %s\n", orcashi->my_id);
+    
+    pthread_create(&orcashi->heartbeat_thread, NULL, heartbeat_loop, orcashi);
+    
+    return true;
+}
+
+// ===== Create Room =====
+bool orcashi_create_room(ORCASHI* orcashi, int port) {
+    if (!orcashi) return false;
+    
+    printf("\n================================================\n");
+    printf("ORCASHI - CREATE ROOM\n");
+    printf("================================================\n");
+    
+    if (plug_create_server(orcashi->plug, port)) {
+        orcashi->connected = true;
+        orcashi->running = true;
         
-        // Auto-save if dirty
-        if (pc->dirty) {
-            peer_cache_save(pc);
-            pc->dirty = false;
+        strcpy(orcashi->peer_ip, plug_get_peer_ip(orcashi->plug));
+        strcpy(orcashi->peer_id, orcashi->peer_ip);
+        
+        orcashi_broadcast_presence(orcashi);
+        orcashi_show_banner(orcashi);
+        
+        // ===== Announce to DHT =====
+        if (orcashi->dht_wrapper) {
+            char endpoint[128];
+            snprintf(endpoint, sizeof(endpoint), "%s:%d", orcashi->local_ip, port);
+            dht_wrapper_announce(orcashi->dht_wrapper, orcashi->my_id, endpoint);
         }
+        
+        return true;
     }
     
-    pthread_mutex_unlock(&pc->mutex);
-}
-
-bool peer_cache_get_peer(PeerCache* pc, const char* id, CachePeer* out_peer) {
-    if (!pc || !out_peer) return false;
-    
-    pthread_mutex_lock(&pc->mutex);
-    
-    for (int i = 0; i < pc->peer_count; i++) {
-        if (strcmp(pc->peers[i].id, id) == 0) {
-            *out_peer = pc->peers[i];
-            pthread_mutex_unlock(&pc->mutex);
-            return true;
-        }
-    }
-    
-    pthread_mutex_unlock(&pc->mutex);
     return false;
 }
 
-int peer_cache_get_all(PeerCache* pc, CachePeer* peers, int max_peers) {
-    if (!pc || !peers) return 0;
+// ===== Join Room =====
+bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
+    if (!orcashi) return false;
     
-    pthread_mutex_lock(&pc->mutex);
+    printf("\n================================================\n");
+    printf("ORCASHI - JOIN ROOM\n");
+    printf("================================================\n");
     
-    int count = 0;
-    for (int i = 0; i < pc->peer_count && count < max_peers; i++) {
-        peers[count++] = pc->peers[i];
+    if (plug_connect_client(orcashi->plug, ip, port)) {
+        orcashi->connected = true;
+        orcashi->running = true;
+        
+        strcpy(orcashi->peer_ip, ip);
+        strcpy(orcashi->peer_id, ip);
+        
+        CachePeer peer;
+        strcpy(peer.id, ip);
+        strcpy(peer.ip, ip);
+        peer.port = port;
+        peer.online = true;
+        peer.last_seen = time(NULL);
+        peer_cache_save_peer(orcashi->cache, &peer);
+        
+        orcashi_show_banner(orcashi);
+        return true;
     }
     
-    pthread_mutex_unlock(&pc->mutex);
-    return count;
+    return false;
 }
 
-void peer_cache_remove_peer(PeerCache* pc, const char* id) {
-    if (!pc) return;
+// ===== Send Message =====
+bool orcashi_send_message(ORCASHI* orcashi, const char* msg) {
+    if (!orcashi || !orcashi->connected) return false;
+    return plug_send_message(orcashi->plug, msg);
+}
+
+// ===== Receive Message =====
+bool orcashi_receive_message(ORCASHI* orcashi, char* msg, int msg_size, int timeout_ms) {
+    if (!orcashi || !orcashi->connected) return false;
+    return plug_receive_message(orcashi->plug, msg, msg_size, timeout_ms);
+}
+
+// ===== Is Connected =====
+bool orcashi_is_connected(ORCASHI* orcashi) {
+    return orcashi && orcashi->connected && plug_is_connected(orcashi->plug);
+}
+
+// ===== Disconnect =====
+void orcashi_disconnect(ORCASHI* orcashi) {
+    if (!orcashi) return;
+    orcashi->connected = false;
+    orcashi->running = false;
+    if (orcashi->plug) { plug_close_connection(orcashi->plug); }
+    if (orcashi->heartbeat_thread) {
+        pthread_join(orcashi->heartbeat_thread, NULL);
+        orcashi->heartbeat_thread = 0;
+    }
+    discovery_stop(orcashi->discovery);
+}
+
+// ===== Getters =====
+const char* orcashi_get_my_id(ORCASHI* orcashi) {
+    return orcashi ? orcashi->my_id : NULL;
+}
+
+const char* orcashi_get_peer_id(ORCASHI* orcashi) {
+    return orcashi ? orcashi->peer_id : NULL;
+}
+
+const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
+    return orcashi ? orcashi->peer_ip : NULL;
+}
+
+// ===== DHT Functions =====
+bool orcashi_dht_init(ORCASHI* orcashi) {
+    if (!orcashi) return false;
     
-    pthread_mutex_lock(&pc->mutex);
+    // DHT Wrapper ត្រូវបាន init ក្នុង orcashi_init() ហើយ
+    return orcashi->dht_wrapper != NULL;
+}
+
+void orcashi_dht_shutdown(ORCASHI* orcashi) {
+    if (!orcashi) return;
+    if (orcashi->dht_wrapper) {
+        dht_wrapper_destroy(orcashi->dht_wrapper);
+        orcashi->dht_wrapper = NULL;
+    }
+}
+
+bool orcashi_dht_register(ORCASHI* orcashi) {
+    if (!orcashi || !orcashi->dht_wrapper) return false;
     
-    for (int i = 0; i < pc->peer_count; i++) {
-        if (strcmp(pc->peers[i].id, id) == 0) {
-            for (int j = i; j < pc->peer_count - 1; j++) {
-                pc->peers[j] = pc->peers[j + 1];
+    char endpoint[128];
+    snprintf(endpoint, sizeof(endpoint), "%s:%d", orcashi->local_ip, ORCASHI_PORT);
+    
+    return dht_wrapper_announce(orcashi->dht_wrapper, orcashi->my_id, endpoint);
+}
+
+char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
+    if (!orcashi || !orcashi->peer_finder) return NULL;
+    return peer_finder_find(orcashi->peer_finder, id);
+}
+
+char* orcashi_dht_search(ORCASHI* orcashi, const char* id) {
+    return orcashi_dht_lookup(orcashi, id);
+}
+
+// ===== Register Identity =====
+bool orcashi_register_identity(ORCASHI* orcashi) {
+    if (!orcashi) return false;
+    
+    printf("\n");
+    printf("  +------------------------------------------+\n");
+    printf("  |           ORCA Registration              |\n");
+    printf("  +------------------------------------------+\n");
+    printf("\n");
+    
+    printf("  Your ID: %s\n", orcashi->my_id);
+    printf("  Enter your IP address (e.g., 192.168.1.5): ");
+    fflush(stdout);
+    
+    char input_ip[INET_ADDRSTRLEN];
+    if (!fgets(input_ip, sizeof(input_ip), stdin)) {
+        printf("  [ERROR] No input!\n");
+        return false;
+    }
+    input_ip[strcspn(input_ip, "\n")] = '\0';
+    
+    struct sockaddr_in sa;
+    int valid = inet_pton(AF_INET, input_ip, &sa.sin_addr);
+    if (valid != 1) {
+        printf("  [ERROR] Invalid IP address: %s\n", input_ip);
+        return false;
+    }
+    
+    printf("  Using IP: %s\n", input_ip);
+    
+    if (registry_register_peer(orcashi->registry, orcashi->my_id, 
+                               input_ip, "9000")) {
+        orcashi->registered = true;
+        strcpy(orcashi->local_ip, input_ip);
+        
+        CachePeer peer;
+        strcpy(peer.id, orcashi->my_id);
+        snprintf(peer.endpoint, sizeof(peer.endpoint), "%s:9000", input_ip);
+        strcpy(peer.ip, input_ip);
+        peer.port = 9000;
+        peer.online = true;
+        peer.last_seen = time(NULL);
+        peer_cache_save_peer(orcashi->cache, &peer);
+        
+        orcashi_broadcast_presence(orcashi);
+        
+        // ===== Register to DHT =====
+        if (orcashi->dht_wrapper) {
+            if (orcashi_dht_register(orcashi)) {
+                printf("  [DHT] Registered in Mainline DHT!\n");
+            } else {
+                printf("  [DHT] Failed to register in Mainline DHT!\n");
             }
-            pc->peer_count--;
-            pc->dirty = true;
-            break;
         }
+        
+        printf("\n  [SUCCESS] Registered!\n");
+        printf("  Your ID: %s\n", orcashi->my_id);
+        printf("  Your IP: %s\n", input_ip);
+        printf("  Your friends can connect using:\n");
+        printf("    ./orcashi connect %s\n", orcashi->my_id);
+        return true;
     }
     
-    if (pc->dirty) {
-        peer_cache_save(pc);
-        pc->dirty = false;
-    }
-    
-    pthread_mutex_unlock(&pc->mutex);
+    printf("  [ERROR] Registration failed!\n");
+    return false;
 }
 
-void peer_cache_clear(PeerCache* pc) {
-    if (!pc) return;
+// ===== Connect Peer =====
+bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
+    if (!orcashi) return false;
     
-    pthread_mutex_lock(&pc->mutex);
-    pc->peer_count = 0;
-    pc->dirty = true;
-    peer_cache_save(pc);
-    pc->dirty = false;
-    pthread_mutex_unlock(&pc->mutex);
-}
-
-void peer_cache_load(PeerCache* pc) {
-    if (!pc) return;
+    printf("\n  [ORCA] Looking for %s...\n", id);
     
-    FILE* f = fopen(pc->cache_file, "r");
-    if (!f) return;
-    
-    char line[2048];
+    // ===== 1. Check Cache =====
     CachePeer peer;
-    bool in_peer = false;
+    if (peer_cache_get_peer(orcashi->cache, id, &peer) && peer.online) {
+        printf("  [ORCA] Found in cache: %s:%d\n", peer.ip, peer.port);
+        return orcashi_join_room(orcashi, peer.ip, peer.port);
+    }
     
-    while (fgets(line, sizeof(line), f)) {
-        // Parse ID
-        if (strstr(line, "\"id\":\"") != NULL) {
-            char* start = strstr(line, "\"id\":\"") + 6;
-            char* end = strchr(start, '"');
-            if (end) {
-                int len = end - start;
-                strncpy(peer.id, start, len);
-                peer.id[len] = '\0';
-                in_peer = true;
+    // ===== 2. Check Registry =====
+    RegistryPeer reg_peer;
+    if (registry_get_peer(orcashi->registry, id, &reg_peer)) {
+        printf("  [ORCA] Found in registry: %s:%s\n", reg_peer.ip, reg_peer.port);
+        return orcashi_join_room(orcashi, reg_peer.ip, atoi(reg_peer.port));
+    }
+    
+    // ===== 3. DHT Lookup =====
+    if (orcashi->peer_finder) {
+        char* endpoint = peer_finder_find(orcashi->peer_finder, id);
+        if (endpoint) {
+            printf("  [DHT] Found: %s\n", endpoint);
+            
+            char ip[INET_ADDRSTRLEN];
+            int port = 9000;
+            sscanf(endpoint, "%[^:]:%d", ip, &port);
+            free(endpoint);
+            
+            // ===== NAT Punch =====
+            printf("  [NAT] Attempting hole punch to %s...\n", ip);
+            if (punch_punch(orcashi->punch, ip, PUNCH_PORT) == 0) {
+                printf("  [NAT] Punch successful! Connecting...\n");
+                return orcashi_join_room(orcashi, ip, 9000);
             }
-        }
-        
-        // Parse endpoint
-        if (in_peer && strstr(line, "\"endpoint\":\"") != NULL) {
-            char* start = strstr(line, "\"endpoint\":\"") + 12;
-            char* end = strchr(start, '"');
-            if (end) {
-                int len = end - start;
-                strncpy(peer.endpoint, start, len);
-                peer.endpoint[len] = '\0';
-            }
-        }
-        
-        // Parse IP
-        if (in_peer && strstr(line, "\"ip\":\"") != NULL) {
-            char* start = strstr(line, "\"ip\":\"") + 6;
-            char* end = strchr(start, '"');
-            if (end) {
-                int len = end - start;
-                strncpy(peer.ip, start, len);
-                peer.ip[len] = '\0';
-            }
-        }
-        
-        // Parse port
-        if (in_peer && strstr(line, "\"port\":") != NULL) {
-            char* start = strstr(line, "\"port\":") + 7;
-            peer.port = atoi(start);
-        }
-        
-        // Parse online
-        if (in_peer && strstr(line, "\"online\":") != NULL) {
-            char* start = strstr(line, "\"online\":") + 9;
-            peer.online = (strstr(start, "true") != NULL);
-        }
-        
-        // Parse last_seen
-        if (in_peer && strstr(line, "\"last_seen\":") != NULL) {
-            char* start = strstr(line, "\"last_seen\":") + 12;
-            peer.last_seen = atol(start);
-        }
-        
-        // End of peer
-        if (in_peer && strchr(line, '}') != NULL) {
-            if (strlen(peer.id) > 0 && pc->peer_count < MAX_CACHE_PEERS) {
-                pc->peers[pc->peer_count++] = peer;
-                memset(&peer, 0, sizeof(peer));
-                in_peer = false;
-            }
+            
+            // ===== Direct Connect =====
+            printf("  [TCP] Trying direct connection...\n");
+            return orcashi_join_room(orcashi, ip, port);
         }
     }
     
-    fclose(f);
+    // ===== 4. Discovery Broadcast =====
+    discovery_broadcast_search(orcashi->discovery, id);
+    printf("  [ORCA] Searching network for %s...\n", id);
+    
+    time_t start = time(NULL);
+    while (time(NULL) - start < 5) {
+        if (peer_cache_get_peer(orcashi->cache, id, &peer) && peer.online) {
+            printf("  [ORCA] Found on network: %s:%d\n", peer.ip, peer.port);
+            return orcashi_join_room(orcashi, peer.ip, peer.port);
+        }
+        usleep(100000);
+    }
+    
+    printf("  [ERROR] Peer %s not found!\n", id);
+    return false;
 }
 
-void peer_cache_save(PeerCache* pc) {
-    if (!pc) return;
+// ===== Show Peers =====
+void orcashi_show_peers(ORCASHI* orcashi) {
+    if (!orcashi) return;
+    CachePeer peers[MAX_CACHE_PEERS];
+    int count = peer_cache_get_all(orcashi->cache, peers, MAX_CACHE_PEERS);
     
-    FILE* f = fopen(pc->cache_file, "w");
-    if (!f) return;
-    
-    fprintf(f, "{\n  \"peers\": [\n");
-    
-    for (int i = 0; i < pc->peer_count; i++) {
-        if (i > 0) fprintf(f, ",\n");
-        
-        CachePeer* p = &pc->peers[i];
-        fprintf(f, "    {\n");
-        fprintf(f, "      \"id\": \"%s\",\n", p->id);
-        fprintf(f, "      \"endpoint\": \"%s\",\n", p->endpoint);
-        fprintf(f, "      \"ip\": \"%s\",\n", p->ip);
-        fprintf(f, "      \"port\": %d,\n", p->port);
-        fprintf(f, "      \"online\": %s,\n", p->online ? "true" : "false");
-        fprintf(f, "      \"last_seen\": %ld\n", (long)p->last_seen);
-        fprintf(f, "    }");
+    printf("\n  Your Peers:\n");
+    if (count == 0) {
+        printf("    No peers found.\n");
+    } else {
+        for (int i = 0; i < count; i++) {
+            printf("    %s - %s:%d %s\n", 
+                   peers[i].id, peers[i].ip, peers[i].port,
+                   peers[i].online ? "[ONLINE]" : "[OFFLINE]");
+        }
     }
-    
-    fprintf(f, "\n  ]\n}\n");
-    fclose(f);
+    printf("\n");
 }
 
-void peer_cache_auto_save(PeerCache* pc) {
-    if (!pc) return;
-    
-    pthread_mutex_lock(&pc->mutex);
-    if (pc->dirty) {
-        peer_cache_save(pc);
-        pc->dirty = false;
+// ===== Set Callbacks =====
+void orcashi_set_callbacks(ORCASHI* orcashi,
+                          void (*on_peer_found)(const char*, const char*),
+                          void (*on_message_received)(const char*, const char*),
+                          void (*on_status_change)(const char*)) {
+    if (!orcashi) return;
+    orcashi->on_peer_found = on_peer_found;
+    orcashi->on_message_received = on_message_received;
+    orcashi->on_status_change = on_status_change;
+}
+
+// ===== Private Functions =====
+
+static void orcashi_broadcast_presence(ORCASHI* orcashi) {
+    if (!orcashi) return;
+    char endpoint[128];
+    snprintf(endpoint, sizeof(endpoint), "%s:9000", orcashi->local_ip);
+    discovery_broadcast_presence(orcashi->discovery, orcashi->my_id, endpoint);
+}
+
+static void orcashi_show_banner(ORCASHI* orcashi) {
+    if (!orcashi) return;
+    printf("\033[36m");
+    printf("============================================================\n");
+    printf("  ██████╗ ██████╗  ██████╗ █████╗ \n");
+    printf(" ██╔═══██╗██╔══██╗██╔════╝██╔══██╗C\n");
+    printf(" ██║   ██║██████╔╝██║     ███████╗H\n");
+    printf(" ██║   ██║██╔══██╗██║     ██╔══██╗A\n");
+    printf(" ╚██████╔╝██║  ██║╚██████╗██║  ██║T\n");
+    printf("  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝\n");
+    printf("            ORCASHI v3.1 - P2P Chat\n");
+    printf("============================================================\n");
+    printf("\033[0m");
+    printf("Your ID: %s\n", orcashi->my_id);
+    printf("Mode: TCP Plug (Pure C)\n");
+    printf("Type /help for commands\n");
+    printf("============================================================\n");
+    printf("\n");
+}
+
+static void on_peer_found_callback(PeerInfo* peer) {
+    if (!peer) return;
+    // អាចបន្ថែម callback ទៅ user
+}
+
+static void on_peer_offline_callback(PeerInfo* peer) {
+    (void)peer;
+}
+
+static void* heartbeat_loop(void* arg) {
+    ORCASHI* orcashi = (ORCASHI*)arg;
+    while (orcashi->running) {
+        sleep(30);
+        endpoint_cleanup_stale(orcashi->endpoints, 60);
+        peer_cache_auto_save(orcashi->cache);
+        if (orcashi->registered) {
+            orcashi_broadcast_presence(orcashi);
+        }
     }
-    pthread_mutex_unlock(&pc->mutex);
+    return NULL;
+}
+
+// ===== Helpers =====
+
+char* orcashi_generate_id(void) {
+    static char id[64];
+    FILE* f = fopen(ID_FILE, "r");
+    if (f) {
+        if (fgets(id, sizeof(id), f)) {
+            id[strcspn(id, "\n")] = '\0';
+            fclose(f);
+            return strdup(id);
+        }
+        fclose(f);
+    }
+    srand(time(NULL) ^ getpid());
+    int num = (rand() % 999) + 1;
+    snprintf(id, sizeof(id), "<%03d>", num);
+    f = fopen(ID_FILE, "w");
+    if (f) { fprintf(f, "%s", id); fclose(f); }
+    return strdup(id);
+}
+
+char* orcashi_get_local_ip(void) {
+    static char ip[INET_ADDRSTRLEN];
+    struct ifaddrs* ifaddr;
+    
+    if (getifaddrs(&ifaddr) == 0) {
+        for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+            if (strcmp(ifa->ifa_name, "lo") == 0) continue;
+            struct sockaddr_in* addr = (struct sockaddr_in*)ifa->ifa_addr;
+            inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+            if (strcmp(ip, "127.0.0.1") != 0) {
+                freeifaddrs(ifaddr);
+                return strdup(ip);
+            }
+        }
+        freeifaddrs(ifaddr);
+    }
+    
+    char hostname[256];
+    if (gethostname(hostname, sizeof(hostname)) == 0) {
+        struct addrinfo hints, *res;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        if (getaddrinfo(hostname, NULL, &hints, &res) == 0) {
+            struct sockaddr_in* addr = (struct sockaddr_in*)res->ai_addr;
+            inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+            freeaddrinfo(res);
+            if (strcmp(ip, "127.0.0.1") != 0) {
+                return strdup(ip);
+            }
+        }
+    }
+    
+    strcpy(ip, "127.0.0.1");
+    return strdup(ip);
+}
+
+char* orcashi_bytes_to_hex(const unsigned char* bytes, int len) {
+    char* hex = (char*)malloc(len * 2 + 1);
+    if (!hex) return NULL;
+    for (int i = 0; i < len; i++) {
+        sprintf(hex + (i * 2), "%02x", bytes[i]);
+    }
+    hex[len * 2] = '\0';
+    return hex;
 }
