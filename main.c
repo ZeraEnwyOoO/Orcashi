@@ -23,7 +23,7 @@ void show_help(void) {
     printf("  ./orcashi create          - Create room (server)\n");
     printf("  ./orcashi join <ip>       - Join room by IP\n");
     printf("  ./orcashi register        - Register identity\n");
-    printf("  ./orcashi connect <id>    - Connect by ID (DHT lookup)\n");
+    printf("  ./orcashi connect <id>    - Connect by ID\n");
     printf("  ./orcashi peers           - List peers\n");
     printf("  ./orcashi help            - Show help\n");
     printf("\n");
