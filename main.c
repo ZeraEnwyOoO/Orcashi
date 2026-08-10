@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/select.h>
 
 static ORCASHI* g_orcashi = NULL;
 static volatile int running = 1;
@@ -34,51 +33,31 @@ void show_help(void) {
     printf("\n");
 }
 
-// ===== Chat Loop =====
 void chat_loop(void) {
     printf("Type /exit to quit\n");
     printf("---\n");
     
     char input[4096];
     char msg[4096];
-    fd_set fds;
-    struct timeval tv;
-    int max_fd;
-    int sock = plug_get_socket(g_orcashi->plug);
     
     while (running && orcashi_is_connected(g_orcashi)) {
-        FD_ZERO(&fds);
-        FD_SET(0, &fds);  // stdin
-        if (sock >= 0) {
-            FD_SET(sock, &fds);
-        }
-        max_fd = (sock > 0) ? sock : 0;
-        
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-        
-        int ret = select(max_fd + 1, &fds, NULL, NULL, &tv);
-        if (ret < 0) break;
-        
-        // Check incoming messages
+        // Check for incoming messages
         while (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 10)) {
             printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
             fflush(stdout);
         }
         
-        // Check user input
-        if (FD_ISSET(0, &fds)) {
-            printf("> ");
-            fflush(stdout);
-            
-            if (!fgets(input, sizeof(input), stdin)) break;
-            input[strcspn(input, "\n")] = '\0';
-            
-            if (strcmp(input, "/exit") == 0) break;
-            
-            if (strlen(input) > 0) {
-                orcashi_send_message(g_orcashi, input);
-            }
+        // Check for user input
+        printf("> ");
+        fflush(stdout);
+        
+        if (!fgets(input, sizeof(input), stdin)) break;
+        input[strcspn(input, "\n")] = '\0';
+        
+        if (strcmp(input, "/exit") == 0) break;
+        
+        if (strlen(input) > 0) {
+            orcashi_send_message(g_orcashi, input);
         }
     }
 }
