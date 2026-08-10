@@ -121,9 +121,8 @@ ORCASHI* orcashi_create(void) {
     strcpy(orcashi->my_id, id);
     free(id);
     
-    char* ip = orcashi_get_local_ip();
-    strcpy(orcashi->local_ip, ip);
-    free(ip);
+    // Don't use local_ip from system, user will enter it
+    strcpy(orcashi->local_ip, "0.0.0.0");
     
     orcashi->connected = false;
     orcashi->running = false;
@@ -190,7 +189,6 @@ bool orcashi_init(ORCASHI* orcashi) {
     bootstrap_init();
     
     printf("[ORCA] Initialized with ID: %s\n", orcashi->my_id);
-    printf("[ORCA] Local IP: %s\n", orcashi->local_ip);
     
     pthread_create(&orcashi->heartbeat_thread, NULL, heartbeat_loop, orcashi);
     
@@ -430,7 +428,7 @@ char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
     return NULL;
 }
 
-// ===== REGISTER IDENTITY (WITH IP INPUT) =====
+// ===== REGISTER IDENTITY (FORCE USER TO ENTER IP) =====
 bool orcashi_register_identity(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
@@ -441,34 +439,45 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     printf("\n");
     
     printf("  Your ID: %s\n", orcashi->my_id);
-    printf("  Detected IP: %s\n", orcashi->local_ip);
-    printf("  Enter IP (or press Enter to use detected): ");
+    printf("  Enter your IP address (e.g., 192.168.1.5): ");
     fflush(stdout);
     
     char input_ip[INET_ADDRSTRLEN];
-    char* ip_to_use = orcashi->local_ip;
+    if (!fgets(input_ip, sizeof(input_ip), stdin)) {
+        printf("  [ERROR] No input!\n");
+        return false;
+    }
+    input_ip[strcspn(input_ip, "\n")] = '\0';
     
-    if (fgets(input_ip, sizeof(input_ip), stdin)) {
-        input_ip[strcspn(input_ip, "\n")] = '\0';
-        if (strlen(input_ip) > 0) {
-            ip_to_use = input_ip;
-            printf("  Using IP: %s\n", ip_to_use);
-        }
+    // Validate IP
+    struct sockaddr_in sa;
+    int valid = inet_pton(AF_INET, input_ip, &sa.sin_addr);
+    if (valid != 1) {
+        printf("  [ERROR] Invalid IP address: %s\n", input_ip);
+        return false;
     }
     
+    printf("  Using IP: %s\n", input_ip);
+    
+    // Save to registry
     if (registry_register_peer(orcashi->registry, orcashi->my_id, 
-                               ip_to_use, "9000")) {
+                               input_ip, "9000")) {
         orcashi->registered = true;
         
+        // Update local_ip
+        strcpy(orcashi->local_ip, input_ip);
+        
+        // Save to cache
         CachePeer peer;
         strcpy(peer.id, orcashi->my_id);
-        snprintf(peer.endpoint, sizeof(peer.endpoint), "%s:9000", ip_to_use);
-        strcpy(peer.ip, ip_to_use);
+        snprintf(peer.endpoint, sizeof(peer.endpoint), "%s:9000", input_ip);
+        strcpy(peer.ip, input_ip);
         peer.port = 9000;
         peer.online = true;
         peer.last_seen = time(NULL);
         peer_cache_save_peer(orcashi->cache, &peer);
         
+        // Broadcast presence
         orcashi_broadcast_presence(orcashi);
         
         // Register in DHT
@@ -479,7 +488,7 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         
         printf("\n  [SUCCESS] Registered!\n");
         printf("  Your ID: %s\n", orcashi->my_id);
-        printf("  Your IP: %s\n", ip_to_use);
+        printf("  Your IP: %s\n", input_ip);
         printf("  Your friends can connect using:\n");
         printf("    ./orcashi connect %s\n", orcashi->my_id);
         return true;
@@ -641,26 +650,6 @@ char* orcashi_generate_id(void) {
     f = fopen(ID_FILE, "w");
     if (f) { fprintf(f, "%s", id); fclose(f); }
     return strdup(id);
-}
-
-char* orcashi_get_local_ip(void) {
-    static char ip[INET_ADDRSTRLEN];
-    struct ifaddrs* ifaddr;
-    if (getifaddrs(&ifaddr) == -1) {
-        strcpy(ip, "127.0.0.1");
-        return strdup(ip);
-    }
-    for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
-        if (strcmp(ifa->ifa_name, "lo") == 0) continue;
-        struct sockaddr_in* addr = (struct sockaddr_in*)ifa->ifa_addr;
-        inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
-        freeifaddrs(ifaddr);
-        return strdup(ip);
-    }
-    freeifaddrs(ifaddr);
-    strcpy(ip, "127.0.0.1");
-    return strdup(ip);
 }
 
 char* orcashi_bytes_to_hex(const unsigned char* bytes, int len) {
