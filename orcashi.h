@@ -20,7 +20,7 @@
 #include "discovery.h"
 #include "registry.h"
 #include "request.h"
-#include "peer_cache.h"
+#include "peer_cache.h"      // ← បន្ថែម!
 #include "endpoint.h"
 #include "nat_punch.h"
 #include "bootstrap.h"
