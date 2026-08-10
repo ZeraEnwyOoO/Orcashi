@@ -1,6 +1,8 @@
  #ifndef BOOTSTRAP_H
 #define BOOTSTRAP_H
 
+#include <arpa/inet.h>
+
 #define BOOTSTRAP_NODES 6
 
 typedef struct {
