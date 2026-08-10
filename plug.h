@@ -1,5 +1,4 @@
- // plug.h - TCP Plug in C
-#ifndef PLUG_H
+ #ifndef PLUG_H
 #define PLUG_H
 
 #include <stdio.h>
@@ -34,7 +33,6 @@ typedef struct {
     int queue_capacity;
 } TCPPlug;
 
-// Functions
 TCPPlug* plug_create(void);
 void plug_destroy(TCPPlug* plug);
 
@@ -46,6 +44,7 @@ bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms
 
 bool plug_is_connected(TCPPlug* plug);
 const char* plug_get_peer_ip(TCPPlug* plug);
+int plug_get_socket(TCPPlug* plug);  // ← បន្ថែម!
 
 void plug_close_connection(TCPPlug* plug);
 
