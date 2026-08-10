@@ -17,7 +17,6 @@
 static void orcashi_broadcast_presence(ORCASHI* orcashi);
 static void orcashi_show_banner(ORCASHI* orcashi);
 static void* heartbeat_loop(void* arg);
-static void* dht_thread_loop(void* arg);
 static void on_peer_found_callback(PeerInfo* peer);
 static void on_peer_offline_callback(PeerInfo* peer);
 
@@ -61,22 +60,8 @@ ORCASHI* orcashi_create(void) {
     orcashi->connected = false;
     orcashi->running = false;
     orcashi->registered = false;
-    orcashi->dht_initialized = false;
-    orcashi->dht = NULL;
-    orcashi->net_crypto = NULL;
-    orcashi->onion = NULL;
-    orcashi->friend_connections = NULL;
-    orcashi->ping = NULL;
-    
-    // ===== Copy Bootstrap Nodes =====
-    orcashi->bootstrap_count = MAX_BOOTSTRAP_NODES;
-    for (int i = 0; i < MAX_BOOTSTRAP_NODES; i++) {
-        strcpy(orcashi->bootstrap_nodes[i].host, default_bootstrap_nodes[i].host);
-        orcashi->bootstrap_nodes[i].port = default_bootstrap_nodes[i].port;
-    }
     
     pthread_mutex_init(&orcashi->mutex, NULL);
-    pthread_mutex_init(&orcashi->dht_mutex, NULL);
     
     discovery_set_on_peer_found(orcashi->discovery, on_peer_found_callback);
     discovery_set_on_peer_offline(orcashi->discovery, on_peer_offline_callback);
@@ -89,7 +74,6 @@ void orcashi_destroy(ORCASHI* orcashi) {
     if (!orcashi) return;
     
     orcashi_disconnect(orcashi);
-    orcashi_dht_shutdown(orcashi);
     
     if (orcashi->plug) { plug_destroy(orcashi->plug); orcashi->plug = NULL; }
     if (orcashi->discovery) { discovery_destroy(orcashi->discovery); orcashi->discovery = NULL; }
@@ -100,7 +84,6 @@ void orcashi_destroy(ORCASHI* orcashi) {
     if (orcashi->punch) { punch_close(orcashi->punch); free(orcashi->punch); orcashi->punch = NULL; }
     
     pthread_mutex_destroy(&orcashi->mutex);
-    pthread_mutex_destroy(&orcashi->dht_mutex);
     free(orcashi);
 }
 
@@ -123,11 +106,6 @@ bool orcashi_init(ORCASHI* orcashi) {
     }
     
     bootstrap_init();
-    
-    // ===== Init Tox DHT =====
-    if (!orcashi_dht_init(orcashi)) {
-        fprintf(stderr, "[WARN] Failed to init Tox DHT!\n");
-    }
     
     printf("[ORCA] Initialized with ID: %s\n", orcashi->my_id);
     
@@ -233,144 +211,6 @@ const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
     return orcashi ? orcashi->peer_ip : NULL;
 }
 
-// ===== DHT Thread =====
-static void* dht_thread_loop(void* arg) {
-    ORCASHI* orcashi = (ORCASHI*)arg;
-    
-    while (orcashi->running && orcashi->dht_initialized) {
-        pthread_mutex_lock(&orcashi->dht_mutex);
-        
-        // ===== Run Tox DHT =====
-        if (orcashi->dht) {
-            do_dht(orcashi->dht);
-        }
-        
-        // ===== Run Net Crypto =====
-        if (orcashi->net_crypto) {
-            do_net_crypto(orcashi->net_crypto, orcashi);
-        }
-        
-        // ===== Run Friend Connections =====
-        if (orcashi->friend_connections) {
-            do_friend_connections(orcashi->friend_connections, orcashi);
-        }
-        
-        // ===== Run Ping =====
-        if (orcashi->ping) {
-            ping_iterate(orcashi->ping);
-        }
-        
-        pthread_mutex_unlock(&orcashi->dht_mutex);
-        
-        usleep(100000); // 100ms
-    }
-    
-    return NULL;
-}
-
-// ===== DHT Init (Tox) =====
-bool orcashi_dht_init(ORCASHI* orcashi) {
-    if (!orcashi || orcashi->dht_initialized) return false;
-    
-    pthread_mutex_lock(&orcashi->dht_mutex);
-    
-    // ===== Generate Keys =====
-    crypto_new_keypair(orcashi->rng ? orcashi->rng : NULL, 
-                       orcashi->self_public_key, 
-                       orcashi->self_secret_key);
-    
-    char* hex = orcashi_bytes_to_hex(orcashi->self_public_key, CRYPTO_PUBLIC_KEY_SIZE);
-    strcpy(orcashi->self_id_hex, hex);
-    free(hex);
-    
-    printf("[DHT] Self ID: %s\n", orcashi->self_id_hex);
-    
-    // ===== TODO: Initialize Tox DHT =====
-    // This requires full Tox initialization with all dependencies
-    // For now, we'll use a simplified approach
-    
-    orcashi->dht_initialized = true;
-    orcashi->running = true;
-    
-    // Start DHT thread
-    pthread_create(&orcashi->dht_thread, NULL, dht_thread_loop, orcashi);
-    
-    pthread_mutex_unlock(&orcashi->dht_mutex);
-    
-    printf("[DHT] Tox DHT initialized\n");
-    return true;
-}
-
-// ===== DHT Shutdown =====
-void orcashi_dht_shutdown(ORCASHI* orcashi) {
-    if (!orcashi || !orcashi->dht_initialized) return;
-    
-    orcashi->dht_initialized = false;
-    orcashi->running = false;
-    
-    if (orcashi->dht_thread) {
-        pthread_join(orcashi->dht_thread, NULL);
-        orcashi->dht_thread = 0;
-    }
-    
-    pthread_mutex_lock(&orcashi->dht_mutex);
-    
-    // ===== Cleanup Tox objects =====
-    if (orcashi->friend_connections) {
-        kill_friend_connections(orcashi->friend_connections);
-        orcashi->friend_connections = NULL;
-    }
-    
-    if (orcashi->onion) {
-        kill_onion(orcashi->onion);
-        orcashi->onion = NULL;
-    }
-    
-    if (orcashi->net_crypto) {
-        kill_net_crypto(orcashi->net_crypto);
-        orcashi->net_crypto = NULL;
-    }
-    
-    if (orcashi->dht) {
-        kill_dht(orcashi->dht);
-        orcashi->dht = NULL;
-    }
-    
-    if (orcashi->ping) {
-        ping_kill(orcashi->mem, orcashi->ping);
-        orcashi->ping = NULL;
-    }
-    
-    pthread_mutex_unlock(&orcashi->dht_mutex);
-    
-    printf("[DHT] Tox DHT shutdown\n");
-}
-
-// ===== DHT Register =====
-bool orcashi_dht_register(ORCASHI* orcashi) {
-    if (!orcashi || !orcashi->dht_initialized) return false;
-    
-    // TODO: Implement DHT announce using Tox DHT
-    
-    printf("[DHT] Registering ID: %s\n", orcashi->my_id);
-    return true;
-}
-
-// ===== DHT Lookup =====
-char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
-    if (!orcashi || !orcashi->dht_initialized) return NULL;
-    
-    // TODO: Implement DHT lookup using Tox DHT
-    
-    printf("[DHT] Looking up ID: %s\n", id);
-    return NULL;
-}
-
-// ===== DHT Search (alias) =====
-char* orcashi_dht_search(ORCASHI* orcashi, const char* id) {
-    return orcashi_dht_lookup(orcashi, id);
-}
-
 // ===== Register Identity =====
 bool orcashi_register_identity(ORCASHI* orcashi) {
     if (!orcashi) return false;
@@ -417,18 +257,11 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         
         orcashi_broadcast_presence(orcashi);
         
-        // ===== Register to DHT =====
-        if (orcashi_dht_register(orcashi)) {
-            printf("  [DHT] Registered in Tox DHT!\n");
-        } else {
-            printf("  [DHT] Failed to register in Tox DHT!\n");
-        }
-        
         printf("\n  [SUCCESS] Registered!\n");
         printf("  Your ID: %s\n", orcashi->my_id);
         printf("  Your IP: %s\n", input_ip);
         printf("  Your friends can connect using:\n");
-        printf("    ./orcashi connect %s\n", orcashi->my_id);
+        printf("    ./orcashi join %s\n", input_ip);
         return true;
     }
     
@@ -442,43 +275,21 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     
     printf("\n  [ORCA] Looking for %s...\n", id);
     
-    // ===== 1. Check Cache =====
+    // 1. Check Cache
     CachePeer peer;
     if (peer_cache_get_peer(orcashi->cache, id, &peer) && peer.online) {
         printf("  [ORCA] Found in cache: %s:%d\n", peer.ip, peer.port);
         return orcashi_join_room(orcashi, peer.ip, peer.port);
     }
     
-    // ===== 2. Check Registry =====
+    // 2. Check Registry
     RegistryPeer reg_peer;
     if (registry_get_peer(orcashi->registry, id, &reg_peer)) {
         printf("  [ORCA] Found in registry: %s:%s\n", reg_peer.ip, reg_peer.port);
         return orcashi_join_room(orcashi, reg_peer.ip, atoi(reg_peer.port));
     }
     
-    // ===== 3. DHT Lookup =====
-    char* endpoint = orcashi_dht_lookup(orcashi, id);
-    if (endpoint) {
-        printf("  [DHT] Found: %s\n", endpoint);
-        
-        char ip[INET_ADDRSTRLEN];
-        int port = 9000;
-        sscanf(endpoint, "%[^:]:%d", ip, &port);
-        free(endpoint);
-        
-        // ===== NAT Punch =====
-        printf("  [NAT] Attempting hole punch to %s...\n", ip);
-        if (punch_punch(orcashi->punch, ip, PUNCH_PORT) == 0) {
-            printf("  [NAT] Punch successful! Connecting...\n");
-            return orcashi_join_room(orcashi, ip, 9000);
-        }
-        
-        // ===== Direct Connect =====
-        printf("  [TCP] Trying direct connection...\n");
-        return orcashi_join_room(orcashi, ip, port);
-    }
-    
-    // ===== 4. Discovery Broadcast =====
+    // 3. Discovery Broadcast
     discovery_broadcast_search(orcashi->discovery, id);
     printf("  [ORCA] Searching network for %s...\n", id);
     
