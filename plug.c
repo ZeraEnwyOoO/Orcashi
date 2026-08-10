@@ -6,6 +6,10 @@
 #include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
 
 #define QUEUE_INITIAL_SIZE 100
 #define BUFFER_SIZE 4096
@@ -158,16 +162,37 @@ static void* receive_loop(void* arg) {
     char buffer[BUFFER_SIZE];
     char* accumulated = (char*)calloc(1, BUFFER_SIZE * 2);
     int acc_len = 0;
+    fd_set fds;
+    struct timeval tv;
+    
+    fprintf(stderr, "[DEBUG] receive_loop started\n");
     
     while (plug->running && plug->connected) {
+        FD_ZERO(&fds);
+        FD_SET(plug->client_socket, &fds);
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        
+        int ret = select(plug->client_socket + 1, &fds, NULL, NULL, &tv);
+        if (ret < 0) {
+            fprintf(stderr, "[DEBUG] select error: %s\n", strerror(errno));
+            break;
+        }
+        if (ret == 0) continue;
+        
         int n = recv(plug->client_socket, buffer, BUFFER_SIZE - 1, 0);
         if (n <= 0) {
-            printf("[ORCA] Connection closed by peer.\n");
+            if (n == 0) {
+                fprintf(stderr, "[DEBUG] Connection closed by peer\n");
+            } else {
+                fprintf(stderr, "[DEBUG] recv error: %s\n", strerror(errno));
+            }
             plug->connected = false;
             break;
         }
         
         buffer[n] = '\0';
+        fprintf(stderr, "[DEBUG] Received %d bytes: %s", n, buffer);
         
         if (acc_len + n < BUFFER_SIZE * 2) {
             memcpy(accumulated + acc_len, buffer, n);
@@ -185,7 +210,9 @@ static void* receive_loop(void* arg) {
                 pthread_mutex_lock(&plug->queue_mutex);
                 if (plug->message_count < plug->queue_capacity) {
                     plug->message_queue[plug->message_count++] = msg;
+                    fprintf(stderr, "[DEBUG] Queued message: %s\n", msg);
                 } else {
+                    fprintf(stderr, "[DEBUG] Queue full, dropping message\n");
                     free(msg);
                 }
                 pthread_cond_signal(&plug->queue_cond);
@@ -200,12 +227,15 @@ static void* receive_loop(void* arg) {
         }
     }
     
+    fprintf(stderr, "[DEBUG] receive_loop ended\n");
     free(accumulated);
     return NULL;
 }
 
 static void* send_loop(void* arg) {
     TCPPlug* plug = (TCPPlug*)arg;
+    
+    fprintf(stderr, "[DEBUG] send_loop started\n");
     
     while (plug->running && plug->connected) {
         char* msg = NULL;
@@ -233,33 +263,43 @@ static void* send_loop(void* arg) {
         pthread_mutex_unlock(&plug->queue_mutex);
         
         if (msg) {
-            char* msg_with_newline = (char*)malloc(strlen(msg) + 2);
-            sprintf(msg_with_newline, "%s\n", msg);
+            fprintf(stderr, "[DEBUG] Sending: %s", msg);
+            int sent = send(plug->client_socket, msg, strlen(msg), MSG_NOSIGNAL);
+            if (sent < 0) {
+                fprintf(stderr, "[DEBUG] send error: %s\n", strerror(errno));
+            } else {
+                fprintf(stderr, "[DEBUG] Sent %d bytes\n", sent);
+            }
             free(msg);
-            
-            send(plug->client_socket, msg_with_newline, strlen(msg_with_newline), MSG_NOSIGNAL);
-            free(msg_with_newline);
         }
     }
     
+    fprintf(stderr, "[DEBUG] send_loop ended\n");
     return NULL;
 }
 
 bool plug_send_message(TCPPlug* plug, const char* msg) {
-    if (!plug || !plug->connected) return false;
+    if (!plug || !plug->connected) {
+        fprintf(stderr, "[DEBUG] plug_send_message: not connected!\n");
+        return false;
+    }
+    
+    fprintf(stderr, "[DEBUG] plug_send_message: %s\n", msg);
     
     pthread_mutex_lock(&plug->queue_mutex);
     if (plug->send_count >= plug->queue_capacity) {
+        fprintf(stderr, "[DEBUG] Send queue full!\n");
         pthread_mutex_unlock(&plug->queue_mutex);
         return false;
     }
     
-    char* msg_copy = (char*)malloc(strlen(msg) + 1);
-    strcpy(msg_copy, msg);
+    char* msg_copy = (char*)malloc(strlen(msg) + 2);
+    sprintf(msg_copy, "%s\n", msg);
     plug->send_queue[plug->send_count++] = msg_copy;
     pthread_cond_signal(&plug->queue_cond);
     pthread_mutex_unlock(&plug->queue_mutex);
     
+    fprintf(stderr, "[DEBUG] Message queued for sending\n");
     return true;
 }
 
@@ -298,6 +338,8 @@ bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms
         plug->message_queue[i] = plug->message_queue[i + 1];
     }
     plug->message_count--;
+    
+    fprintf(stderr, "[DEBUG] Received message: %s\n", msg);
     
     pthread_mutex_unlock(&plug->queue_mutex);
     return true;
