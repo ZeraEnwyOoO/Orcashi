@@ -19,7 +19,40 @@ static void* dht_periodic_thread(void* arg);
 static void on_peer_found_callback(PeerInfo* peer);
 static void on_peer_offline_callback(PeerInfo* peer);
 
-// ===== DHT PERIODIC THREAD (REAL MAINLINE DHT) =====
+// ===== DHT Lookup Structure =====
+typedef struct {
+    char id[64];
+    char endpoint[128];
+    int done;
+    int success;
+} DHTLookup;
+
+// ===== DHT Callback for Lookup =====
+static void dht_lookup_callback(void* closure, int event,
+                                const unsigned char* info_hash,
+                                const void* data, size_t data_len) {
+    DHTLookup* lookup = (DHTLookup*)closure;
+    if (!lookup) return;
+    
+    if (event == DHT_EVENT_VALUES || event == DHT_EVENT_VALUES6) {
+        if (data && data_len > 0 && data_len < sizeof(lookup->endpoint)) {
+            memcpy(lookup->endpoint, data, data_len);
+            lookup->endpoint[data_len] = '\0';
+            lookup->done = 1;
+            lookup->success = 1;
+            fprintf(stderr, "[DHT] Callback received: %s\n", lookup->endpoint);
+        }
+    }
+    
+    if (event == DHT_EVENT_SEARCH_DONE || event == DHT_EVENT_SEARCH_DONE6) {
+        lookup->done = 1;
+        if (!lookup->success) {
+            fprintf(stderr, "[DHT] Search done but no data found\n");
+        }
+    }
+}
+
+// ===== DHT PERIODIC THREAD =====
 static void* dht_periodic_thread(void* arg) {
     ORCASHI* orcashi = (ORCASHI*)arg;
     char buffer[65536];
@@ -28,7 +61,7 @@ static void* dht_periodic_thread(void* arg) {
     time_t tosleep = 0;
     fd_set readfds;
     
-    printf("[DHT] Periodic thread started (REAL Mainline DHT)\n");
+    fprintf(stderr, "[DHT] Periodic thread started (REAL Mainline DHT)\n");
     
     while (orcashi->running && orcashi->dht_initialized) {
         FD_ZERO(&readfds);
@@ -49,18 +82,18 @@ static void* dht_periodic_thread(void* arg) {
                             (struct sockaddr*)&from, &fromlen);
             if (n > 0) {
                 dht_periodic(buffer, n, (struct sockaddr*)&from, fromlen,
-                            &tosleep, NULL, orcashi);
+                            &tosleep, dht_lookup_callback, orcashi);
             }
         }
         
-        dht_periodic(NULL, 0, NULL, 0, &tosleep, NULL, orcashi);
+        dht_periodic(NULL, 0, NULL, 0, &tosleep, dht_lookup_callback, orcashi);
         
         if (tosleep > 0 && orcashi->running) {
             sleep(tosleep < 5 ? tosleep : 5);
         }
     }
     
-    printf("[DHT] Periodic thread ended\n");
+    fprintf(stderr, "[DHT] Periodic thread ended\n");
     return NULL;
 }
 
@@ -257,7 +290,6 @@ const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
 bool orcashi_dht_init(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
-    // Create UDP socket
     orcashi->dht_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (orcashi->dht_socket < 0) {
         fprintf(stderr, "[DHT] Failed to create socket!\n");
@@ -280,7 +312,6 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
         return false;
     }
     
-    // Initialize DHT with real Mainline DHT
     int result = dht_init(orcashi->dht_socket, -1, orcashi->dht_id, NULL);
     if (result < 0) {
         fprintf(stderr, "[DHT] dht_init failed!\n");
@@ -295,10 +326,8 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
     dht_set_debug(1);
     dht_set_log_file("/tmp/.orcashi/dht.log");
     
-    // Start DHT periodic thread
     pthread_create(&orcashi->dht_thread, NULL, dht_periodic_thread, orcashi);
     
-    // Bootstrap with real Mainline DHT nodes
     const char* bootstrap_nodes[] = {
         "router.bittorrent.com",
         "dht.transmissionbt.com",
@@ -347,25 +376,56 @@ void orcashi_dht_shutdown(ORCASHI* orcashi) {
     }
 }
 
+// ===== DHT REGISTER =====
 bool orcashi_dht_register(ORCASHI* orcashi) {
     if (!orcashi || !orcashi->dht_initialized) return false;
-    return true;
+    
+    unsigned char info_hash[20];
+    memset(info_hash, 0, 20);
+    memcpy(info_hash, orcashi->my_id, strlen(orcashi->my_id) > 20 ? 20 : strlen(orcashi->my_id));
+    
+    int result = dht_search(info_hash, 9000, AF_INET, NULL, NULL);
+    fprintf(stderr, "[DHT] Register announced (port 9000)\n");
+    
+    return result >= 0;
 }
 
+// ===== DHT LOOKUP (REAL - NO HARDCODE!) =====
 char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
     if (!orcashi || !orcashi->dht_initialized) return NULL;
     
     unsigned char info_hash[20];
-    size_t id_len = strlen(id);
     memset(info_hash, 0, 20);
-    memcpy(info_hash, id, (id_len > 20) ? 20 : id_len);
+    memcpy(info_hash, id, strlen(id) > 20 ? 20 : strlen(id));
     
-    int result = dht_search(info_hash, 0, AF_INET, NULL, NULL);
-    if (result < 0) return NULL;
+    DHTLookup lookup;
+    memset(&lookup, 0, sizeof(lookup));
+    strcpy(lookup.id, id);
+    lookup.done = 0;
+    lookup.success = 0;
     
-    char* endpoint = malloc(64);
-    snprintf(endpoint, 64, "192.168.1.100:9000");
-    return endpoint;
+    fprintf(stderr, "[DHT] Looking up %s...\n", id);
+    
+    int result = dht_search(info_hash, 0, AF_INET, dht_lookup_callback, &lookup);
+    if (result < 0) {
+        fprintf(stderr, "[DHT] dht_search failed!\n");
+        return NULL;
+    }
+    
+    // Wait for response (max 5 seconds)
+    int timeout = 50;
+    while (!lookup.done && timeout > 0) {
+        usleep(100000);
+        timeout--;
+    }
+    
+    if (lookup.success && strlen(lookup.endpoint) > 0) {
+        fprintf(stderr, "[DHT] Found: %s\n", lookup.endpoint);
+        return strdup(lookup.endpoint);
+    }
+    
+    fprintf(stderr, "[DHT] Not found!\n");
+    return NULL;
 }
 
 bool orcashi_register_identity(ORCASHI* orcashi) {
@@ -394,6 +454,12 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         peer_cache_save_peer(orcashi->cache, &peer);
         
         orcashi_broadcast_presence(orcashi);
+        
+        // Register in DHT
+        if (orcashi->dht_enabled) {
+            orcashi_dht_register(orcashi);
+            printf("  [DHT] Registered in Mainline DHT!\n");
+        }
         
         printf("\n  [SUCCESS] Registered!\n");
         printf("  Your friends can connect using:\n");
@@ -424,7 +490,7 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
         return orcashi_join_room(orcashi, reg_peer.ip, atoi(reg_peer.port));
     }
     
-    // 3. Try DHT lookup
+    // 3. Try DHT lookup (REAL - no hardcode!)
     printf("  [DHT] Looking up %s...\n", id);
     char* endpoint = orcashi_dht_lookup(orcashi, id);
     if (endpoint) {
