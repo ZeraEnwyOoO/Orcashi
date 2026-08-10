@@ -40,7 +40,7 @@ typedef struct {
     unsigned char dht_id[20];
     char dht_id_hex[41];
     bool dht_initialized;
-    pthread_t dht_thread;        // ← បន្ថែម!
+    pthread_t dht_thread;
     pthread_mutex_t dht_mutex;
     
     PunchState* punch;
@@ -96,7 +96,7 @@ void orcashi_set_callbacks(ORCASHI* orcashi,
                           void (*on_status_change)(const char*));
 
 char* orcashi_generate_id(void);
-char* orcashi_get_local_ip(void);
+char* orcashi_get_local_ip(void);  // ← បន្ថែម!
 char* orcashi_bytes_to_hex(const unsigned char* bytes, int len);
 
 #endif
