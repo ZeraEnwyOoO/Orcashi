@@ -21,12 +21,12 @@
 #include "endpoint.h"
 #include "dht.h"
 #include "dht_impl.h"
-#include "nat.h"
+#include "nat_punch.h"
+#include "bootstrap.h"
 
 #define ORCASHI_VERSION "3.1"
 #define ORCASHI_PORT 9000
 #define DHT_PORT 6881
-#define NAT_PORT 33445
 
 typedef struct {
     TCPPlug* plug;
@@ -43,7 +43,7 @@ typedef struct {
     pthread_t dht_thread;
     pthread_mutex_t dht_mutex;
     
-    NATState* nat;
+    PunchState* punch;
     
     char my_id[64];
     char peer_id[64];
