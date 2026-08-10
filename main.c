@@ -156,4 +156,37 @@ int main(int argc, char* argv[]) {
         chat_loop();
         
         printf("Disconnected.\n");
-        orcashi
+        orcashi_disconnect(g_orcashi);
+        orcashi_destroy(g_orcashi);
+        return 0;
+    }
+    else if (strcmp(cmd, "search") == 0 && argc >= 3) {
+        char* id = argv[2];
+        printf("Searching for %s in DHT...\n", id);
+        char* result = orcashi_dht_search(g_orcashi, id);
+        if (result) {
+            printf("Found: %s\n", result);
+            free(result);
+        } else {
+            printf("Not found!\n");
+        }
+        orcashi_destroy(g_orcashi);
+        return 0;
+    }
+    else if (strcmp(cmd, "peers") == 0) {
+        orcashi_show_peers(g_orcashi);
+        orcashi_destroy(g_orcashi);
+        return 0;
+    }
+    else if (strcmp(cmd, "help") == 0) {
+        show_help();
+        orcashi_destroy(g_orcashi);
+        return 0;
+    }
+    else {
+        printf("Unknown command: %s\n", cmd);
+        printf("Use ./orcashi help for usage.\n");
+        orcashi_destroy(g_orcashi);
+        return 1;
+    }
+}
