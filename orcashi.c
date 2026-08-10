@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <netdb.h>
 #include <sys/select.h>
+#include <ifaddrs.h>
 
 #define ORCASHI_HOME "/tmp/.orcashi/"
 #define ID_FILE ORCASHI_HOME "id"
@@ -121,7 +122,6 @@ ORCASHI* orcashi_create(void) {
     strcpy(orcashi->my_id, id);
     free(id);
     
-    // Don't use local_ip from system, user will enter it
     strcpy(orcashi->local_ip, "0.0.0.0");
     
     orcashi->connected = false;
@@ -650,6 +650,49 @@ char* orcashi_generate_id(void) {
     f = fopen(ID_FILE, "w");
     if (f) { fprintf(f, "%s", id); fclose(f); }
     return strdup(id);
+}
+
+// ===== GET LOCAL IP =====
+char* orcashi_get_local_ip(void) {
+    static char ip[INET_ADDRSTRLEN];
+    struct ifaddrs* ifaddr;
+    
+    // Try getifaddrs first
+    if (getifaddrs(&ifaddr) == 0) {
+        for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+            if (strcmp(ifa->ifa_name, "lo") == 0) continue;
+            
+            struct sockaddr_in* addr = (struct sockaddr_in*)ifa->ifa_addr;
+            inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+            if (strcmp(ip, "127.0.0.1") != 0) {
+                freeifaddrs(ifaddr);
+                return strdup(ip);
+            }
+        }
+        freeifaddrs(ifaddr);
+    }
+    
+    // Try gethostname + getaddrinfo (fallback)
+    char hostname[256];
+    if (gethostname(hostname, sizeof(hostname)) == 0) {
+        struct addrinfo hints, *res;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        
+        if (getaddrinfo(hostname, NULL, &hints, &res) == 0) {
+            struct sockaddr_in* addr = (struct sockaddr_in*)res->ai_addr;
+            inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+            freeaddrinfo(res);
+            if (strcmp(ip, "127.0.0.1") != 0) {
+                return strdup(ip);
+            }
+        }
+    }
+    
+    strcpy(ip, "127.0.0.1");
+    return strdup(ip);
 }
 
 char* orcashi_bytes_to_hex(const unsigned char* bytes, int len) {
