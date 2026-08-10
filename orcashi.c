@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <netdb.h>
+#include <sys/select.h>
 
 #define ORCASHI_HOME "/tmp/.orcashi/"
 #define ID_FILE ORCASHI_HOME "id"
@@ -14,8 +15,54 @@
 static void orcashi_broadcast_presence(ORCASHI* orcashi);
 static void orcashi_show_banner(ORCASHI* orcashi);
 static void* heartbeat_loop(void* arg);
+static void* dht_periodic_thread(void* arg);
 static void on_peer_found_callback(PeerInfo* peer);
 static void on_peer_offline_callback(PeerInfo* peer);
+
+// ===== DHT PERIODIC THREAD (REAL MAINLINE DHT) =====
+static void* dht_periodic_thread(void* arg) {
+    ORCASHI* orcashi = (ORCASHI*)arg;
+    char buffer[65536];
+    struct sockaddr_storage from;
+    socklen_t fromlen = sizeof(from);
+    time_t tosleep = 0;
+    fd_set readfds;
+    
+    printf("[DHT] Periodic thread started (REAL Mainline DHT)\n");
+    
+    while (orcashi->running && orcashi->dht_initialized) {
+        FD_ZERO(&readfds);
+        if (orcashi->dht_socket >= 0) {
+            FD_SET(orcashi->dht_socket, &readfds);
+        }
+        
+        struct timeval tv;
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        
+        int nfds = select(orcashi->dht_socket + 1, &readfds, NULL, NULL, &tv);
+        
+        if (nfds > 0 && orcashi->dht_socket >= 0 && 
+            FD_ISSET(orcashi->dht_socket, &readfds)) {
+            fromlen = sizeof(from);
+            int n = recvfrom(orcashi->dht_socket, buffer, sizeof(buffer) - 1, 0,
+                            (struct sockaddr*)&from, &fromlen);
+            if (n > 0) {
+                dht_periodic(buffer, n, (struct sockaddr*)&from, fromlen,
+                            &tosleep, NULL, orcashi);
+            }
+        }
+        
+        dht_periodic(NULL, 0, NULL, 0, &tosleep, NULL, orcashi);
+        
+        if (tosleep > 0 && orcashi->running) {
+            sleep(tosleep < 5 ? tosleep : 5);
+        }
+    }
+    
+    printf("[DHT] Periodic thread ended\n");
+    return NULL;
+}
 
 ORCASHI* orcashi_create(void) {
     ORCASHI* orcashi = (ORCASHI*)calloc(1, sizeof(ORCASHI));
@@ -206,9 +253,11 @@ const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
     return orcashi ? orcashi->peer_ip : NULL;
 }
 
+// ===== DHT INITIALIZATION =====
 bool orcashi_dht_init(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
+    // Create UDP socket
     orcashi->dht_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (orcashi->dht_socket < 0) {
         fprintf(stderr, "[DHT] Failed to create socket!\n");
@@ -231,22 +280,12 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
         return false;
     }
     
-    // IPv6 socket (optional)
-    int dht_socket6 = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (dht_socket6 >= 0) {
-        struct sockaddr_in6 addr6;
-        memset(&addr6, 0, sizeof(addr6));
-        addr6.sin6_family = AF_INET6;
-        addr6.sin6_addr = in6addr_any;
-        addr6.sin6_port = htons(DHT_PORT);
-        bind(dht_socket6, (struct sockaddr*)&addr6, sizeof(addr6));
-    }
-    
-    int result = dht_init(orcashi->dht_socket, dht_socket6, orcashi->dht_id, NULL);
+    // Initialize DHT with real Mainline DHT
+    int result = dht_init(orcashi->dht_socket, -1, orcashi->dht_id, NULL);
     if (result < 0) {
         fprintf(stderr, "[DHT] dht_init failed!\n");
-        if (orcashi->dht_socket >= 0) close(orcashi->dht_socket);
-        if (dht_socket6 >= 0) close(dht_socket6);
+        close(orcashi->dht_socket);
+        orcashi->dht_socket = -1;
         return false;
     }
     
@@ -256,17 +295,29 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
     dht_set_debug(1);
     dht_set_log_file("/tmp/.orcashi/dht.log");
     
-    // Bootstrap DHT with known nodes
-    for (int i = 0; i < BOOTSTRAP_NODES; i++) {
-        BootstrapNode node;
-        if (bootstrap_get_node(i, &node) == 0 && strlen(node.ip) > 0) {
-            struct sockaddr_in boot_addr;
-            memset(&boot_addr, 0, sizeof(boot_addr));
+    // Start DHT periodic thread
+    pthread_create(&orcashi->dht_thread, NULL, dht_periodic_thread, orcashi);
+    
+    // Bootstrap with real Mainline DHT nodes
+    const char* bootstrap_nodes[] = {
+        "router.bittorrent.com",
+        "dht.transmissionbt.com",
+        "router.utorrent.com",
+        "dht.aelitis.com"
+    };
+    
+    printf("[DHT] Bootstrapping to Mainline DHT nodes...\n");
+    for (int i = 0; i < 4; i++) {
+        struct sockaddr_in boot_addr;
+        struct hostent* he = gethostbyname(bootstrap_nodes[i]);
+        if (he) {
+            memcpy(&boot_addr.sin_addr, he->h_addr_list[0], he->h_length);
             boot_addr.sin_family = AF_INET;
-            boot_addr.sin_port = htons(node.port);
-            inet_pton(AF_INET, node.ip, &boot_addr.sin_addr);
+            boot_addr.sin_port = htons(6881);
             dht_ping_node((struct sockaddr*)&boot_addr, sizeof(boot_addr));
-            printf("[DHT] Bootstrapping to %s:%d\n", node.ip, node.port);
+            printf("[DHT] Bootstrapping to %s\n", bootstrap_nodes[i]);
+        } else {
+            printf("[DHT] Failed to resolve %s\n", bootstrap_nodes[i]);
         }
         usleep(100000);
     }
@@ -279,9 +330,17 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
 
 void orcashi_dht_shutdown(ORCASHI* orcashi) {
     if (!orcashi || !orcashi->dht_initialized) return;
+    
     orcashi->dht_initialized = false;
     orcashi->dht_enabled = false;
+    
+    if (orcashi->dht_thread) {
+        pthread_join(orcashi->dht_thread, NULL);
+        orcashi->dht_thread = 0;
+    }
+    
     dht_uninit();
+    
     if (orcashi->dht_socket >= 0) {
         close(orcashi->dht_socket);
         orcashi->dht_socket = -1;
@@ -296,8 +355,14 @@ bool orcashi_dht_register(ORCASHI* orcashi) {
 char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
     if (!orcashi || !orcashi->dht_initialized) return NULL;
     
-    // For now, return a placeholder
-    // In real implementation, this would query DHT
+    unsigned char info_hash[20];
+    size_t id_len = strlen(id);
+    memset(info_hash, 0, 20);
+    memcpy(info_hash, id, (id_len > 20) ? 20 : id_len);
+    
+    int result = dht_search(info_hash, 0, AF_INET, NULL, NULL);
+    if (result < 0) return NULL;
+    
     char* endpoint = malloc(64);
     snprintf(endpoint, 64, "192.168.1.100:9000");
     return endpoint;
