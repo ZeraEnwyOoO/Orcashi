@@ -72,9 +72,27 @@ void dht_hash(void *hash_return, int hash_size,
     memcpy(hash_return, hash, copy_size);
 }
 
+// ===== REAL dht_sendto =====
 int dht_sendto(int sockfd, const void *buf, int len, int flags,
                const struct sockaddr *dest_addr, int addrlen) {
+    if (!buf || len <= 0) return -1;
+    
+    // Log for debugging
+    if (debug_enabled) {
+        char ip[INET_ADDRSTRLEN];
+        int port = 0;
+        if (dest_addr->sa_family == AF_INET) {
+            struct sockaddr_in* sin = (struct sockaddr_in*)dest_addr;
+            inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip));
+            port = ntohs(sin->sin_port);
+        }
+        fprintf(stderr, "[DHT] Sending %d bytes to %s:%d\n", len, ip, port);
+    }
+    
     ssize_t sent = sendto(sockfd, buf, len, flags, dest_addr, addrlen);
-    if (sent < 0) return -1;
+    if (sent < 0) {
+        fprintf(stderr, "[DHT] sendto failed: %s\n", strerror(errno));
+        return -1;
+    }
     return (int)sent;
 }
