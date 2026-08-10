@@ -15,14 +15,6 @@
 #include <errno.h>
 #include <signal.h>
 
-// ===== Tox DHT =====
-#include "DHT.h"
-#include "net_crypto.h"
-#include "onion.h"
-#include "friend_connection.h"
-#include "crypto_core.h"
-#include "ping.h"
-
 // ===== ORCASHI Core =====
 #include "plug.h"
 #include "discovery.h"
@@ -35,8 +27,6 @@
 
 #define ORCASHI_VERSION "3.1"
 #define ORCASHI_PORT 9000
-#define DHT_PORT 6881
-#define MAX_BOOTSTRAP_NODES 6
 
 // ===== Bootstrap Node Structure =====
 typedef struct {
@@ -66,25 +56,6 @@ typedef struct ORCASHI {
     bool running;
     bool registered;
     
-    // ===== Tox DHT =====
-    DHT* dht;
-    Net_Crypto* net_crypto;
-    Onion* onion;
-    Friend_Connections* friend_connections;
-    Ping* ping;
-    
-    uint8_t self_public_key[CRYPTO_PUBLIC_KEY_SIZE];
-    uint8_t self_secret_key[CRYPTO_SECRET_KEY_SIZE];
-    char self_id_hex[65];
-    
-    bool dht_initialized;
-    pthread_t dht_thread;
-    pthread_mutex_t dht_mutex;
-    
-    // ===== Bootstrap Nodes =====
-    BootstrapNode bootstrap_nodes[MAX_BOOTSTRAP_NODES];
-    int bootstrap_count;
-    
     // Threads
     pthread_t heartbeat_thread;
     pthread_mutex_t mutex;
@@ -109,13 +80,6 @@ void orcashi_disconnect(ORCASHI* orcashi);
 const char* orcashi_get_my_id(ORCASHI* orcashi);
 const char* orcashi_get_peer_id(ORCASHI* orcashi);
 const char* orcashi_get_peer_ip(ORCASHI* orcashi);
-
-// ===== DHT =====
-bool orcashi_dht_init(ORCASHI* orcashi);
-void orcashi_dht_shutdown(ORCASHI* orcashi);
-bool orcashi_dht_register(ORCASHI* orcashi);
-char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id);
-char* orcashi_dht_search(ORCASHI* orcashi, const char* id);
 
 // ===== Identity =====
 bool orcashi_register_identity(ORCASHI* orcashi);
