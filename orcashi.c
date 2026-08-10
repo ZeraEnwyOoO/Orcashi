@@ -289,7 +289,7 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
             printf("  [ORCA] Found on network: %s:%d\n", peer.ip, peer.port);
             return orcashi_join_room(orcashi, peer.ip, peer.port);
         }
-        usleep(100000);
+        sleep(1);
     }
     
     printf("  [ERROR] Peer %s not found!\n", id);
