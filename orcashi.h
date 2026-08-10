@@ -80,23 +80,29 @@ const char* orcashi_get_my_id(ORCASHI* orcashi);
 const char* orcashi_get_peer_id(ORCASHI* orcashi);
 const char* orcashi_get_peer_ip(ORCASHI* orcashi);
 
+// ===== DHT Functions =====
 bool orcashi_dht_init(ORCASHI* orcashi);
 void orcashi_dht_shutdown(ORCASHI* orcashi);
 bool orcashi_dht_register(ORCASHI* orcashi);
 char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id);
+char* orcashi_dht_search(ORCASHI* orcashi, const char* id);  // Alias for lookup
 
+// ===== Identity =====
 bool orcashi_register_identity(ORCASHI* orcashi);
 bool orcashi_connect_peer(ORCASHI* orcashi, const char* id);
 
+// ===== Peers =====
 void orcashi_show_peers(ORCASHI* orcashi);
 
+// ===== Callbacks =====
 void orcashi_set_callbacks(ORCASHI* orcashi,
                           void (*on_peer_found)(const char*, const char*),
                           void (*on_message_received)(const char*, const char*),
                           void (*on_status_change)(const char*));
 
+// ===== Helpers =====
 char* orcashi_generate_id(void);
-char* orcashi_get_local_ip(void);  // ← បន្ថែម!
+char* orcashi_get_local_ip(void);
 char* orcashi_bytes_to_hex(const unsigned char* bytes, int len);
 
 #endif
