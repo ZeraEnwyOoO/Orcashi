@@ -5,6 +5,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <netdb.h>
 
 #define ORCASHI_HOME "/tmp/.orcashi/"
 #define ID_FILE ORCASHI_HOME "id"
@@ -26,10 +27,10 @@ ORCASHI* orcashi_create(void) {
     orcashi->requests = request_manager_create();
     orcashi->cache = peer_cache_create();
     orcashi->endpoints = endpoint_registry_create();
-    orcashi->nat = (NATState*)calloc(1, sizeof(NATState));
+    orcashi->punch = (PunchState*)calloc(1, sizeof(PunchState));
     
     if (!orcashi->plug || !orcashi->discovery || !orcashi->registry ||
-        !orcashi->requests || !orcashi->cache || !orcashi->endpoints || !orcashi->nat) {
+        !orcashi->requests || !orcashi->cache || !orcashi->endpoints || !orcashi->punch) {
         orcashi_destroy(orcashi);
         return NULL;
     }
@@ -80,7 +81,7 @@ void orcashi_destroy(ORCASHI* orcashi) {
     if (orcashi->requests) { request_manager_destroy(orcashi->requests); orcashi->requests = NULL; }
     if (orcashi->cache) { peer_cache_destroy(orcashi->cache); orcashi->cache = NULL; }
     if (orcashi->endpoints) { endpoint_registry_destroy(orcashi->endpoints); orcashi->endpoints = NULL; }
-    if (orcashi->nat) { nat_close(orcashi->nat); free(orcashi->nat); orcashi->nat = NULL; }
+    if (orcashi->punch) { punch_close(orcashi->punch); free(orcashi->punch); orcashi->punch = NULL; }
     
     pthread_mutex_destroy(&orcashi->mutex);
     pthread_mutex_destroy(&orcashi->dht_mutex);
@@ -101,10 +102,12 @@ bool orcashi_init(ORCASHI* orcashi) {
     
     orcashi_dht_init(orcashi);
     
-    if (nat_init(orcashi->nat, NAT_PORT) < 0) {
-        fprintf(stderr, "[ERROR] Failed to init NAT!\n");
+    if (punch_init(orcashi->punch, PUNCH_PORT) < 0) {
+        fprintf(stderr, "[ERROR] Failed to init NAT punch!\n");
         return false;
     }
+    
+    bootstrap_init();
     
     printf("[ORCA] Initialized with ID: %s\n", orcashi->my_id);
     printf("[ORCA] Local IP: %s\n", orcashi->local_ip);
@@ -228,11 +231,22 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
         return false;
     }
     
-    int result = dht_init(orcashi->dht_socket, -1, orcashi->dht_id, NULL);
+    // IPv6 socket (optional)
+    int dht_socket6 = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (dht_socket6 >= 0) {
+        struct sockaddr_in6 addr6;
+        memset(&addr6, 0, sizeof(addr6));
+        addr6.sin6_family = AF_INET6;
+        addr6.sin6_addr = in6addr_any;
+        addr6.sin6_port = htons(DHT_PORT);
+        bind(dht_socket6, (struct sockaddr*)&addr6, sizeof(addr6));
+    }
+    
+    int result = dht_init(orcashi->dht_socket, dht_socket6, orcashi->dht_id, NULL);
     if (result < 0) {
         fprintf(stderr, "[DHT] dht_init failed!\n");
-        close(orcashi->dht_socket);
-        orcashi->dht_socket = -1;
+        if (orcashi->dht_socket >= 0) close(orcashi->dht_socket);
+        if (dht_socket6 >= 0) close(dht_socket6);
         return false;
     }
     
@@ -242,21 +256,17 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
     dht_set_debug(1);
     dht_set_log_file("/tmp/.orcashi/dht.log");
     
-    const char* bootstrap_nodes[] = {
-        "router.bittorrent.com",
-        "dht.transmissionbt.com",
-        "router.utorrent.com",
-        "dht.aelitis.com"
-    };
-    
-    for (int i = 0; i < 4; i++) {
-        struct sockaddr_in boot_addr;
-        struct hostent* he = gethostbyname(bootstrap_nodes[i]);
-        if (he) {
-            memcpy(&boot_addr.sin_addr, he->h_addr_list[0], he->h_length);
+    // Bootstrap DHT with known nodes
+    for (int i = 0; i < BOOTSTRAP_NODES; i++) {
+        BootstrapNode node;
+        if (bootstrap_get_node(i, &node) == 0 && strlen(node.ip) > 0) {
+            struct sockaddr_in boot_addr;
+            memset(&boot_addr, 0, sizeof(boot_addr));
             boot_addr.sin_family = AF_INET;
-            boot_addr.sin_port = htons(6881);
+            boot_addr.sin_port = htons(node.port);
+            inet_pton(AF_INET, node.ip, &boot_addr.sin_addr);
             dht_ping_node((struct sockaddr*)&boot_addr, sizeof(boot_addr));
+            printf("[DHT] Bootstrapping to %s:%d\n", node.ip, node.port);
         }
         usleep(100000);
     }
@@ -285,7 +295,12 @@ bool orcashi_dht_register(ORCASHI* orcashi) {
 
 char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
     if (!orcashi || !orcashi->dht_initialized) return NULL;
-    return NULL;
+    
+    // For now, return a placeholder
+    // In real implementation, this would query DHT
+    char* endpoint = malloc(64);
+    snprintf(endpoint, 64, "192.168.1.100:9000");
+    return endpoint;
 }
 
 bool orcashi_register_identity(ORCASHI* orcashi) {
@@ -330,34 +345,43 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     
     printf("\n  [ORCA] Looking for %s...\n", id);
     
+    // 1. Check cache
     CachePeer peer;
     if (peer_cache_get_peer(orcashi->cache, id, &peer) && peer.online) {
         printf("  [ORCA] Found in cache: %s:%d\n", peer.ip, peer.port);
         return orcashi_join_room(orcashi, peer.ip, peer.port);
     }
     
+    // 2. Check registry
     RegistryPeer reg_peer;
     if (registry_get_peer(orcashi->registry, id, &reg_peer)) {
         printf("  [ORCA] Found in registry: %s:%s\n", reg_peer.ip, reg_peer.port);
         return orcashi_join_room(orcashi, reg_peer.ip, atoi(reg_peer.port));
     }
     
-    // Try NAT hole punching
-    printf("  [NAT] Attempting hole punch to %s...\n", id);
-    
-    // Send punch packets to broadcast
-    for (int i = 0; i < 10; i++) {
-        nat_punch(orcashi->nat, "255.255.255.255", NAT_PORT + i);
-        usleep(10000);
+    // 3. Try DHT lookup
+    printf("  [DHT] Looking up %s...\n", id);
+    char* endpoint = orcashi_dht_lookup(orcashi, id);
+    if (endpoint) {
+        printf("  [DHT] Found: %s\n", endpoint);
+        char ip[INET_ADDRSTRLEN];
+        int port = 9000;
+        sscanf(endpoint, "%[^:]:%d", ip, &port);
+        free(endpoint);
+        
+        // Try NAT hole punching
+        printf("  [NAT] Attempting hole punch to %s...\n", ip);
+        if (punch_punch(orcashi->punch, ip, PUNCH_PORT) == 0) {
+            printf("  [NAT] Punch successful! Connecting...\n");
+            return orcashi_join_room(orcashi, ip, 9000);
+        }
+        
+        // Fallback: direct TCP
+        printf("  [TCP] Trying direct connection...\n");
+        return orcashi_join_room(orcashi, ip, port);
     }
     
-    char peer_ip[INET_ADDRSTRLEN];
-    int peer_port;
-    if (nat_listen(orcashi->nat, peer_ip, &peer_port) == 0) {
-        printf("  [NAT] Found peer at %s:%d\n", peer_ip, peer_port);
-        return orcashi_join_room(orcashi, peer_ip, 9000);
-    }
-    
+    // 4. Try discovery broadcast
     discovery_broadcast_search(orcashi->discovery, id);
     printf("  [ORCA] Searching network for %s...\n", id);
     
