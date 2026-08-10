@@ -24,6 +24,7 @@
 #include "endpoint.h"
 #include "nat_punch.h"
 #include "bootstrap.h"
+ 
 
 #define ORCASHI_VERSION "3.1"
 #define ORCASHI_PORT 9000
@@ -60,7 +61,7 @@ typedef struct ORCASHI {
     void (*on_peer_found)(const char* id, const char* ip);
     void (*on_message_received)(const char* from, const char* msg);
     void (*on_status_change)(const char* status);
-    
+     
 } ORCASHI;
 
 // ===== Functions =====
@@ -82,6 +83,8 @@ bool orcashi_register_identity(ORCASHI* orcashi);
 bool orcashi_connect_peer(ORCASHI* orcashi, const char* id);
 void orcashi_show_peers(ORCASHI* orcashi);
 
+ 
+ 
 // ===== Callbacks =====
 void orcashi_set_callbacks(ORCASHI* orcashi,
                           void (*on_peer_found)(const char*, const char*),
