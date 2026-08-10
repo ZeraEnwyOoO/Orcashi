@@ -23,8 +23,7 @@ void show_help(void) {
     printf("  ./orcashi create          - Create room (server)\n");
     printf("  ./orcashi join <ip>       - Join room by IP\n");
     printf("  ./orcashi register        - Register identity\n");
-    printf("  ./orcashi connect <id>    - Connect by ID (DHT lookup) ← NEW!\n");
-    printf("  ./orcashi search <id>     - Search peer in DHT\n");
+    printf("  ./orcashi connect <id>    - Connect by ID (DHT lookup)\n");
     printf("  ./orcashi peers           - List peers\n");
     printf("  ./orcashi help            - Show help\n");
     printf("\n");
@@ -157,19 +156,6 @@ int main(int argc, char* argv[]) {
         
         printf("Disconnected.\n");
         orcashi_disconnect(g_orcashi);
-        orcashi_destroy(g_orcashi);
-        return 0;
-    }
-    else if (strcmp(cmd, "search") == 0 && argc >= 3) {
-        char* id = argv[2];
-        printf("Searching for %s in DHT...\n", id);
-        char* result = orcashi_dht_search(g_orcashi, id);
-        if (result) {
-            printf("Found: %s\n", result);
-            free(result);
-        } else {
-            printf("Not found!\n");
-        }
         orcashi_destroy(g_orcashi);
         return 0;
     }
