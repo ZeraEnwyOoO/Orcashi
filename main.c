@@ -41,13 +41,11 @@ void chat_loop(void) {
     char msg[4096];
     
     while (running && orcashi_is_connected(g_orcashi)) {
-        // Check for incoming messages
         while (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 10)) {
             printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
             fflush(stdout);
         }
         
-        // Check for user input
         printf("> ");
         fflush(stdout);
         
@@ -84,7 +82,7 @@ int main(int argc, char* argv[]) {
     }
     
     printf("ID: %s\n", orcashi_get_my_id(g_orcashi));
-    printf("IP: %s\n", orcashi_get_local_ip());
+    // printf("IP: %s\n", orcashi_get_local_ip());  // ← លុបចេញ!
     printf("---\n");
     
     char* cmd = argv[1];
@@ -139,7 +137,6 @@ int main(int argc, char* argv[]) {
         if (orcashi_register_identity(g_orcashi)) {
             printf("Registered!\n");
             printf("ID: %s\n", orcashi_get_my_id(g_orcashi));
-            printf("IP: %s\n", orcashi_get_local_ip());
         } else {
             fprintf(stderr, "Registration failed!\n");
         }
