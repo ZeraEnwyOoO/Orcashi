@@ -147,7 +147,6 @@ bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
         strcpy(peer.id, ip);
         strcpy(peer.ip, ip);
         peer.port = port;
-        snprintf(peer.endpoint, sizeof(peer.endpoint), "%s:%d", ip, port);
         peer.online = true;
         peer.last_seen = time(NULL);
         peer_cache_save_peer(orcashi->cache, &peer);
@@ -358,12 +357,10 @@ static void orcashi_show_banner(ORCASHI* orcashi) {
 
 static void on_peer_found_callback(PeerInfo* peer) {
     if (!peer) return;
-    // Callback handler - can be used for UI updates
 }
 
 static void on_peer_offline_callback(PeerInfo* peer) {
     (void)peer;
-    // Callback handler - can be used for UI updates
 }
 
 static void* heartbeat_loop(void* arg) {
