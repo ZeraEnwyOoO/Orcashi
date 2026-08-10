@@ -19,10 +19,18 @@
 #include "request.h"
 #include "peer_cache.h"
 #include "endpoint.h"
-#include "dht.h"
-#include "dht_impl.h"
-#include "nat_punch.h"
+
+// ===== TOX DHT (ជំនួស Mainline DHT) =====
+#include "DHT.h"
+#include "net_crypto.h"
+#include "onion.h"
+#include "ping.h"
+#include "friend_connection.h"
+#include "crypto_core.h"
 #include "bootstrap.h"
+
+// ===== NAT =====
+#include "nat_punch.h"
 
 #define ORCASHI_VERSION "3.1"
 #define ORCASHI_PORT 9000
@@ -35,6 +43,13 @@ typedef struct {
     RequestManager* requests;
     PeerCache* cache;
     EndpointRegistry* endpoints;
+    
+    // ===== TOX DHT =====
+    DHT* tox_dht;
+    Networking_Core* net;
+    Onion* onion;
+    Net_Crypto* net_crypto;
+    Friend_Connections* friend_cons;
     
     int dht_socket;
     unsigned char dht_id[20];
@@ -80,27 +95,23 @@ const char* orcashi_get_my_id(ORCASHI* orcashi);
 const char* orcashi_get_peer_id(ORCASHI* orcashi);
 const char* orcashi_get_peer_ip(ORCASHI* orcashi);
 
-// ===== DHT Functions =====
+// ===== TOX DHT Functions =====
 bool orcashi_dht_init(ORCASHI* orcashi);
 void orcashi_dht_shutdown(ORCASHI* orcashi);
 bool orcashi_dht_register(ORCASHI* orcashi);
 char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id);
-char* orcashi_dht_search(ORCASHI* orcashi, const char* id);  // Alias for lookup
+char* orcashi_dht_search(ORCASHI* orcashi, const char* id);
 
-// ===== Identity =====
 bool orcashi_register_identity(ORCASHI* orcashi);
 bool orcashi_connect_peer(ORCASHI* orcashi, const char* id);
 
-// ===== Peers =====
 void orcashi_show_peers(ORCASHI* orcashi);
 
-// ===== Callbacks =====
 void orcashi_set_callbacks(ORCASHI* orcashi,
                           void (*on_peer_found)(const char*, const char*),
                           void (*on_message_received)(const char*, const char*),
                           void (*on_status_change)(const char*));
 
-// ===== Helpers =====
 char* orcashi_generate_id(void);
 char* orcashi_get_local_ip(void);
 char* orcashi_bytes_to_hex(const unsigned char* bytes, int len);
