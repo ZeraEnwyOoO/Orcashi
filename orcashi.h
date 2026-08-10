@@ -40,7 +40,7 @@ typedef struct {
     unsigned char dht_id[20];
     char dht_id_hex[41];
     bool dht_initialized;
-    pthread_t dht_thread;
+    pthread_t dht_thread;        // ← បន្ថែម!
     pthread_mutex_t dht_mutex;
     
     PunchState* punch;
