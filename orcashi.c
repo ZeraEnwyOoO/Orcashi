@@ -41,14 +41,14 @@ static void dht_lookup_callback(void* closure, int event,
             lookup->endpoint[data_len] = '\0';
             lookup->done = 1;
             lookup->success = 1;
-            fprintf(stderr, "[DHT] Callback received: %s\n", lookup->endpoint);
+            fprintf(stderr, "[DHT] Found: %s\n", lookup->endpoint);
         }
     }
     
     if (event == DHT_EVENT_SEARCH_DONE || event == DHT_EVENT_SEARCH_DONE6) {
         lookup->done = 1;
         if (!lookup->success) {
-            fprintf(stderr, "[DHT] Search done but no data found\n");
+            fprintf(stderr, "[DHT] Search done, no data found\n");
         }
     }
 }
@@ -62,7 +62,7 @@ static void* dht_periodic_thread(void* arg) {
     time_t tosleep = 0;
     fd_set readfds;
     
-    fprintf(stderr, "[DHT] Periodic thread started (REAL Mainline DHT)\n");
+    fprintf(stderr, "[DHT] Thread started\n");
     
     while (orcashi->running && orcashi->dht_initialized) {
         FD_ZERO(&readfds);
@@ -94,7 +94,7 @@ static void* dht_periodic_thread(void* arg) {
         }
     }
     
-    fprintf(stderr, "[DHT] Periodic thread ended\n");
+    fprintf(stderr, "[DHT] Thread ended\n");
     return NULL;
 }
 
@@ -333,7 +333,7 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
         "dht.aelitis.com"
     };
     
-    printf("[DHT] Bootstrapping to Mainline DHT nodes...\n");
+    printf("[DHT] Bootstrapping...\n");
     for (int i = 0; i < 4; i++) {
         struct sockaddr_in boot_addr;
         struct hostent* he = gethostbyname(bootstrap_nodes[i]);
@@ -343,8 +343,6 @@ bool orcashi_dht_init(ORCASHI* orcashi) {
             boot_addr.sin_port = htons(6881);
             dht_ping_node((struct sockaddr*)&boot_addr, sizeof(boot_addr));
             printf("[DHT] Bootstrapping to %s\n", bootstrap_nodes[i]);
-        } else {
-            printf("[DHT] Failed to resolve %s\n", bootstrap_nodes[i]);
         }
         usleep(100000);
     }
@@ -374,24 +372,38 @@ void orcashi_dht_shutdown(ORCASHI* orcashi) {
     }
 }
 
-// ===== DHT REGISTER =====
+// ===== DHT REGISTER (STORE ID → IP) =====
 bool orcashi_dht_register(ORCASHI* orcashi) {
-    if (!orcashi || !orcashi->dht_initialized) return false;
+    if (!orcashi || !orcashi->dht_initialized) {
+        fprintf(stderr, "[DHT] Cannot register: DHT not initialized\n");
+        return false;
+    }
     
     unsigned char info_hash[20];
     memset(info_hash, 0, 20);
     size_t id_len = strlen(orcashi->my_id);
     memcpy(info_hash, orcashi->my_id, id_len > 20 ? 20 : id_len);
     
-    int result = dht_search(info_hash, 9000, AF_INET, NULL, NULL);
-    fprintf(stderr, "[DHT] Register announced (port 9000)\n");
+    fprintf(stderr, "[DHT] Registering ID %s in DHT...\n", orcashi->my_id);
     
-    return result >= 0;
+    // Store ID → IP:port (port 9000)
+    int result = dht_search(info_hash, 9000, AF_INET, NULL, NULL);
+    
+    if (result >= 0) {
+        fprintf(stderr, "[DHT] Register successful!\n");
+        return true;
+    }
+    
+    fprintf(stderr, "[DHT] Register failed! (result=%d)\n", result);
+    return false;
 }
 
-// ===== DHT LOOKUP (REAL - NO HARDCODE!) =====
+// ===== DHT LOOKUP (FIND ID → IP) =====
 char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
-    if (!orcashi || !orcashi->dht_initialized) return NULL;
+    if (!orcashi || !orcashi->dht_initialized) {
+        fprintf(stderr, "[DHT] Cannot lookup: DHT not initialized\n");
+        return NULL;
+    }
     
     unsigned char info_hash[20];
     memset(info_hash, 0, 20);
@@ -408,15 +420,18 @@ char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
     
     int result = dht_search(info_hash, 0, AF_INET, dht_lookup_callback, &lookup);
     if (result < 0) {
-        fprintf(stderr, "[DHT] dht_search failed!\n");
+        fprintf(stderr, "[DHT] dht_search failed! (result=%d)\n", result);
         return NULL;
     }
     
-    // Wait for response (max 5 seconds)
-    int timeout = 50;
+    // Wait for response (max 15 seconds)
+    int timeout = 150;
     while (!lookup.done && timeout > 0) {
         usleep(100000);
         timeout--;
+        if (timeout % 10 == 0) {
+            fprintf(stderr, "[DHT] Waiting... (%ds left)\n", timeout/10);
+        }
     }
     
     if (lookup.success && strlen(lookup.endpoint) > 0) {
@@ -428,7 +443,12 @@ char* orcashi_dht_lookup(ORCASHI* orcashi, const char* id) {
     return NULL;
 }
 
-// ===== REGISTER IDENTITY (FORCE USER TO ENTER IP) =====
+// ===== DHT SEARCH (Alias) =====
+char* orcashi_dht_search(ORCASHI* orcashi, const char* id) {
+    return orcashi_dht_lookup(orcashi, id);
+}
+
+// ===== REGISTER IDENTITY =====
 bool orcashi_register_identity(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
@@ -449,7 +469,6 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     }
     input_ip[strcspn(input_ip, "\n")] = '\0';
     
-    // Validate IP
     struct sockaddr_in sa;
     int valid = inet_pton(AF_INET, input_ip, &sa.sin_addr);
     if (valid != 1) {
@@ -459,15 +478,11 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     
     printf("  Using IP: %s\n", input_ip);
     
-    // Save to registry
     if (registry_register_peer(orcashi->registry, orcashi->my_id, 
                                input_ip, "9000")) {
         orcashi->registered = true;
-        
-        // Update local_ip
         strcpy(orcashi->local_ip, input_ip);
         
-        // Save to cache
         CachePeer peer;
         strcpy(peer.id, orcashi->my_id);
         snprintf(peer.endpoint, sizeof(peer.endpoint), "%s:9000", input_ip);
@@ -477,13 +492,15 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         peer.last_seen = time(NULL);
         peer_cache_save_peer(orcashi->cache, &peer);
         
-        // Broadcast presence
         orcashi_broadcast_presence(orcashi);
         
         // Register in DHT
         if (orcashi->dht_enabled) {
-            orcashi_dht_register(orcashi);
-            printf("  [DHT] Registered in Mainline DHT!\n");
+            if (orcashi_dht_register(orcashi)) {
+                printf("  [DHT] Registered in Mainline DHT!\n");
+            } else {
+                printf("  [DHT] Failed to register in Mainline DHT!\n");
+            }
         }
         
         printf("\n  [SUCCESS] Registered!\n");
@@ -518,8 +535,7 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
         return orcashi_join_room(orcashi, reg_peer.ip, atoi(reg_peer.port));
     }
     
-    // 3. Try DHT lookup (REAL - no hardcode!)
-    printf("  [DHT] Looking up %s...\n", id);
+    // 3. Try DHT lookup (REAL!)
     char* endpoint = orcashi_dht_lookup(orcashi, id);
     if (endpoint) {
         printf("  [DHT] Found: %s\n", endpoint);
@@ -652,17 +668,14 @@ char* orcashi_generate_id(void) {
     return strdup(id);
 }
 
-// ===== GET LOCAL IP =====
 char* orcashi_get_local_ip(void) {
     static char ip[INET_ADDRSTRLEN];
     struct ifaddrs* ifaddr;
     
-    // Try getifaddrs first
     if (getifaddrs(&ifaddr) == 0) {
         for (struct ifaddrs* ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
             if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
             if (strcmp(ifa->ifa_name, "lo") == 0) continue;
-            
             struct sockaddr_in* addr = (struct sockaddr_in*)ifa->ifa_addr;
             inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
             if (strcmp(ip, "127.0.0.1") != 0) {
@@ -673,14 +686,12 @@ char* orcashi_get_local_ip(void) {
         freeifaddrs(ifaddr);
     }
     
-    // Try gethostname + getaddrinfo (fallback)
     char hostname[256];
     if (gethostname(hostname, sizeof(hostname)) == 0) {
         struct addrinfo hints, *res;
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_DGRAM;
-        
         if (getaddrinfo(hostname, NULL, &hints, &res) == 0) {
             struct sockaddr_in* addr = (struct sockaddr_in*)res->ai_addr;
             inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
