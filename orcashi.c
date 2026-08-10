@@ -20,16 +20,6 @@ static void* heartbeat_loop(void* arg);
 static void on_peer_found_callback(PeerInfo* peer);
 static void on_peer_offline_callback(PeerInfo* peer);
 
-// ===== Bootstrap Nodes =====
-static const BootstrapNode default_bootstrap_nodes[] = {
-    {"router.bittorrent.com", 6881},
-    {"dht.transmissionbt.com", 6881},
-    {"router.utorrent.com", 6881},
-    {"dht.aelitis.com", 6881},
-    {"bootstrap.jami.net", 6881},
-    {"dht.libtorrent.org", 6881}
-};
-
 // ===== Create =====
 ORCASHI* orcashi_create(void) {
     ORCASHI* orcashi = (ORCASHI*)calloc(1, sizeof(ORCASHI));
