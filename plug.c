@@ -165,8 +165,6 @@ static void* receive_loop(void* arg) {
     fd_set fds;
     struct timeval tv;
     
-    fprintf(stderr, "[DEBUG] receive_loop started\n");
-    
     while (plug->running && plug->connected) {
         FD_ZERO(&fds);
         FD_SET(plug->client_socket, &fds);
@@ -174,25 +172,16 @@ static void* receive_loop(void* arg) {
         tv.tv_usec = 0;
         
         int ret = select(plug->client_socket + 1, &fds, NULL, NULL, &tv);
-        if (ret < 0) {
-            fprintf(stderr, "[DEBUG] select error: %s\n", strerror(errno));
-            break;
-        }
+        if (ret < 0) break;
         if (ret == 0) continue;
         
         int n = recv(plug->client_socket, buffer, BUFFER_SIZE - 1, 0);
         if (n <= 0) {
-            if (n == 0) {
-                fprintf(stderr, "[DEBUG] Connection closed by peer\n");
-            } else {
-                fprintf(stderr, "[DEBUG] recv error: %s\n", strerror(errno));
-            }
             plug->connected = false;
             break;
         }
         
         buffer[n] = '\0';
-        fprintf(stderr, "[DEBUG] Received %d bytes: %s", n, buffer);
         
         if (acc_len + n < BUFFER_SIZE * 2) {
             memcpy(accumulated + acc_len, buffer, n);
@@ -210,9 +199,7 @@ static void* receive_loop(void* arg) {
                 pthread_mutex_lock(&plug->queue_mutex);
                 if (plug->message_count < plug->queue_capacity) {
                     plug->message_queue[plug->message_count++] = msg;
-                    fprintf(stderr, "[DEBUG] Queued message: %s\n", msg);
                 } else {
-                    fprintf(stderr, "[DEBUG] Queue full, dropping message\n");
                     free(msg);
                 }
                 pthread_cond_signal(&plug->queue_cond);
@@ -227,15 +214,12 @@ static void* receive_loop(void* arg) {
         }
     }
     
-    fprintf(stderr, "[DEBUG] receive_loop ended\n");
     free(accumulated);
     return NULL;
 }
 
 static void* send_loop(void* arg) {
     TCPPlug* plug = (TCPPlug*)arg;
-    
-    fprintf(stderr, "[DEBUG] send_loop started\n");
     
     while (plug->running && plug->connected) {
         char* msg = NULL;
@@ -263,32 +247,19 @@ static void* send_loop(void* arg) {
         pthread_mutex_unlock(&plug->queue_mutex);
         
         if (msg) {
-            fprintf(stderr, "[DEBUG] Sending: %s", msg);
-            int sent = send(plug->client_socket, msg, strlen(msg), MSG_NOSIGNAL);
-            if (sent < 0) {
-                fprintf(stderr, "[DEBUG] send error: %s\n", strerror(errno));
-            } else {
-                fprintf(stderr, "[DEBUG] Sent %d bytes\n", sent);
-            }
+            send(plug->client_socket, msg, strlen(msg), MSG_NOSIGNAL);
             free(msg);
         }
     }
     
-    fprintf(stderr, "[DEBUG] send_loop ended\n");
     return NULL;
 }
 
 bool plug_send_message(TCPPlug* plug, const char* msg) {
-    if (!plug || !plug->connected) {
-        fprintf(stderr, "[DEBUG] plug_send_message: not connected!\n");
-        return false;
-    }
-    
-    fprintf(stderr, "[DEBUG] plug_send_message: %s\n", msg);
+    if (!plug || !plug->connected) return false;
     
     pthread_mutex_lock(&plug->queue_mutex);
     if (plug->send_count >= plug->queue_capacity) {
-        fprintf(stderr, "[DEBUG] Send queue full!\n");
         pthread_mutex_unlock(&plug->queue_mutex);
         return false;
     }
@@ -299,7 +270,6 @@ bool plug_send_message(TCPPlug* plug, const char* msg) {
     pthread_cond_signal(&plug->queue_cond);
     pthread_mutex_unlock(&plug->queue_mutex);
     
-    fprintf(stderr, "[DEBUG] Message queued for sending\n");
     return true;
 }
 
@@ -339,8 +309,6 @@ bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms
     }
     plug->message_count--;
     
-    fprintf(stderr, "[DEBUG] Received message: %s\n", msg);
-    
     pthread_mutex_unlock(&plug->queue_mutex);
     return true;
 }
@@ -351,6 +319,10 @@ bool plug_is_connected(TCPPlug* plug) {
 
 const char* plug_get_peer_ip(TCPPlug* plug) {
     return plug ? plug->peer_ip : NULL;
+}
+
+int plug_get_socket(TCPPlug* plug) {
+    return plug ? plug->client_socket : -1;
 }
 
 void plug_close_connection(TCPPlug* plug) {
