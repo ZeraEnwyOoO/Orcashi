@@ -1,4 +1,4 @@
-#include "nat_punch.h"
+ #include "nat_punch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <sys/time.h>
 
 int punch_init(PunchState* p, int port) {
     p->udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -30,6 +31,7 @@ int punch_init(PunchState* p, int port) {
     }
     
     p->local_port = port;
+    p->punched = false;
     printf("[NAT] UDP socket bound to port %d\n", port);
     return 0;
 }
@@ -57,6 +59,12 @@ int punch_listen(PunchState* p, char* peer_ip, int* peer_port) {
     struct sockaddr_in from;
     socklen_t from_len = sizeof(from);
     
+    // Set timeout
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(p->udp_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    
     int n = recvfrom(p->udp_socket, buffer, sizeof(buffer), 0,
                      (struct sockaddr*)&from, &from_len);
     
@@ -70,6 +78,34 @@ int punch_listen(PunchState* p, char* peer_ip, int* peer_port) {
         *peer_port = ntohs(from.sin_port);
         return 0;
     }
+    return -1;
+}
+
+int punch_punch(PunchState* p, const char* target_ip, int target_port) {
+    printf("[NAT] Sending punch packets to %s:%d...\n", target_ip, target_port);
+    
+    // Send multiple packets to different ports
+    for (int i = 0; i < 10; i++) {
+        punch_send(p, target_ip, target_port + i);
+        usleep(10000);
+    }
+    
+    // Listen for response
+    char peer_ip[INET_ADDRSTRLEN];
+    int peer_port;
+    
+    for (int i = 0; i < MAX_RETRY; i++) {
+        if (punch_listen(p, peer_ip, &peer_port) == 0) {
+            printf("[NAT] Punch successful! Peer at %s:%d\n", peer_ip, peer_port);
+            p->punched = true;
+            strcpy(p->peer_ip, peer_ip);
+            p->peer_port = peer_port;
+            return 0;
+        }
+        usleep(100000);
+    }
+    
+    printf("[NAT] Punch failed!\n");
     return -1;
 }
 
