@@ -44,7 +44,7 @@ bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms
 
 bool plug_is_connected(TCPPlug* plug);
 const char* plug_get_peer_ip(TCPPlug* plug);
-int plug_get_socket(TCPPlug* plug);  // ← បន្ថែម!
+int plug_get_socket(TCPPlug* plug);
 
 void plug_close_connection(TCPPlug* plug);
 
