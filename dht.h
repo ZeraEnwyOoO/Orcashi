@@ -1,3 +1,4 @@
+ 
 /*
 Copyright (c) 2009-2011 by Juliusz Chroboczek
 
@@ -20,7 +21,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
- #ifdef __cplusplus
+#ifndef DHT_H
+#define DHT_H
+
+#include <stdio.h>
+#include <time.h>        /* ADDED for time_t */
+#include <sys/socket.h>  /* ADDED for struct sockaddr */
+#include <netinet/in.h>  /* ADDED for struct sockaddr_in */
+
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -53,6 +62,7 @@ int dht_get_nodes(struct sockaddr_in *sin, int *num,
                   struct sockaddr_in6 *sin6, int *num6);
 int dht_uninit(void);
 
+/* This must be provided by the user. */
 int dht_sendto(int sockfd, const void *buf, int len, int flags,
                const struct sockaddr *to, int tolen);
 int dht_blacklisted(const struct sockaddr *sa, int salen);
@@ -65,3 +75,6 @@ int dht_random_bytes(void *buf, size_t size);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DHT_H */
+ 
