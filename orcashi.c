@@ -11,14 +11,12 @@
 
 #define MAX_MSG_LEN 4096
 
-// ===== Forward declarations =====
 static void orcashi_broadcast_presence(ORCASHI* orcashi);
 static void orcashi_show_banner(ORCASHI* orcashi);
 static void* heartbeat_loop(void* arg);
 static void on_peer_found_callback(PeerInfo* peer);
 static void on_peer_offline_callback(PeerInfo* peer);
 
-// ===== Create =====
 ORCASHI* orcashi_create(void) {
     ORCASHI* orcashi = (ORCASHI*)calloc(1, sizeof(ORCASHI));
     if (!orcashi) return NULL;
@@ -59,7 +57,6 @@ ORCASHI* orcashi_create(void) {
     return orcashi;
 }
 
-// ===== Destroy =====
 void orcashi_destroy(ORCASHI* orcashi) {
     if (!orcashi) return;
     
@@ -77,7 +74,6 @@ void orcashi_destroy(ORCASHI* orcashi) {
     free(orcashi);
 }
 
-// ===== Init =====
 bool orcashi_init(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
@@ -87,7 +83,6 @@ bool orcashi_init(ORCASHI* orcashi) {
     }
     discovery_start(orcashi->discovery);
     
-    // SET IDENTITY FOR SEARCH RESPONSES
     discovery_set_my_identity(orcashi->discovery, orcashi->my_id, orcashi->local_ip, ORCASHI_PORT);
     
     registry_load(orcashi->registry);
@@ -108,7 +103,6 @@ bool orcashi_init(ORCASHI* orcashi) {
     return true;
 }
 
-// ===== Create Room =====
 bool orcashi_create_room(ORCASHI* orcashi, int port) {
     if (!orcashi) return false;
     
@@ -131,7 +125,6 @@ bool orcashi_create_room(ORCASHI* orcashi, int port) {
     return false;
 }
 
-// ===== Join Room =====
 bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
     if (!orcashi) return false;
     
@@ -161,24 +154,20 @@ bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
     return false;
 }
 
-// ===== Send Message =====
 bool orcashi_send_message(ORCASHI* orcashi, const char* msg) {
     if (!orcashi || !orcashi->connected) return false;
     return plug_send_message(orcashi->plug, msg);
 }
 
-// ===== Receive Message =====
 bool orcashi_receive_message(ORCASHI* orcashi, char* msg, int msg_size, int timeout_ms) {
     if (!orcashi || !orcashi->connected) return false;
     return plug_receive_message(orcashi->plug, msg, msg_size, timeout_ms);
 }
 
-// ===== Is Connected =====
 bool orcashi_is_connected(ORCASHI* orcashi) {
     return orcashi && orcashi->connected && plug_is_connected(orcashi->plug);
 }
 
-// ===== Disconnect =====
 void orcashi_disconnect(ORCASHI* orcashi) {
     if (!orcashi) return;
     orcashi->connected = false;
@@ -191,7 +180,6 @@ void orcashi_disconnect(ORCASHI* orcashi) {
     discovery_stop(orcashi->discovery);
 }
 
-// ===== Getters =====
 const char* orcashi_get_my_id(ORCASHI* orcashi) {
     return orcashi ? orcashi->my_id : NULL;
 }
@@ -204,7 +192,6 @@ const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
     return orcashi ? orcashi->peer_ip : NULL;
 }
 
-// ===== Register Identity =====
 bool orcashi_register_identity(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
@@ -239,7 +226,6 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         orcashi->registered = true;
         strcpy(orcashi->local_ip, input_ip);
         
-        // Update identity in discovery
         discovery_set_my_identity(orcashi->discovery, orcashi->my_id, input_ip, ORCASHI_PORT);
         
         CachePeer peer;
@@ -266,27 +252,23 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     return false;
 }
 
-// ===== Connect Peer =====
 bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     if (!orcashi) return false;
     
     printf("\n  [ORCA] Looking for %s...\n", id);
     
-    // 1. Check Cache
     CachePeer peer;
     if (peer_cache_get_peer(orcashi->cache, id, &peer) && peer.online) {
         printf("  [ORCA] Found in cache: %s:%d\n", peer.ip, peer.port);
         return orcashi_join_room(orcashi, peer.ip, peer.port);
     }
     
-    // 2. Check Registry
     RegistryPeer reg_peer;
     if (registry_get_peer(orcashi->registry, id, &reg_peer)) {
         printf("  [ORCA] Found in registry: %s:%s\n", reg_peer.ip, reg_peer.port);
         return orcashi_join_room(orcashi, reg_peer.ip, atoi(reg_peer.port));
     }
     
-    // 3. Discovery Broadcast
     discovery_broadcast_search(orcashi->discovery, id);
     printf("  [ORCA] Searching network for %s...\n", id);
     
@@ -296,7 +278,6 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
             printf("  [ORCA] Found on network: %s:%d\n", peer.ip, peer.port);
             return orcashi_join_room(orcashi, peer.ip, peer.port);
         }
-        // Also check discovery cache
         PeerInfo p;
         if (discovery_find_peer(orcashi->discovery, id, &p)) {
             printf("  [ORCA] Found via discovery: %s:%d\n", p.ip, p.port);
@@ -309,7 +290,6 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     return false;
 }
 
-// ===== Show Peers =====
 void orcashi_show_peers(ORCASHI* orcashi) {
     if (!orcashi) return;
     CachePeer peers[MAX_CACHE_PEERS];
@@ -328,7 +308,6 @@ void orcashi_show_peers(ORCASHI* orcashi) {
     printf("\n");
 }
 
-// ===== Set Callbacks =====
 void orcashi_set_callbacks(ORCASHI* orcashi,
                           void (*on_peer_found)(const char*, const char*),
                           void (*on_message_received)(const char*, const char*),
@@ -338,8 +317,6 @@ void orcashi_set_callbacks(ORCASHI* orcashi,
     orcashi->on_message_received = on_message_received;
     orcashi->on_status_change = on_status_change;
 }
-
-// ===== Private Functions =====
 
 static void orcashi_broadcast_presence(ORCASHI* orcashi) {
     if (!orcashi) return;
@@ -352,17 +329,10 @@ static void orcashi_show_banner(ORCASHI* orcashi) {
     if (!orcashi) return;
     printf("\033[36m");
     printf("============================================================\n");
-    printf("  ██████╗ ██████╗  ██████╗ █████╗ \n");
-    printf(" ██╔═══██╗██╔══██╗██╔════╝██╔══██╗C\n");
-    printf(" ██║   ██║██████╔╝██║     ███████╗H\n");
-    printf(" ██║   ██║██╔══██╗██║     ██╔══██╗A\n");
-    printf(" ╚██████╔╝██║  ██║╚██████╗██║  ██║T\n");
-    printf("  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝\n");
-    printf("            ORCASHI v3.1 - P2P Chat\n");
+    printf("  ORCASHI v3.1 - P2P Chat\n");
     printf("============================================================\n");
     printf("\033[0m");
     printf("Your ID: %s\n", orcashi->my_id);
-    printf("Mode: TCP Plug (Pure C)\n");
     printf("Type /help for commands\n");
     printf("============================================================\n");
     printf("\n");
@@ -388,8 +358,6 @@ static void* heartbeat_loop(void* arg) {
     }
     return NULL;
 }
-
-// ===== Helpers =====
 
 char* orcashi_generate_id(void) {
     static char id[64];
