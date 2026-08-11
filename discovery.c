@@ -5,6 +5,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define BUFFER_SIZE 4096
 #define BROADCAST_INTERVAL 30
@@ -14,16 +17,15 @@ static void* broadcast_loop(void* arg);
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port);
 static void send_udp(Discovery* disc, const char* msg, const char* ip, int port);
 
-// ===== GLOBAL VARIABLES FOR ID RESPONSE =====
 static char g_my_id[64] = {0};
 static char g_my_ip[64] = {0};
 static int g_my_port = 9000;
 
 void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, int port) {
+    (void)disc;
     if (id) strcpy(g_my_id, id);
     if (ip) strcpy(g_my_ip, ip);
     g_my_port = port;
-    printf("[DEBUG] Discovery identity: ID=%s IP=%s PORT=%d\n", g_my_id, g_my_ip, g_my_port);
 }
 
 Discovery* discovery_create(void) {
@@ -203,7 +205,8 @@ void discovery_broadcast_search(Discovery* disc, const char* id) {
 }
 
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
-    // ===== HANDLE PRESENCE =====
+    (void)sender_port;
+    
     if (strncmp(msg, "ORCA_PRESENCE:", 14) == 0) {
         const char* rest = msg + 14;
         const char* colon = strchr(rest, ':');
@@ -255,29 +258,20 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
         }
     }
     
-    // ===== HANDLE SEARCH - FIX FOR ID DISCOVERY =====
     if (strncmp(msg, "ORCA_SEARCH:", 12) == 0) {
         const char* search_id = msg + 12;
         
-        printf("[DEBUG] Received search for ID: %s from %s:%d\n", search_id, sender_ip, sender_port);
-        
-        // Check if we are the one being searched for
         if (strlen(g_my_id) > 0 && strcmp(search_id, g_my_id) == 0) {
-            // Respond with our presence
             char response[512];
             snprintf(response, sizeof(response), 
                     "ORCA_PRESENCE:%s:%s:%d", 
-                    g_my_id, 
-                    g_my_ip,
-                    g_my_port);
+                    g_my_id, g_my_ip, g_my_port);
             
-            // Send DIRECTLY to the requester (not broadcast)
             send_udp(disc, response, sender_ip, DISCOVERY_PORT);
             
             printf("[ORCA] Responded to search for %s -> %s:%d\n", 
                    search_id, g_my_ip, g_my_port);
             
-            // Also add to peer cache
             pthread_mutex_lock(&disc->mutex);
             
             int found = -1;
@@ -296,15 +290,13 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
                 PeerInfo* peer = &disc->peers[found];
                 strcpy(peer->id, search_id);
                 strcpy(peer->ip, sender_ip);
-                peer->port = 9000;  // Default port
+                peer->port = 9000;
                 peer->online = true;
                 peer->last_seen = time(NULL);
                 snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:9000", sender_ip);
             }
             
             pthread_mutex_unlock(&disc->mutex);
-        } else {
-            printf("[DEBUG] Search ID %s does not match our ID %s\n", search_id, g_my_id);
         }
     }
 }
