@@ -1,5 +1,4 @@
- // discovery.h - UDP Discovery in C
-#ifndef DISCOVERY_H
+ #ifndef DISCOVERY_H
 #define DISCOVERY_H
 
 #include <stdio.h>
@@ -18,7 +17,7 @@
 
 #define DISCOVERY_PORT 9001
 #define MAX_PEERS 256
-#define PEER_TIMEOUT 60  // seconds
+#define PEER_TIMEOUT 60
 
 typedef struct {
     char id[64];
@@ -47,7 +46,6 @@ typedef struct {
     void (*on_peer_offline)(PeerInfo* peer);
 } Discovery;
 
-// Functions
 Discovery* discovery_create(void);
 void discovery_destroy(Discovery* disc);
 
@@ -65,7 +63,6 @@ void discovery_cleanup_stale(Discovery* disc);
 
 char* discovery_get_local_ip(void);
 
-// Callbacks
 void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*));
 void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*));
 
