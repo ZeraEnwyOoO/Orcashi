@@ -9,8 +9,6 @@
 #include <sys/select.h>
 #include <ifaddrs.h>
 
-#define ORCASHI_HOME "/tmp/.orcashi/"
-#define ID_FILE ORCASHI_HOME "id"
 #define MAX_MSG_LEN 4096
 
 // ===== Forward declarations =====
@@ -25,6 +23,8 @@ ORCASHI* orcashi_create(void) {
     ORCASHI* orcashi = (ORCASHI*)calloc(1, sizeof(ORCASHI));
     if (!orcashi) return NULL;
     
+    mkdir(ORCASHI_HOME, 0700);
+    
     orcashi->plug = plug_create();
     orcashi->discovery = discovery_create();
     orcashi->registry = registry_create();
@@ -38,8 +38,6 @@ ORCASHI* orcashi_create(void) {
         orcashi_destroy(orcashi);
         return NULL;
     }
-    
-    mkdir(ORCASHI_HOME, 0700);
     
     char* id = orcashi_generate_id();
     strcpy(orcashi->my_id, id);
@@ -99,6 +97,7 @@ bool orcashi_init(ORCASHI* orcashi) {
     
     printf("[ORCA] Initialized with ID: %s\n", orcashi->my_id);
     
+    orcashi->running = true;
     pthread_create(&orcashi->heartbeat_thread, NULL, heartbeat_loop, orcashi);
     
     return true;
@@ -114,7 +113,6 @@ bool orcashi_create_room(ORCASHI* orcashi, int port) {
     
     if (plug_create_server(orcashi->plug, port)) {
         orcashi->connected = true;
-        orcashi->running = true;
         
         strcpy(orcashi->peer_ip, plug_get_peer_ip(orcashi->plug));
         strcpy(orcashi->peer_id, orcashi->peer_ip);
@@ -138,12 +136,12 @@ bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
     
     if (plug_connect_client(orcashi->plug, ip, port)) {
         orcashi->connected = true;
-        orcashi->running = true;
         
         strcpy(orcashi->peer_ip, ip);
         strcpy(orcashi->peer_id, ip);
         
         CachePeer peer;
+        memset(&peer, 0, sizeof(peer));
         strcpy(peer.id, ip);
         strcpy(peer.ip, ip);
         peer.port = port;
@@ -237,6 +235,7 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         strcpy(orcashi->local_ip, input_ip);
         
         CachePeer peer;
+        memset(&peer, 0, sizeof(peer));
         strcpy(peer.id, orcashi->my_id);
         snprintf(peer.endpoint, sizeof(peer.endpoint), "%s:9000", input_ip);
         strcpy(peer.ip, input_ip);
@@ -356,7 +355,7 @@ static void orcashi_show_banner(ORCASHI* orcashi) {
 }
 
 static void on_peer_found_callback(PeerInfo* peer) {
-    if (!peer) return;
+    (void)peer;
 }
 
 static void on_peer_offline_callback(PeerInfo* peer) {
