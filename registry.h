@@ -1,40 +1,35 @@
- #ifndef REGISTRY_H
-#define REGISTRY_H
+ #ifndef REQUEST_H
+#define REQUEST_H
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <time.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
-#define MAX_REGISTRY_PEERS 1024
+#define MAX_REQUESTS 1024
 
 typedef struct {
-    char id[64];
-    char ip[INET_ADDRSTRLEN];
-    char port[16];
-    bool online;
-    time_t last_seen;
-} RegistryPeer;
+    char from_id[64];
+    char to_id[64];
+    char status[16];
+    time_t timestamp;
+} Request;
 
 typedef struct {
-    RegistryPeer peers[MAX_REGISTRY_PEERS];
-    int peer_count;
-    char registry_file[512];
-} Registry;
+    Request requests[MAX_REQUESTS];
+    int request_count;
+    char request_file[512];
+} RequestManager;
 
-Registry* registry_create(void);
-void registry_destroy(Registry* reg);
-bool registry_register_peer(Registry* reg, const char* id, const char* ip, const char* port);
-bool registry_get_peer(Registry* reg, const char* id, RegistryPeer* out_peer);
-void registry_update_peer(Registry* reg, const char* id, const char* ip, const char* port);
-void registry_set_online(Registry* reg, const char* id, bool online);
-int registry_get_all_peers(Registry* reg, RegistryPeer* peers, int max_peers);
-bool registry_remove_peer(Registry* reg, const char* id);
-bool registry_peer_exists(Registry* reg, const char* id);
-void registry_load(Registry* reg);
-void registry_save(Registry* reg);
+RequestManager* request_manager_create(void);
+void request_manager_destroy(RequestManager* rm);
+bool request_send(RequestManager* rm, const char* from_id, const char* to_id);
+int request_get_pending(RequestManager* rm, const char* to_id, Request* out, int max);
+bool request_accept(RequestManager* rm, const char* from_id, const char* to_id);
+bool request_reject(RequestManager* rm, const char* from_id, const char* to_id);
+bool request_exists(RequestManager* rm, const char* from_id, const char* to_id);
+void request_save(RequestManager* rm);
+void request_load(RequestManager* rm);
 
 #endif
