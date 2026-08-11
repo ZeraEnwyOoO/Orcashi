@@ -7,8 +7,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define CACHE_FILE "/tmp/.orcashi/peers.cache"
-
 PeerCache* peer_cache_create(void) {
     PeerCache* pc = (PeerCache*)calloc(1, sizeof(PeerCache));
     if (!pc) return NULL;
