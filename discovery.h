@@ -1,4 +1,5 @@
- #ifndef DISCOVERY_H
+ cat > discovery.h << 'EOF'
+#ifndef DISCOVERY_H
 #define DISCOVERY_H
 
 #include <stdio.h>
@@ -66,4 +67,8 @@ char* discovery_get_local_ip(void);
 void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*));
 void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*));
 
+// NEW: Set identity for search responses
+void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, int port);
+
 #endif
+EOF
