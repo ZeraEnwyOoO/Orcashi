@@ -43,7 +43,9 @@ ORCASHI* orcashi_create(void) {
     strcpy(orcashi->my_id, id);
     free(id);
     
-    strcpy(orcashi->local_ip, "0.0.0.0");
+    char* local_ip = orcashi_get_local_ip();
+    strcpy(orcashi->local_ip, local_ip);
+    free(local_ip);
     
     orcashi->connected = false;
     orcashi->running = false;
@@ -84,6 +86,9 @@ bool orcashi_init(ORCASHI* orcashi) {
         return false;
     }
     discovery_start(orcashi->discovery);
+    
+    // SET IDENTITY FOR SEARCH RESPONSES
+    discovery_set_my_identity(orcashi->discovery, orcashi->my_id, orcashi->local_ip, ORCASHI_PORT);
     
     registry_load(orcashi->registry);
     request_load(orcashi->requests);
@@ -234,6 +239,9 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         orcashi->registered = true;
         strcpy(orcashi->local_ip, input_ip);
         
+        // Update identity in discovery
+        discovery_set_my_identity(orcashi->discovery, orcashi->my_id, input_ip, ORCASHI_PORT);
+        
         CachePeer peer;
         memset(&peer, 0, sizeof(peer));
         strcpy(peer.id, orcashi->my_id);
@@ -287,6 +295,12 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
         if (peer_cache_get_peer(orcashi->cache, id, &peer) && peer.online) {
             printf("  [ORCA] Found on network: %s:%d\n", peer.ip, peer.port);
             return orcashi_join_room(orcashi, peer.ip, peer.port);
+        }
+        // Also check discovery cache
+        PeerInfo p;
+        if (discovery_find_peer(orcashi->discovery, id, &p)) {
+            printf("  [ORCA] Found via discovery: %s:%d\n", p.ip, p.port);
+            return orcashi_join_room(orcashi, p.ip, p.port);
         }
         sleep(1);
     }
