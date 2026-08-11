@@ -1,33 +1,10 @@
- 
-/*
-Copyright (c) 2009-2011 by Juliusz Chroboczek
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
-
-#ifndef DHT_H
+ #ifndef DHT_H
 #define DHT_H
 
 #include <stdio.h>
-#include <time.h>        /* ADDED for time_t */
-#include <sys/socket.h>  /* ADDED for struct sockaddr */
-#include <netinet/in.h>  /* ADDED for struct sockaddr_in */
+#include <time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,7 +39,6 @@ int dht_get_nodes(struct sockaddr_in *sin, int *num,
                   struct sockaddr_in6 *sin6, int *num6);
 int dht_uninit(void);
 
-/* This must be provided by the user. */
 int dht_sendto(int sockfd, const void *buf, int len, int flags,
                const struct sockaddr *to, int tolen);
 int dht_blacklisted(const struct sockaddr *sa, int salen);
@@ -76,5 +52,4 @@ int dht_random_bytes(void *buf, size_t size);
 }
 #endif
 
-#endif /* DHT_H */
- 
+#endif
