@@ -1,5 +1,4 @@
- // endpoint.h - Endpoint Registry in C (REAL)
-#ifndef ENDPOINT_H
+ #ifndef ENDPOINT_H
 #define ENDPOINT_H
 
 #include <stdio.h>
@@ -28,7 +27,6 @@ typedef struct {
     int heartbeat_interval;
 } EndpointRegistry;
 
-// Functions
 EndpointRegistry* endpoint_registry_create(void);
 void endpoint_registry_destroy(EndpointRegistry* er);
 
