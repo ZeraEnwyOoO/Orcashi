@@ -14,6 +14,8 @@
 #include <netdb.h>
 #include <errno.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 // ===== ORCASHI Core =====
 #include "plug.h"
@@ -27,6 +29,8 @@
 
 #define ORCASHI_VERSION "3.1"
 #define ORCASHI_PORT 9000
+#define ORCASHI_HOME "/tmp/.orcashi/"
+#define ID_FILE ORCASHI_HOME "id"
 
 // ===== ORCASHI Struct =====
 typedef struct ORCASHI {
