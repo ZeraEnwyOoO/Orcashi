@@ -1,5 +1,4 @@
- // request.h - Connection Requests in C
-#ifndef REQUEST_H
+ #ifndef REQUEST_H
 #define REQUEST_H
 
 #include <stdio.h>
@@ -13,7 +12,7 @@
 typedef struct {
     char from_id[64];
     char to_id[64];
-    char status[16];  // "pending", "accepted", "rejected"
+    char status[16];
     time_t timestamp;
 } Request;
 
@@ -23,7 +22,6 @@ typedef struct {
     char request_file[512];
 } RequestManager;
 
-// Functions
 RequestManager* request_manager_create(void);
 void request_manager_destroy(RequestManager* rm);
 
