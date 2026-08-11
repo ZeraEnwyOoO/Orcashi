@@ -27,7 +27,6 @@ typedef struct {
 
 Registry* registry_create(void);
 void registry_destroy(Registry* reg);
-
 bool registry_register_peer(Registry* reg, const char* id, const char* ip, const char* port);
 bool registry_get_peer(Registry* reg, const char* id, RegistryPeer* out_peer);
 void registry_update_peer(Registry* reg, const char* id, const char* ip, const char* port);
@@ -35,7 +34,6 @@ void registry_set_online(Registry* reg, const char* id, bool online);
 int registry_get_all_peers(Registry* reg, RegistryPeer* peers, int max_peers);
 bool registry_remove_peer(Registry* reg, const char* id);
 bool registry_peer_exists(Registry* reg, const char* id);
-
 void registry_load(Registry* reg);
 void registry_save(Registry* reg);
 
