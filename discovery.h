@@ -58,4 +58,7 @@ void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*));
 void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*));
 void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, int port);
 
+// ===== NEW: Active Query =====
+void discovery_query_peer(Discovery* disc, const char* id);
+
 #endif
