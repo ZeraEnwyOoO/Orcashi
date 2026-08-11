@@ -1,5 +1,4 @@
- // endpoint.c - Endpoint Registry Implementation in C (REAL)
-#include "endpoint.h"
+ #include "endpoint.h"
 
 EndpointRegistry* endpoint_registry_create(void) {
     EndpointRegistry* er = (EndpointRegistry*)calloc(1, sizeof(EndpointRegistry));
@@ -25,10 +24,8 @@ void endpoint_register(EndpointRegistry* er, const char* id, const char* ip, int
     
     pthread_mutex_lock(&er->mutex);
     
-    // Check if exists
     for (int i = 0; i < er->endpoint_count; i++) {
         if (strcmp(er->endpoints[i].id, id) == 0) {
-            // Update existing
             strcpy(er->endpoints[i].ip, ip);
             er->endpoints[i].port = port;
             er->endpoints[i].last_update = time(NULL);
@@ -38,7 +35,6 @@ void endpoint_register(EndpointRegistry* er, const char* id, const char* ip, int
         }
     }
     
-    // Add new
     if (er->endpoint_count < MAX_ENDPOINTS) {
         EndpointInfo* info = &er->endpoints[er->endpoint_count++];
         strcpy(info->id, id);
@@ -128,7 +124,6 @@ void endpoint_cleanup_stale(EndpointRegistry* er, int max_age_seconds) {
     int i = 0;
     while (i < er->endpoint_count) {
         if (now - er->endpoints[i].last_update > max_age_seconds) {
-            // Remove stale endpoint
             for (int j = i; j < er->endpoint_count - 1; j++) {
                 er->endpoints[j] = er->endpoints[j + 1];
             }
