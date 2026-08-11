@@ -12,8 +12,6 @@
 static void* listen_loop(void* arg);
 static void* broadcast_loop(void* arg);
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip);
-static void send_udp(Discovery* disc, const char* msg, const char* ip, int port);
-static bool is_valid_ip(const char* ip);
 
 Discovery* discovery_create(void) {
     Discovery* disc = (Discovery*)calloc(1, sizeof(Discovery));
