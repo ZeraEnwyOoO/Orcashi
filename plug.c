@@ -93,6 +93,7 @@ bool plug_create_server(TCPPlug* plug, int port) {
     
     printf("[ORCA] TCP Plug ready on port %d\n", port);
     printf("[ORCA] Waiting for connection...\n");
+    fflush(stdout);
     
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
@@ -109,10 +110,12 @@ bool plug_create_server(TCPPlug* plug, int port) {
     plug->connected = true;
     plug->running = true;
     
-    printf("[ORCA] Client connected from %s!\n", plug->peer_ip);
-    
+    // DISABLE NAGLE FOR REAL-TIME CHAT
     int flag = 1;
     setsockopt(plug->client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+    
+    printf("[ORCA] Client connected from %s!\n", plug->peer_ip);
+    fflush(stdout);
     
     pthread_create(&plug->receive_thread, NULL, receive_loop, plug);
     pthread_create(&plug->send_thread, NULL, send_loop, plug);
@@ -146,10 +149,12 @@ bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port) {
     plug->connected = true;
     plug->running = true;
     
-    printf("[ORCA] Connected to %s:%d!\n", target_ip, port);
-    
+    // DISABLE NAGLE FOR REAL-TIME CHAT
     int flag = 1;
     setsockopt(plug->client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+    
+    printf("[ORCA] Connected to %s:%d!\n", target_ip, port);
+    fflush(stdout);
     
     pthread_create(&plug->receive_thread, NULL, receive_loop, plug);
     pthread_create(&plug->send_thread, NULL, send_loop, plug);
@@ -168,8 +173,8 @@ static void* receive_loop(void* arg) {
     while (plug->running && plug->connected) {
         FD_ZERO(&fds);
         FD_SET(plug->client_socket, &fds);
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;  // 100ms for faster response
         
         int ret = select(plug->client_socket + 1, &fds, NULL, NULL, &tv);
         if (ret < 0) break;
@@ -228,7 +233,12 @@ static void* send_loop(void* arg) {
         while (plug->send_count == 0 && plug->running) {
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_sec += 1;
+            ts.tv_sec += 0;
+            ts.tv_nsec += 10000000;  // 10ms timeout
+            if (ts.tv_nsec >= 1000000000) {
+                ts.tv_sec++;
+                ts.tv_nsec -= 1000000000;
+            }
             pthread_cond_timedwait(&plug->queue_cond, &plug->queue_mutex, &ts);
         }
         
@@ -258,14 +268,28 @@ static void* send_loop(void* arg) {
 bool plug_send_message(TCPPlug* plug, const char* msg) {
     if (!plug || !plug->connected) return false;
     
+    // Ensure message has newline
+    char msg_with_newline[BUFFER_SIZE];
+    int len = strlen(msg);
+    if (len > 0 && msg[len-1] != '\n') {
+        snprintf(msg_with_newline, sizeof(msg_with_newline), "%s\n", msg);
+    } else {
+        strncpy(msg_with_newline, msg, sizeof(msg_with_newline) - 1);
+        msg_with_newline[sizeof(msg_with_newline) - 1] = '\0';
+    }
+    
     pthread_mutex_lock(&plug->queue_mutex);
     if (plug->send_count >= plug->queue_capacity) {
         pthread_mutex_unlock(&plug->queue_mutex);
         return false;
     }
     
-    char* msg_copy = (char*)malloc(strlen(msg) + 2);
-    sprintf(msg_copy, "%s\n", msg);
+    char* msg_copy = strdup(msg_with_newline);
+    if (!msg_copy) {
+        pthread_mutex_unlock(&plug->queue_mutex);
+        return false;
+    }
+    
     plug->send_queue[plug->send_count++] = msg_copy;
     pthread_cond_signal(&plug->queue_cond);
     pthread_mutex_unlock(&plug->queue_mutex);
