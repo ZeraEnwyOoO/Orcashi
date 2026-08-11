@@ -21,13 +21,16 @@ static char g_my_id[64] = {0};
 static char g_my_ip[64] = {0};
 static int g_my_port = 9000;
 
+// ===== SET IDENTITY =====
 void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, int port) {
     (void)disc;
     if (id) strcpy(g_my_id, id);
     if (ip) strcpy(g_my_ip, ip);
     g_my_port = port;
+    printf("[DEBUG] Discovery identity: ID=%s IP=%s PORT=%d\n", g_my_id, g_my_ip, g_my_port);
 }
 
+// ===== CREATE =====
 Discovery* discovery_create(void) {
     Discovery* disc = (Discovery*)calloc(1, sizeof(Discovery));
     if (!disc) return NULL;
@@ -42,6 +45,7 @@ Discovery* discovery_create(void) {
     return disc;
 }
 
+// ===== DESTROY =====
 void discovery_destroy(Discovery* disc) {
     if (!disc) return;
     
@@ -56,6 +60,7 @@ void discovery_destroy(Discovery* disc) {
     free(disc);
 }
 
+// ===== INIT =====
 bool discovery_init(Discovery* disc, int port) {
     if (!disc) return false;
     
@@ -87,6 +92,7 @@ bool discovery_init(Discovery* disc, int port) {
     return true;
 }
 
+// ===== START =====
 void discovery_start(Discovery* disc) {
     if (!disc || disc->running) return;
     
@@ -97,6 +103,7 @@ void discovery_start(Discovery* disc) {
     printf("[ORCA] Discovery started!\n");
 }
 
+// ===== STOP =====
 void discovery_stop(Discovery* disc) {
     if (!disc || !disc->running) return;
     
@@ -114,6 +121,7 @@ void discovery_stop(Discovery* disc) {
     printf("[ORCA] Discovery stopped.\n");
 }
 
+// ===== LISTEN LOOP =====
 static void* listen_loop(void* arg) {
     Discovery* disc = (Discovery*)arg;
     char buffer[BUFFER_SIZE];
@@ -151,6 +159,7 @@ static void* listen_loop(void* arg) {
     return NULL;
 }
 
+// ===== BROADCAST LOOP =====
 static void* broadcast_loop(void* arg) {
     Discovery* disc = (Discovery*)arg;
     
@@ -162,6 +171,7 @@ static void* broadcast_loop(void* arg) {
     return NULL;
 }
 
+// ===== BROADCAST PRESENCE =====
 void discovery_broadcast_presence(Discovery* disc, const char* id, const char* endpoint) {
     if (!disc) return;
     
@@ -183,6 +193,7 @@ void discovery_broadcast_presence(Discovery* disc, const char* id, const char* e
     printf("[ORCA] Broadcasted presence: %s at %s\n", id, endpoint);
 }
 
+// ===== BROADCAST SEARCH (OLD - Keep for compatibility) =====
 void discovery_broadcast_search(Discovery* disc, const char* id) {
     if (!disc) return;
     
@@ -204,9 +215,52 @@ void discovery_broadcast_search(Discovery* disc, const char* id) {
     printf("[ORCA] Searching for: %s\n", id);
 }
 
+// ===== NEW: ACTIVE QUERY =====
+void discovery_query_peer(Discovery* disc, const char* id) {
+    if (!disc || !id) return;
+    
+    char msg[512];
+    snprintf(msg, sizeof(msg), "WHO_HAS:%s", id);
+    
+    struct sockaddr_in broadcast_addr;
+    memset(&broadcast_addr, 0, sizeof(broadcast_addr));
+    broadcast_addr.sin_family = AF_INET;
+    broadcast_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
+    broadcast_addr.sin_port = htons(disc->port);
+    
+    int broadcast = 1;
+    setsockopt(disc->udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+    
+    sendto(disc->udp_socket, msg, strlen(msg), 0,
+           (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
+    
+    printf("[ORCA] Querying for peer: %s\n", id);
+}
+
+// ===== SEND UDP =====
+static void send_udp(Discovery* disc, const char* msg, const char* ip, int port) {
+    if (!disc || !msg || !ip) return;
+    
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    inet_pton(AF_INET, ip, &addr.sin_addr);
+    
+    sendto(disc->udp_socket, msg, strlen(msg), 0,
+           (struct sockaddr*)&addr, sizeof(addr));
+}
+
+// ===== PARSE MESSAGE =====
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_port;
     
+    // ===== Skip self =====
+    if (strlen(g_my_ip) > 0 && strcmp(sender_ip, g_my_ip) == 0) {
+        return;
+    }
+    
+    // ===== HANDLE PRESENCE =====
     if (strncmp(msg, "ORCA_PRESENCE:", 14) == 0) {
         const char* rest = msg + 14;
         const char* colon = strchr(rest, ':');
@@ -258,6 +312,80 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
         }
     }
     
+    // ===== HANDLE WHO_HAS (Active Query) =====
+    if (strncmp(msg, "WHO_HAS:", 8) == 0) {
+        const char* search_id = msg + 8;
+        
+        printf("[DEBUG] Received WHO_HAS for ID: %s from %s\n", search_id, sender_ip);
+        
+        // Check if this is me!
+        if (strlen(g_my_id) > 0 && strcmp(search_id, g_my_id) == 0) {
+            char response[512];
+            snprintf(response, sizeof(response), 
+                    "I_AM:%s:%s:%d", 
+                    g_my_id, g_my_ip, g_my_port);
+            
+            // Send DIRECTLY to the requester (not broadcast!)
+            send_udp(disc, response, sender_ip, DISCOVERY_PORT);
+            
+            printf("[ORCA] Responded to WHO_HAS: %s -> %s:%d\n", 
+                   search_id, g_my_ip, g_my_port);
+        }
+    }
+    
+    // ===== HANDLE I_AM (Response to WHO_HAS) =====
+    if (strncmp(msg, "I_AM:", 5) == 0) {
+        const char* rest = msg + 5;
+        const char* colon1 = strchr(rest, ':');
+        const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
+        
+        if (colon1 && colon2) {
+            char id[64];
+            char ip[INET_ADDRSTRLEN];
+            int port;
+            
+            int id_len = colon1 - rest;
+            strncpy(id, rest, id_len);
+            id[id_len] = '\0';
+            
+            int ip_len = colon2 - colon1 - 1;
+            strncpy(ip, colon1 + 1, ip_len);
+            ip[ip_len] = '\0';
+            
+            port = atoi(colon2 + 1);
+            
+            printf("[ORCA] Received I_AM: %s at %s:%d\n", id, ip, port);
+            
+            // Store in peer cache
+            pthread_mutex_lock(&disc->mutex);
+            
+            int found = -1;
+            for (int i = 0; i < disc->peer_count; i++) {
+                if (strcmp(disc->peers[i].id, id) == 0) {
+                    found = i;
+                    break;
+                }
+            }
+            
+            if (found == -1 && disc->peer_count < MAX_PEERS) {
+                found = disc->peer_count++;
+            }
+            
+            if (found >= 0) {
+                PeerInfo* peer = &disc->peers[found];
+                strcpy(peer->id, id);
+                strcpy(peer->ip, ip);
+                peer->port = port;
+                peer->online = true;
+                peer->last_seen = time(NULL);
+                snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", ip, port);
+            }
+            
+            pthread_mutex_unlock(&disc->mutex);
+        }
+    }
+    
+    // ===== HANDLE SEARCH (OLD - Keep for compatibility) =====
     if (strncmp(msg, "ORCA_SEARCH:", 12) == 0) {
         const char* search_id = msg + 12;
         
@@ -271,49 +399,11 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
             
             printf("[ORCA] Responded to search for %s -> %s:%d\n", 
                    search_id, g_my_ip, g_my_port);
-            
-            pthread_mutex_lock(&disc->mutex);
-            
-            int found = -1;
-            for (int i = 0; i < disc->peer_count; i++) {
-                if (strcmp(disc->peers[i].id, search_id) == 0) {
-                    found = i;
-                    break;
-                }
-            }
-            
-            if (found == -1 && disc->peer_count < MAX_PEERS) {
-                found = disc->peer_count++;
-            }
-            
-            if (found >= 0) {
-                PeerInfo* peer = &disc->peers[found];
-                strcpy(peer->id, search_id);
-                strcpy(peer->ip, sender_ip);
-                peer->port = 9000;
-                peer->online = true;
-                peer->last_seen = time(NULL);
-                snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:9000", sender_ip);
-            }
-            
-            pthread_mutex_unlock(&disc->mutex);
         }
     }
 }
 
-static void send_udp(Discovery* disc, const char* msg, const char* ip, int port) {
-    if (!disc || !msg || !ip) return;
-    
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, ip, &addr.sin_addr);
-    
-    sendto(disc->udp_socket, msg, strlen(msg), 0,
-           (struct sockaddr*)&addr, sizeof(addr));
-}
-
+// ===== FIND PEER =====
 bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
     if (!disc || !out_peer) return false;
     
@@ -331,6 +421,7 @@ bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
     return false;
 }
 
+// ===== GET PEERS =====
 int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers) {
     if (!disc || !peers) return 0;
     
@@ -347,6 +438,7 @@ int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers) {
     return count;
 }
 
+// ===== CLEANUP STALE =====
 void discovery_cleanup_stale(Discovery* disc) {
     if (!disc) return;
     
@@ -366,6 +458,7 @@ void discovery_cleanup_stale(Discovery* disc) {
     pthread_mutex_unlock(&disc->mutex);
 }
 
+// ===== GET LOCAL IP =====
 char* discovery_get_local_ip(void) {
     static char ip[INET_ADDRSTRLEN];
     struct ifaddrs* ifaddr;
@@ -390,6 +483,7 @@ char* discovery_get_local_ip(void) {
     return ip;
 }
 
+// ===== CALLBACKS =====
 void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*)) {
     if (disc) disc->on_peer_found = callback;
 }
