@@ -24,13 +24,11 @@ typedef struct {
 
 RequestManager* request_manager_create(void);
 void request_manager_destroy(RequestManager* rm);
-
 bool request_send(RequestManager* rm, const char* from_id, const char* to_id);
 int request_get_pending(RequestManager* rm, const char* to_id, Request* out, int max);
 bool request_accept(RequestManager* rm, const char* from_id, const char* to_id);
 bool request_reject(RequestManager* rm, const char* from_id, const char* to_id);
 bool request_exists(RequestManager* rm, const char* from_id, const char* to_id);
-
 void request_save(RequestManager* rm);
 void request_load(RequestManager* rm);
 
