@@ -59,7 +59,6 @@ int punch_listen(PunchState* p, char* peer_ip, int* peer_port) {
     struct sockaddr_in from;
     socklen_t from_len = sizeof(from);
     
-    // Set timeout
     struct timeval tv;
     tv.tv_sec = 2;
     tv.tv_usec = 0;
@@ -84,13 +83,11 @@ int punch_listen(PunchState* p, char* peer_ip, int* peer_port) {
 int punch_punch(PunchState* p, const char* target_ip, int target_port) {
     printf("[NAT] Sending punch packets to %s:%d...\n", target_ip, target_port);
     
-    // Send multiple packets to different ports
     for (int i = 0; i < 10; i++) {
         punch_send(p, target_ip, target_port + i);
         usleep(10000);
     }
     
-    // Listen for response
     char peer_ip[INET_ADDRSTRLEN];
     int peer_port;
     
