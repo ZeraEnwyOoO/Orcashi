@@ -1,8 +1,9 @@
-#ifndef DHT_IMPL_H
+ #ifndef DHT_IMPL_H
 #define DHT_IMPL_H
 
-#include <stddef.h>
-#include <sys/socket.h>
+#include <stdio.h>          // ← ADDED: For FILE type
+#include <stddef.h>         // For size_t
+#include <sys/socket.h>     // For struct sockaddr
 
 /**
  * dht_hash - Hash function for DHT
@@ -61,7 +62,7 @@ int dht_sendto(int sockfd, const void *buf, int len, int flags,
                const struct sockaddr *to, int tolen);
 
 /**
- * dht_debug - Debug output function
+ * dht_debug - Debug output FILE pointer
  * 
  * Called by DHT for debug messages.
  * Set to NULL to disable debug output.
