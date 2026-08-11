@@ -20,7 +20,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
-#ifdef __cplusplus
+ #ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -53,7 +53,6 @@ int dht_get_nodes(struct sockaddr_in *sin, int *num,
                   struct sockaddr_in6 *sin6, int *num6);
 int dht_uninit(void);
 
-/* This must be provided by the user. */
 int dht_sendto(int sockfd, const void *buf, int len, int flags,
                const struct sockaddr *to, int tolen);
 int dht_blacklisted(const struct sockaddr *sa, int salen);
