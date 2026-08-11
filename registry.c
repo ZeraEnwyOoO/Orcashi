@@ -1,5 +1,4 @@
- // registry.c - Peer Registry Implementation in C
-#include "registry.h"
+ #include "registry.h"
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -11,10 +10,7 @@ Registry* registry_create(void) {
     if (!reg) return NULL;
     
     strcpy(reg->registry_file, REGISTRY_FILE);
-    
-    // Create directory
     mkdir("/tmp/.orcashi/", 0700);
-    
     registry_load(reg);
     
     return reg;
@@ -30,7 +26,6 @@ void registry_destroy(Registry* reg) {
 bool registry_register_peer(Registry* reg, const char* id, const char* ip, const char* port) {
     if (!reg) return false;
     
-    // Check if already exists
     for (int i = 0; i < reg->peer_count; i++) {
         if (strcmp(reg->peers[i].id, id) == 0) {
             fprintf(stderr, "[ERROR] ID %s already registered!\n", id);
