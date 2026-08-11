@@ -1,31 +1,44 @@
- # Makefile for ORCASHI with DHT
+ # ORCASHI Makefile
 CC = gcc
-CFLAGS = -std=c99 -Wall -O2 -D_GNU_SOURCE -pthread
-LDFLAGS = -lpthread -lssl -lcrypto
-TARGET = orcashi
+CFLAGS = -Wall -O2 -std=gnu99 -pthread
+LDFLAGS = -lpthread
 
-SRCS = main.c orcashi.c plug.c discovery.c registry.c request.c \
-       peer_cache.c endpoint.c dht.c dht_impl.c
-OBJS = $(SRCS:.c=.o)
+TARGET = orcashi
+SRCDIR = src
+OBJDIR = obj
+
+SOURCES = $(SRCDIR)/main.c \
+          $(SRCDIR)/orcashi.c \
+          $(SRCDIR)/plug.c \
+          $(SRCDIR)/discovery.c \
+          $(SRCDIR)/registry.c \
+          $(SRCDIR)/request.c \
+          $(SRCDIR)/peer_cache.c \
+          $(SRCDIR)/endpoint.c \
+          $(SRCDIR)/nat_punch.c \
+          $(SRCDIR)/bootstrap.c \
+          $(SRCDIR)/dht.c
+
+OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CC) -o $@ $^ $(LDFLAGS)
-	@echo "✅ ORCASHI with DHT compiled successfully!"
-	@echo "Run: ./$(TARGET)"
+$(TARGET): $(OBJECTS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-%.o: %.c
+$(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(OBJDIR):
+	mkdir -p $(OBJDIR)
+
 clean:
-	rm -f $(OBJS) $(TARGET)
-	@echo "🧹 Cleaned!"
+	rm -rf $(OBJDIR) $(TARGET)
 
-run: $(TARGET)
-	./$(TARGET)
+install: $(TARGET)
+	cp $(TARGET) /usr/local/bin/
 
-debug: CFLAGS += -g -DDEBUG
-debug: clean $(TARGET)
+uninstall:
+	rm -f /usr/local/bin/$(TARGET)
 
-.PHONY: all clean run debug
+.PHONY: all clean install uninstall
