@@ -1,5 +1,4 @@
- // request.c - Connection Requests Implementation in C
-#include "request.h"
+ #include "request.h"
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -27,7 +26,6 @@ void request_manager_destroy(RequestManager* rm) {
 bool request_send(RequestManager* rm, const char* from_id, const char* to_id) {
     if (!rm) return false;
     
-    // Check if already exists
     if (request_exists(rm, from_id, to_id)) {
         printf("[ORCA] Request already sent to %s\n", to_id);
         return false;
