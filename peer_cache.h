@@ -37,13 +37,11 @@ typedef struct {
 
 PeerCache* peer_cache_create(void);
 void peer_cache_destroy(PeerCache* pc);
-
 void peer_cache_save_peer(PeerCache* pc, const CachePeer* peer);
 bool peer_cache_get_peer(PeerCache* pc, const char* id, CachePeer* out_peer);
 int peer_cache_get_all(PeerCache* pc, CachePeer* peers, int max_peers);
 void peer_cache_remove_peer(PeerCache* pc, const char* id);
 void peer_cache_clear(PeerCache* pc);
-
 void peer_cache_load(PeerCache* pc);
 void peer_cache_save(PeerCache* pc);
 void peer_cache_auto_save(PeerCache* pc);
