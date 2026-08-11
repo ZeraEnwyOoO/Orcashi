@@ -1,6 +1,4 @@
-#define _GNU_SOURCE
-
-#include "dht_impl.h"
+ #include "dht_impl.h"
 #include "dht.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,17 +6,12 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/socket.h>
-#include <arpa/inet.h>
 #include <errno.h>
 #include <pthread.h>
 
 #ifdef __linux__
 #include <sys/random.h>
 #endif
-
-/* ============================================================================
- * Blacklist Management
- * ============================================================================ */
 
 #define MAX_BLACKLIST 64
 
@@ -32,17 +25,15 @@ static BlacklistEntry blacklist[MAX_BLACKLIST];
 static int blacklist_count = 0;
 static pthread_mutex_t blacklist_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/**
- * dht_blacklisted - Check if node is blacklisted (DHT callback)
- */
+/* ============================================================================
+ * Blacklist Functions
+ * ============================================================================ */
+
 int dht_blacklisted(const struct sockaddr *sa, int salen)
 {
     return dht_blacklist_check(sa, salen);
 }
 
-/**
- * dht_blacklist_add - Add a node to blacklist
- */
 void dht_blacklist_add(const struct sockaddr *sa, int salen)
 {
     if (!sa || salen <= 0) return;
@@ -81,9 +72,6 @@ void dht_blacklist_add(const struct sockaddr *sa, int salen)
     pthread_mutex_unlock(&blacklist_mutex);
 }
 
-/**
- * dht_blacklist_check - Check if address is blacklisted
- */
 int dht_blacklist_check(const struct sockaddr *sa, int salen)
 {
     if (!sa || salen <= 0) return 0;
@@ -102,9 +90,6 @@ int dht_blacklist_check(const struct sockaddr *sa, int salen)
     return 0;
 }
 
-/**
- * dht_blacklist_clear - Clear the blacklist
- */
 void dht_blacklist_clear(void)
 {
     pthread_mutex_lock(&blacklist_mutex);
@@ -119,9 +104,6 @@ void dht_blacklist_clear(void)
 
 static int random_seeded = 0;
 
-/**
- * dht_random_bytes - Generate random bytes
- */
 int dht_random_bytes(void *buf, size_t size)
 {
     if (!buf || size == 0) return -1;
@@ -152,12 +134,6 @@ int dht_random_bytes(void *buf, size_t size)
  * Hash Function
  * ============================================================================ */
 
-/**
- * dht_hash - FNV-1a hash function
- * 
- * This is a fast, simple hash that produces good distribution.
- * For production use, consider using SHA-1 or SHA-256.
- */
 void dht_hash(void *hash_return, int hash_size,
               const void *v1, int len1,
               const void *v2, int len2,
@@ -201,9 +177,6 @@ void dht_hash(void *hash_return, int hash_size,
  * UDP Send Function
  * ============================================================================ */
 
-/**
- * dht_sendto - Send UDP packet
- */
 int dht_sendto(int sockfd, const void *buf, int len, int flags,
                const struct sockaddr *to, int tolen)
 {
@@ -231,9 +204,6 @@ int dht_sendto(int sockfd, const void *buf, int len, int flags,
 
 FILE *dht_debug = NULL;
 
-/**
- * dht_debug_enable - Enable debug output to a file
- */
 void dht_debug_enable(const char *filename)
 {
     if (filename) {
@@ -246,9 +216,6 @@ void dht_debug_enable(const char *filename)
     }
 }
 
-/**
- * dht_debug_disable - Disable debug output
- */
 void dht_debug_disable(void)
 {
     if (dht_debug && dht_debug != stderr) {
@@ -261,25 +228,11 @@ void dht_debug_disable(void)
  * Additional Utility Functions
  * ============================================================================ */
 
-/**
- * dht_compare_ids - Compare two DHT IDs
- * 
- * @param id1  First ID
- * @param id2  Second ID
- * @return     0 if equal, <0 if id1 < id2, >0 if id1 > id2
- */
 int dht_compare_ids(const unsigned char *id1, const unsigned char *id2)
 {
     return memcmp(id1, id2, 20);
 }
 
-/**
- * dht_id_to_string - Convert DHT ID to hex string
- * 
- * @param id     DHT ID
- * @param buf    Output buffer (must be at least 41 bytes)
- * @param buflen Size of output buffer
- */
 void dht_id_to_string(const unsigned char *id, char *buf, int buflen)
 {
     if (!id || !buf || buflen < 41) return;
