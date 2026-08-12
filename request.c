@@ -5,6 +5,21 @@
 
 #define REQUEST_FILE "/tmp/.orcashi/requests.json"
 
+// ===== Helper: Remove < and > from ID =====
+static void strip_brackets(const char* input, char* output, size_t out_size) {
+    if (!input || !output || out_size == 0) return;
+    
+    size_t i = 0, j = 0;
+    size_t len = strlen(input);
+    
+    for (i = 0; i < len && j < out_size - 1; i++) {
+        if (input[i] != '<' && input[i] != '>') {
+            output[j++] = input[i];
+        }
+    }
+    output[j] = '\0';
+}
+
 RequestManager* request_manager_create(void) {
     RequestManager* rm = (RequestManager*)calloc(1, sizeof(RequestManager));
     if (!rm) return NULL;
@@ -47,9 +62,15 @@ bool request_send(RequestManager* rm, const char* from_id, const char* to_id) {
 int request_get_pending(RequestManager* rm, const char* to_id, Request* out, int max) {
     if (!rm || !out) return 0;
     
+    char nt[64];
+    strip_brackets(to_id, nt, sizeof(nt));
+    
     int count = 0;
     for (int i = 0; i < rm->request_count && count < max; i++) {
-        if (strcmp(rm->requests[i].to_id, to_id) == 0 &&
+        char rnt[64];
+        strip_brackets(rm->requests[i].to_id, rnt, sizeof(rnt));
+        
+        if (strcmp(rnt, nt) == 0 &&
             strcmp(rm->requests[i].status, "pending") == 0) {
             out[count++] = rm->requests[i];
         }
@@ -61,9 +82,16 @@ int request_get_pending(RequestManager* rm, const char* to_id, Request* out, int
 bool request_accept(RequestManager* rm, const char* from_id, const char* to_id) {
     if (!rm) return false;
     
+    char nf[64], nt[64];
+    strip_brackets(from_id, nf, sizeof(nf));
+    strip_brackets(to_id, nt, sizeof(nt));
+    
     for (int i = 0; i < rm->request_count; i++) {
-        if (strcmp(rm->requests[i].from_id, from_id) == 0 &&
-            strcmp(rm->requests[i].to_id, to_id) == 0 &&
+        char rnf[64], rnt[64];
+        strip_brackets(rm->requests[i].from_id, rnf, sizeof(rnf));
+        strip_brackets(rm->requests[i].to_id, rnt, sizeof(rnt));
+        
+        if (strcmp(rnf, nf) == 0 && strcmp(rnt, nt) == 0 &&
             strcmp(rm->requests[i].status, "pending") == 0) {
             strcpy(rm->requests[i].status, "accepted");
             request_save(rm);
@@ -78,9 +106,16 @@ bool request_accept(RequestManager* rm, const char* from_id, const char* to_id) 
 bool request_reject(RequestManager* rm, const char* from_id, const char* to_id) {
     if (!rm) return false;
     
+    char nf[64], nt[64];
+    strip_brackets(from_id, nf, sizeof(nf));
+    strip_brackets(to_id, nt, sizeof(nt));
+    
     for (int i = 0; i < rm->request_count; i++) {
-        if (strcmp(rm->requests[i].from_id, from_id) == 0 &&
-            strcmp(rm->requests[i].to_id, to_id) == 0 &&
+        char rnf[64], rnt[64];
+        strip_brackets(rm->requests[i].from_id, rnf, sizeof(rnf));
+        strip_brackets(rm->requests[i].to_id, rnt, sizeof(rnt));
+        
+        if (strcmp(rnf, nf) == 0 && strcmp(rnt, nt) == 0 &&
             strcmp(rm->requests[i].status, "pending") == 0) {
             strcpy(rm->requests[i].status, "rejected");
             request_save(rm);
@@ -95,9 +130,16 @@ bool request_reject(RequestManager* rm, const char* from_id, const char* to_id) 
 bool request_exists(RequestManager* rm, const char* from_id, const char* to_id) {
     if (!rm) return false;
     
+    char nf[64], nt[64];
+    strip_brackets(from_id, nf, sizeof(nf));
+    strip_brackets(to_id, nt, sizeof(nt));
+    
     for (int i = 0; i < rm->request_count; i++) {
-        if (strcmp(rm->requests[i].from_id, from_id) == 0 &&
-            strcmp(rm->requests[i].to_id, to_id) == 0 &&
+        char rnf[64], rnt[64];
+        strip_brackets(rm->requests[i].from_id, rnf, sizeof(rnf));
+        strip_brackets(rm->requests[i].to_id, rnt, sizeof(rnt));
+        
+        if (strcmp(rnf, nf) == 0 && strcmp(rnt, nt) == 0 &&
             strcmp(rm->requests[i].status, "pending") == 0) {
             return true;
         }
