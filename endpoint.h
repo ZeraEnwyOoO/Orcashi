@@ -29,7 +29,6 @@ typedef struct {
 
 EndpointRegistry* endpoint_registry_create(void);
 void endpoint_registry_destroy(EndpointRegistry* er);
-
 void endpoint_register(EndpointRegistry* er, const char* id, const char* ip, int port);
 bool endpoint_get(EndpointRegistry* er, const char* id, EndpointInfo* out_info);
 void endpoint_update(EndpointRegistry* er, const char* id, const char* ip, int port);
