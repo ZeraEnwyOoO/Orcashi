@@ -21,20 +21,26 @@ void signal_handler(int sig) {
 
 void show_help(void) {
     printf("\n");
-    printf("ORCASHI v3.1 - P2P Chat\n");
+    printf("ORCASHI v3.1 - P2P Friend Network\n");
     printf("Usage:\n");
     printf("  ./orcashi create          - Create room (server)\n");
     printf("  ./orcashi join <ip>       - Join room by IP\n");
     printf("  ./orcashi register        - Register identity (foreground)\n");
     printf("  ./orcashi register -d     - Register as daemon (background)\n");
-    printf("  ./orcashi connect <id>    - Connect by ID\n");
-    printf("  ./orcashi peers           - List peers\n");
+    printf("  ./orcashi add <id>        - Send friend request\n");
+    printf("  ./orcashi accept <id>     - Accept friend request\n");
+    printf("  ./orcashi reject <id>     - Reject friend request\n");
+    printf("  ./orcashi peers           - Show interactive peer list\n");
+    printf("  ./orcashi chat <id>       - Start chat with peer\n");
+    printf("  ./orcashi remove <id>     - Remove peer\n");
     printf("  ./orcashi stop            - Stop background daemon\n");
     printf("  ./orcashi status          - Check if daemon is running\n");
     printf("  ./orcashi help            - Show help\n");
     printf("\n");
-    printf("Chat commands:\n");
-    printf("  /exit                     - Exit chat\n");
+    printf("Peers interactive commands:\n");
+    printf("  c <num>  - Chat with peer (by number)\n");
+    printf("  r <num>  - Remove peer (by number)\n");
+    printf("  q        - Quit\n");
     printf("\n");
 }
 
@@ -114,7 +120,7 @@ void stop_daemon(void) {
     printf("Daemon stopped\n");
 }
 
-// ===== FIXED: Non-blocking chat loop =====
+// ===== FIXED: Non-blocking chat loop (REAL-TIME!) =====
 void chat_loop(void) {
     printf("Type /exit to quit\n");
     printf("---\n");
@@ -147,6 +153,88 @@ void chat_loop(void) {
             if (strlen(input) > 0) {
                 orcashi_send_message(g_orcashi, input);
             }
+        }
+    }
+}
+
+// ===== Show interactive peers =====
+void show_peers_interactive(ORCASHI* orcashi) {
+    printf("\n");
+    printf("ORCASHI PEERS\n");
+    printf("────────────────────────────────────────────\n");
+    
+    // Show pending requests
+    Request pending[MAX_REQUESTS];
+    int count = request_get_pending(orcashi->requests, orcashi->my_id, pending, MAX_REQUESTS);
+    if (count > 0) {
+        printf("PENDING REQUESTS:\n");
+        for (int i = 0; i < count; i++) {
+            printf("  [%s] from %s\n", pending[i].from_id, pending[i].from_id);
+        }
+        printf("\n");
+    }
+    
+    // Show accepted peers
+    RegistryPeer peers[MAX_REGISTRY_PEERS];
+    int peer_count = registry_get_all_peers(orcashi->registry, peers, MAX_REGISTRY_PEERS);
+    
+    if (peer_count == 0 && count == 0) {
+        printf("  No peers yet. Use './orcashi add <id>' to add friends.\n");
+    } else {
+        printf("ACCEPTED PEERS:\n");
+        for (int i = 0; i < peer_count; i++) {
+            // Check online status via discovery
+            PeerInfo p;
+            bool online = false;
+            if (discovery_find_peer(orcashi->discovery, peers[i].id, &p)) {
+                online = p.online;
+            }
+            printf("  [%d] %s  %s  %s\n", 
+                   i + 1,
+                   peers[i].id, 
+                   peers[i].ip,
+                   online ? "ONLINE" : "OFFLINE");
+        }
+    }
+    
+    printf("\n");
+    printf("  c <num> = chat  |  r <num> = remove  |  q = quit\n");
+    printf("────────────────────────────────────────────\n");
+    printf("> ");
+    fflush(stdout);
+    
+    char input[64];
+    if (!fgets(input, sizeof(input), stdin)) return;
+    input[strcspn(input, "\n")] = '\0';
+    
+    if (strcmp(input, "q") == 0) return;
+    
+    if (input[0] == 'c' && strlen(input) > 2) {
+        int idx = atoi(input + 2);
+        if (idx > 0 && idx <= peer_count) {
+            char* id = peers[idx - 1].id;
+            printf("Chatting with %s...\n", id);
+            RegistryPeer reg_peer;
+            if (registry_get_peer(orcashi->registry, id, &reg_peer)) {
+                if (orcashi_join_room(orcashi, reg_peer.ip, atoi(reg_peer.port))) {
+                    chat_loop();
+                } else {
+                    printf("Failed to connect to %s\n", id);
+                }
+            }
+        } else {
+            printf("Invalid peer number\n");
+        }
+    } else if (input[0] == 'r' && strlen(input) > 2) {
+        int idx = atoi(input + 2);
+        if (idx > 0 && idx <= peer_count) {
+            char* id = peers[idx - 1].id;
+            if (registry_remove_peer(orcashi->registry, id)) {
+                peer_cache_remove_peer(orcashi->cache, id);
+                printf("Removed peer %s\n", id);
+            }
+        } else {
+            printf("Invalid peer number\n");
         }
     }
 }
@@ -264,26 +352,96 @@ int main(int argc, char* argv[]) {
         orcashi_destroy(g_orcashi);
         return 0;
     }
-    else if (strcmp(cmd, "connect") == 0 && argc >= 3) {
+    // ===== NEW FRIEND SYSTEM COMMANDS =====
+    else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         char* id = argv[2];
-        printf("Connecting to %s...\n", id);
+        printf("Sending friend request to %s...\n", id);
         
-        if (!orcashi_connect_peer(g_orcashi, id)) {
-            fprintf(stderr, "Failed to connect!\n");
-            orcashi_destroy(g_orcashi);
-            return 1;
+        // Search for peer
+        discovery_query_peer(g_orcashi->discovery, id);
+        
+        // Wait for response
+        int waited = 0;
+        PeerInfo p;
+        while (waited < 5) {
+            if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
+                break;
+            }
+            sleep(1);
+            waited++;
         }
         
-        printf("Connected to: %s\n", orcashi_get_peer_ip(g_orcashi));
-        chat_loop();
-        
-        printf("Disconnected.\n");
-        orcashi_disconnect(g_orcashi);
+        if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
+            // Cache peer info
+            registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
+            if (request_send(g_orcashi->requests, g_orcashi->my_id, id)) {
+                printf("Friend request sent to %s\n", id);
+                printf("Use './orcashi peers' to check status\n");
+            }
+        } else {
+            printf("Peer %s not found. Make sure they are online.\n", id);
+        }
+        orcashi_destroy(g_orcashi);
+        return 0;
+    }
+    else if (strcmp(cmd, "accept") == 0 && argc >= 3) {
+        char* id = argv[2];
+        if (request_accept(g_orcashi->requests, id, g_orcashi->my_id)) {
+            printf("Accepted friend request from %s\n", id);
+            // Add to registry if not already
+            RegistryPeer reg_peer;
+            if (!registry_get_peer(g_orcashi->registry, id, &reg_peer)) {
+                PeerInfo p;
+                if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
+                    registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
+                    printf("Peer %s added to registry at %s\n", id, p.ip);
+                }
+            }
+        } else {
+            printf("No pending request from %s\n", id);
+        }
+        orcashi_destroy(g_orcashi);
+        return 0;
+    }
+    else if (strcmp(cmd, "reject") == 0 && argc >= 3) {
+        char* id = argv[2];
+        if (request_reject(g_orcashi->requests, id, g_orcashi->my_id)) {
+            printf("Rejected friend request from %s\n", id);
+        } else {
+            printf("No pending request from %s\n", id);
+        }
         orcashi_destroy(g_orcashi);
         return 0;
     }
     else if (strcmp(cmd, "peers") == 0) {
-        orcashi_show_peers(g_orcashi);
+        show_peers_interactive(g_orcashi);
+        orcashi_destroy(g_orcashi);
+        return 0;
+    }
+    else if (strcmp(cmd, "chat") == 0 && argc >= 3) {
+        char* id = argv[2];
+        RegistryPeer reg_peer;
+        if (registry_get_peer(g_orcashi->registry, id, &reg_peer)) {
+            printf("Connecting to %s at %s:%s...\n", id, reg_peer.ip, reg_peer.port);
+            if (orcashi_join_room(g_orcashi, reg_peer.ip, atoi(reg_peer.port))) {
+                chat_loop();
+            } else {
+                printf("Failed to connect to %s\n", id);
+            }
+        } else {
+            printf("Peer %s not found. Use './orcashi add %s' first.\n", id, id);
+        }
+        orcashi_destroy(g_orcashi);
+        return 0;
+    }
+    else if (strcmp(cmd, "remove") == 0 && argc >= 3) {
+        char* id = argv[2];
+        if (registry_remove_peer(g_orcashi->registry, id)) {
+            peer_cache_remove_peer(g_orcashi->cache, id);
+            printf("Removed peer %s\n", id);
+        } else {
+            printf("Peer %s not found\n", id);
+        }
         orcashi_destroy(g_orcashi);
         return 0;
     }
