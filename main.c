@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/select.h>
 
 static ORCASHI* g_orcashi = NULL;
 static volatile int running = 1;
@@ -113,29 +114,39 @@ void stop_daemon(void) {
     printf("Daemon stopped\n");
 }
 
+// ===== FIXED: Non-blocking chat loop =====
 void chat_loop(void) {
     printf("Type /exit to quit\n");
     printf("---\n");
     
     char input[4096];
     char msg[4096];
+    fd_set fds;
+    struct timeval tv;
     
     while (running && orcashi_is_connected(g_orcashi)) {
-        while (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 10)) {
+        // Check for incoming messages (non-blocking)
+        while (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
             printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
             fflush(stdout);
         }
         
-        printf("> ");
-        fflush(stdout);
+        // Check stdin without blocking
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;  // 100ms
         
-        if (!fgets(input, sizeof(input), stdin)) break;
-        input[strcspn(input, "\n")] = '\0';
-        
-        if (strcmp(input, "/exit") == 0) break;
-        
-        if (strlen(input) > 0) {
-            orcashi_send_message(g_orcashi, input);
+        int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+        if (ret > 0) {
+            if (!fgets(input, sizeof(input), stdin)) break;
+            input[strcspn(input, "\n")] = '\0';
+            
+            if (strcmp(input, "/exit") == 0) break;
+            
+            if (strlen(input) > 0) {
+                orcashi_send_message(g_orcashi, input);
+            }
         }
     }
 }
