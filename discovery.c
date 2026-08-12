@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #define BUFFER_SIZE 4096
 #define BROADCAST_INTERVAL 30
@@ -44,16 +45,12 @@ static void normalize_id(const char* input, char* output, size_t out_size) {
     size_t i = 0, j = 0;
     size_t len = strlen(input);
     
-    DLOG("normalize_id: input='%s', len=%zu", input, len);
-    
     for (i = 0; i < len && j < out_size - 1; i++) {
         if (input[i] != '<' && input[i] != '>') {
             output[j++] = input[i];
         }
     }
     output[j] = '\0';
-    
-    DLOG("normalize_id: output='%s'", output);
 }
 
 // ===== SET IDENTITY =====
@@ -291,6 +288,31 @@ void discovery_query_peer(Discovery* disc, const char* id) {
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
+// ===== SEND ADD_REQUEST (Friend Request Notification) =====
+void discovery_send_add_request(Discovery* disc, const char* target_id, const char* my_id, const char* my_ip, int my_port) {
+    if (!disc || !target_id || !my_id) return;
+    
+    char norm_target[64], norm_my[64];
+    normalize_id(target_id, norm_target, sizeof(norm_target));
+    normalize_id(my_id, norm_my, sizeof(norm_my));
+    
+    char msg[512];
+    snprintf(msg, sizeof(msg), "ADD_REQUEST:%s:%s:%s:%d", 
+             norm_target, norm_my, my_ip, my_port);
+    
+    // Find target peer
+    PeerInfo peer;
+    if (!discovery_find_peer(disc, target_id, &peer)) {
+        DLOG("Cannot send ADD_REQUEST: peer %s not found", target_id);
+        return;
+    }
+    
+    // Send DIRECTLY to target (unicast, not broadcast!)
+    send_udp(disc, msg, peer.ip, DISCOVERY_PORT);
+    
+    DLOG("ADD_REQUEST sent to %s (%s:%d): %s", target_id, peer.ip, peer.port, msg);
+}
+
 // ===== SEND UDP =====
 static void send_udp(Discovery* disc, const char* msg, const char* ip, int port) {
     if (!disc || !msg || !ip) return;
@@ -451,6 +473,79 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
             }
             
             pthread_mutex_unlock(&disc->mutex);
+        }
+    }
+    
+    // ===== HANDLE ADD_REQUEST (NEW - Incoming friend request) =====
+    if (strncmp(msg, "ADD_REQUEST:", 12) == 0) {
+        const char* rest = msg + 12;
+        const char* colon1 = strchr(rest, ':');
+        const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
+        const char* colon3 = colon2 ? strchr(colon2 + 1, ':') : NULL;
+        
+        if (colon1 && colon2 && colon3) {
+            char target_id[64], from_id[64], from_ip[INET_ADDRSTRLEN];
+            int from_port;
+            
+            int len = colon1 - rest;
+            strncpy(target_id, rest, len);
+            target_id[len] = '\0';
+            
+            len = colon2 - colon1 - 1;
+            strncpy(from_id, colon1 + 1, len);
+            from_id[len] = '\0';
+            
+            len = colon3 - colon2 - 1;
+            strncpy(from_ip, colon2 + 1, len);
+            from_ip[len] = '\0';
+            
+            from_port = atoi(colon3 + 1);
+            
+            DLOG("ADD_REQUEST: target=%s, from=%s at %s:%d", target_id, from_id, from_ip, from_port);
+            
+            // Check if this is for us
+            char norm_target[64], norm_my[64];
+            normalize_id(target_id, norm_target, sizeof(norm_target));
+            normalize_id(g_my_id, norm_my, sizeof(norm_my));
+            
+            if (strcmp(norm_target, norm_my) == 0) {
+                // Save peer info in discovery cache
+                pthread_mutex_lock(&disc->mutex);
+                
+                int found = -1;
+                for (int i = 0; i < disc->peer_count; i++) {
+                    if (strcmp(disc->peers[i].id, from_id) == 0) {
+                        found = i;
+                        break;
+                    }
+                }
+                
+                if (found == -1 && disc->peer_count < MAX_PEERS) {
+                    found = disc->peer_count++;
+                }
+                
+                if (found >= 0) {
+                    PeerInfo* peer = &disc->peers[found];
+                    strcpy(peer->id, from_id);
+                    strcpy(peer->ip, from_ip);
+                    peer->port = from_port;
+                    peer->online = true;
+                    peer->last_seen = time(NULL);
+                    snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", from_ip, from_port);
+                    
+                    DLOG("ADD_REQUEST: stored peer %s at %s:%d", from_id, from_ip, from_port);
+                }
+                
+                pthread_mutex_unlock(&disc->mutex);
+                
+                // Print notification to user
+                printf("\n[ORCA] Friend request from %s (%s:%d)\n", from_id, from_ip, from_port);
+                printf("  Use './orcashi accept %s' to accept\n", from_id);
+                printf("  Use './orcashi reject %s' to reject\n", from_id);
+                fflush(stdout);
+            } else {
+                DLOG("ADD_REQUEST not for us: target=%s, my=%s", target_id, g_my_id);
+            }
         }
     }
     
