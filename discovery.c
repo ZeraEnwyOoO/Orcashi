@@ -38,7 +38,11 @@ static char g_my_id[64] = {0};
 static char g_my_ip[64] = {0};
 static int g_my_port = 9000;
 
-// ===== HELPER: Remove < and > from ID =====
+// ===== Global pointers for interactive accept =====
+static RequestManager* g_request_manager = NULL;
+static Registry* g_registry = NULL;
+
+// ===== Helper: Remove < and > from ID =====
 static void normalize_id(const char* input, char* output, size_t out_size) {
     if (!input || !output || out_size == 0) return;
     
@@ -53,6 +57,26 @@ static void normalize_id(const char* input, char* output, size_t out_size) {
     output[j] = '\0';
 }
 
+// ===== Helper: Extract IP from endpoint =====
+static void extract_ip_from_endpoint(const char* endpoint, char* ip_out, size_t out_size) {
+    if (!endpoint || !ip_out || out_size == 0) return;
+    
+    char* port_colon = strchr(endpoint, ':');
+    if (port_colon) {
+        int ip_len = port_colon - endpoint;
+        if (ip_len < (int)out_size - 1) {
+            strncpy(ip_out, endpoint, ip_len);
+            ip_out[ip_len] = '\0';
+        } else {
+            strncpy(ip_out, endpoint, out_size - 1);
+            ip_out[out_size - 1] = '\0';
+        }
+    } else {
+        strncpy(ip_out, endpoint, out_size - 1);
+        ip_out[out_size - 1] = '\0';
+    }
+}
+
 // ===== SET IDENTITY =====
 void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, int port) {
     (void)disc;
@@ -60,6 +84,18 @@ void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, 
     if (ip) strcpy(g_my_ip, ip);
     g_my_port = port;
     DLOG("Identity set: ID='%s' IP='%s' PORT=%d", g_my_id, g_my_ip, g_my_port);
+}
+
+// ===== SET REQUEST MANAGER =====
+void discovery_set_request_manager(RequestManager* rm) {
+    g_request_manager = rm;
+    DLOG("RequestManager set");
+}
+
+// ===== SET REGISTRY =====
+void discovery_set_registry(Registry* reg) {
+    g_registry = reg;
+    DLOG("Registry set");
 }
 
 // ===== CREATE =====
@@ -288,7 +324,7 @@ void discovery_query_peer(Discovery* disc, const char* id) {
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
-// ===== SEND ADD_REQUEST WITH ACK (Reliable) =====
+// ===== SEND ADD_REQUEST WITH ACK =====
 void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id, const char* my_id, const char* my_ip, int my_port) {
     if (!disc || !target_id || !my_id) return;
     
@@ -300,7 +336,6 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
     snprintf(msg, sizeof(msg), "ADD_REQUEST:%s:%s:%s:%d", 
              norm_target, norm_my, my_ip, my_port);
     
-    // Find target peer
     PeerInfo peer;
     if (!discovery_find_peer(disc, target_id, &peer)) {
         DLOG("Cannot send ADD_REQUEST: peer %s not found", target_id);
@@ -311,39 +346,21 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
     DLOG("Sending ADD_REQUEST to %s (%s:%d)", target_id, peer.ip, peer.port);
     printf("[ORCA] Sending friend request to %s...\n", target_id);
     
-    // Retry up to 5 times
     int max_attempts = 5;
     int ack_received = 0;
     
     for (int attempt = 0; attempt < max_attempts; attempt++) {
-        // Send ADD_REQUEST
         send_udp(disc, msg, peer.ip, DISCOVERY_PORT);
         DLOG("ADD_REQUEST sent (attempt %d/%d) to %s (%s:%d)", attempt + 1, max_attempts, target_id, peer.ip, peer.port);
         
-        // Wait for ACK (3 seconds per attempt)
         int waited = 0;
-        int max_wait = 30;  // 30 * 100ms = 3 seconds
+        int max_wait = 30;
         
         while (waited < max_wait) {
             usleep(100000);
             waited++;
-            
-            // Check if ACK was received (we'll set a flag in parse_message)
-            // For now, we'll just check if peer is still online and last_seen updated
-            // Actually, we need a better mechanism
-            // Let's use a simple approach: check if we received ADD_REQUEST_ACK
-            // The parse_message will set a flag, but we need to pass it back
-            // For simplicity, we'll just assume success after 3 seconds
-            // In a real implementation, we'd use a flag or callback
         }
         
-        // For now, we'll just break after 3 seconds and assume it worked
-        // But we should check if ACK was received
-        // Since we don't have a flag yet, we'll just break
-        // In a real implementation, we'd check a flag set by parse_message
-        
-        // Actually, since we want reliability, let's just do a simple check:
-        // If the peer is still online, assume ACK received
         PeerInfo check_peer;
         if (discovery_find_peer(disc, target_id, &check_peer) && check_peer.online) {
             DLOG("Peer %s is online, assuming ACK received", target_id);
@@ -374,7 +391,6 @@ void discovery_send_add_request_ack(Discovery* disc, const char* target_id, cons
     char msg[512];
     snprintf(msg, sizeof(msg), "ADD_REQUEST_ACK:%s:%s", norm_target, norm_from);
     
-    // Find target peer
     PeerInfo peer;
     if (!discovery_find_peer(disc, target_id, &peer)) {
         DLOG("Cannot send ADD_REQUEST_ACK: peer %s not found", target_id);
@@ -425,7 +441,11 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
             id[id_len] = '\0';
             strcpy(endpoint, colon + 1);
             
-            DLOG("ORCA_PRESENCE: id='%s', endpoint='%s' from %s", id, endpoint, sender_ip);
+            char peer_ip[INET_ADDRSTRLEN];
+            extract_ip_from_endpoint(endpoint, peer_ip, sizeof(peer_ip));
+            
+            DLOG("ORCA_PRESENCE: id='%s', endpoint='%s', peer_ip='%s' (sender_ip=%s)", 
+                 id, endpoint, peer_ip, sender_ip);
             
             pthread_mutex_lock(&disc->mutex);
             
@@ -446,7 +466,7 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
                 PeerInfo* peer = &disc->peers[found];
                 strcpy(peer->id, id);
                 strcpy(peer->endpoint, endpoint);
-                strcpy(peer->ip, sender_ip);
+                strcpy(peer->ip, peer_ip);
                 peer->last_seen = time(NULL);
                 peer->online = true;
                 
@@ -516,7 +536,7 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
             
             port = atoi(colon2 + 1);
             
-            DLOG("I_AM: id='%s', ip='%s', port=%d", id, ip, port);
+            DLOG("I_AM: id='%s', ip='%s', port=%d (sender_ip=%s)", id, ip, port, sender_ip);
             
             pthread_mutex_lock(&disc->mutex);
             
@@ -575,16 +595,21 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
             
             DLOG("ADD_REQUEST: target=%s, from=%s at %s:%d", target_id, from_id, from_ip, from_port);
             
-            // Check if this is for us
             char norm_target[64], norm_my[64];
             normalize_id(target_id, norm_target, sizeof(norm_target));
             normalize_id(g_my_id, norm_my, sizeof(norm_my));
             
             if (strcmp(norm_target, norm_my) == 0) {
-                // ===== SEND ACK =====
+                // Send ACK
                 discovery_send_add_request_ack(disc, from_id, g_my_id);
                 
-                // Save peer info
+                // Save to request manager
+                if (g_request_manager) {
+                    request_send(g_request_manager, from_id, g_my_id);
+                    DLOG("ADD_REQUEST saved to request.json from %s", from_id);
+                }
+                
+                // Store peer info
                 pthread_mutex_lock(&disc->mutex);
                 
                 int found = -1;
@@ -613,11 +638,36 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
                 
                 pthread_mutex_unlock(&disc->mutex);
                 
-                // Print notification to user
+                // ===== INTERACTIVE ACCEPT =====
                 printf("\n[ORCA] Friend request from %s (%s:%d)\n", from_id, from_ip, from_port);
-                printf("  Use './orcashi accept %s' to accept\n", from_id);
-                printf("  Use './orcashi reject %s' to reject\n", from_id);
+                printf("  Accept? (y/n): ");
                 fflush(stdout);
+                
+                char answer[16];
+                if (fgets(answer, sizeof(answer), stdin)) {
+                    if (answer[0] == 'y' || answer[0] == 'Y') {
+                        // Accept the request
+                        if (g_request_manager) {
+                            if (request_accept(g_request_manager, from_id, g_my_id)) {
+                                printf("Accepted friend request from %s\n", from_id);
+                                
+                                // Add to registry
+                                if (g_registry) {
+                                    registry_register_peer(g_registry, from_id, from_ip, "9000");
+                                    DLOG("Peer %s added to registry at %s:9000", from_id, from_ip);
+                                }
+                            } else {
+                                printf("Failed to accept request from %s\n", from_id);
+                            }
+                        }
+                    } else {
+                        // Reject the request
+                        if (g_request_manager) {
+                            request_reject(g_request_manager, from_id, g_my_id);
+                            printf("Rejected friend request from %s\n", from_id);
+                        }
+                    }
+                }
             } else {
                 DLOG("ADD_REQUEST not for us: target=%s, my=%s", target_id, g_my_id);
             }
@@ -640,16 +690,14 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
             
             DLOG("ADD_REQUEST_ACK: target=%s, from=%s", target_id, from_id);
             
-            // Check if this ACK is for us
             char norm_target[64], norm_my[64];
             normalize_id(target_id, norm_target, sizeof(norm_target));
             normalize_id(g_my_id, norm_my, sizeof(norm_my));
             
             if (strcmp(norm_target, norm_my) == 0) {
-                DLOG("ADD_REQUEST_ACK: request delivered to %s!", target_id);
+                DLOG("ADD_REQUEST_ACK: request delivered to %s", target_id);
                 printf("[ORCA] Friend request delivered to %s\n", target_id);
                 
-                // Update peer status
                 pthread_mutex_lock(&disc->mutex);
                 
                 for (int i = 0; i < disc->peer_count; i++) {
@@ -748,7 +796,7 @@ void discovery_cleanup_stale(Discovery* disc) {
     if (!disc) return;
     
     time_t now = time(NULL);
-    if (now - last_cleanup < 30) return;  // Only run every 30 seconds
+    if (now - last_cleanup < 30) return;
     last_cleanup = now;
     
     pthread_mutex_lock(&disc->mutex);
