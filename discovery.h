@@ -17,7 +17,7 @@
 
 #define DISCOVERY_PORT 9001
 #define MAX_PEERS 256
-#define PEER_TIMEOUT 60
+#define PEER_TIMEOUT 300  // 5 minutes
 
 typedef struct {
     char id[64];
@@ -59,8 +59,9 @@ void discovery_broadcast_search(Discovery* disc, const char* id);
 // ===== Active Query =====
 void discovery_query_peer(Discovery* disc, const char* id);
 
-// ===== Friend Request =====
-void discovery_send_add_request(Discovery* disc, const char* target_id, const char* my_id, const char* my_ip, int my_port);
+// ===== Friend Request (Reliable UDP with ACK) =====
+void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id, const char* my_id, const char* my_ip, int my_port);
+void discovery_send_add_request_ack(Discovery* disc, const char* target_id, const char* from_id);
 
 // ===== Peer Management =====
 bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer);
