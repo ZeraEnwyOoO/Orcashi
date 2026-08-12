@@ -131,17 +131,15 @@ void chat_loop(void) {
     struct timeval tv;
     
     while (running && orcashi_is_connected(g_orcashi)) {
-        // Check for incoming messages (non-blocking)
         while (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
             printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
             fflush(stdout);
         }
         
-        // Check stdin without blocking
         FD_ZERO(&fds);
         FD_SET(STDIN_FILENO, &fds);
         tv.tv_sec = 0;
-        tv.tv_usec = 100000;  // 100ms
+        tv.tv_usec = 100000;
         
         int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
         if (ret > 0) {
@@ -163,7 +161,6 @@ void show_peers_interactive(ORCASHI* orcashi) {
     printf("ORCASHI PEERS\n");
     printf("────────────────────────────────────────────\n");
     
-    // Show pending requests
     Request pending[MAX_REQUESTS];
     int count = request_get_pending(orcashi->requests, orcashi->my_id, pending, MAX_REQUESTS);
     if (count > 0) {
@@ -174,7 +171,6 @@ void show_peers_interactive(ORCASHI* orcashi) {
         printf("\n");
     }
     
-    // Show accepted peers
     RegistryPeer peers[MAX_REGISTRY_PEERS];
     int peer_count = registry_get_all_peers(orcashi->registry, peers, MAX_REGISTRY_PEERS);
     
@@ -183,7 +179,6 @@ void show_peers_interactive(ORCASHI* orcashi) {
     } else {
         printf("ACCEPTED PEERS:\n");
         for (int i = 0; i < peer_count; i++) {
-            // Check online status via discovery
             PeerInfo p;
             bool online = false;
             if (discovery_find_peer(orcashi->discovery, peers[i].id, &p)) {
@@ -352,34 +347,44 @@ int main(int argc, char* argv[]) {
         orcashi_destroy(g_orcashi);
         return 0;
     }
-    // ===== NEW FRIEND SYSTEM COMMANDS =====
+    // ===== FIXED: ADD COMMAND with 30s timeout + correct IP =====
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         char* id = argv[2];
+        
+        // Fix: Set correct IP
+        char* local_ip = orcashi_get_local_ip();
+        if (local_ip && strlen(local_ip) > 0) {
+            strcpy(g_orcashi->local_ip, local_ip);
+            discovery_set_my_identity(g_orcashi->discovery, g_orcashi->my_id, local_ip, ORCASHI_PORT);
+        }
+        free(local_ip);
+        
         printf("Sending friend request to %s...\n", id);
         
-        // Search for peer
         discovery_query_peer(g_orcashi->discovery, id);
         
-        // Wait for response
+        // Fix: Wait up to 30 seconds (was 5s)
         int waited = 0;
         PeerInfo p;
-        while (waited < 5) {
+        while (waited < 30) {
             if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
                 break;
             }
             sleep(1);
             waited++;
+            if (waited % 5 == 0) {
+                printf("  Still searching... (%d seconds)\n", waited);
+            }
         }
         
         if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
-            // Cache peer info
             registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
             if (request_send(g_orcashi->requests, g_orcashi->my_id, id)) {
                 printf("Friend request sent to %s\n", id);
                 printf("Use './orcashi peers' to check status\n");
             }
         } else {
-            printf("Peer %s not found. Make sure they are online.\n", id);
+            printf("Peer %s not found after 30 seconds.\n", id);
         }
         orcashi_destroy(g_orcashi);
         return 0;
@@ -388,7 +393,6 @@ int main(int argc, char* argv[]) {
         char* id = argv[2];
         if (request_accept(g_orcashi->requests, id, g_orcashi->my_id)) {
             printf("Accepted friend request from %s\n", id);
-            // Add to registry if not already
             RegistryPeer reg_peer;
             if (!registry_get_peer(g_orcashi->registry, id, &reg_peer)) {
                 PeerInfo p;
