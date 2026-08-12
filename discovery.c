@@ -13,7 +13,6 @@
 #define BUFFER_SIZE 4096
 #define BROADCAST_INTERVAL 30
 
-// ===== DEBUG MACROS =====
 #define DEBUG_DISCOVERY 1
 
 #if DEBUG_DISCOVERY
@@ -38,11 +37,9 @@ static char g_my_id[64] = {0};
 static char g_my_ip[64] = {0};
 static int g_my_port = 9000;
 
-// ===== Global pointers for interactive accept =====
 static RequestManager* g_request_manager = NULL;
 static Registry* g_registry = NULL;
 
-// ===== Helper: Remove < and > from ID =====
 static void normalize_id(const char* input, char* output, size_t out_size) {
     if (!input || !output || out_size == 0) return;
     
@@ -57,7 +54,6 @@ static void normalize_id(const char* input, char* output, size_t out_size) {
     output[j] = '\0';
 }
 
-// ===== Helper: Extract IP from endpoint =====
 static void extract_ip_from_endpoint(const char* endpoint, char* ip_out, size_t out_size) {
     if (!endpoint || !ip_out || out_size == 0) return;
     
@@ -77,7 +73,6 @@ static void extract_ip_from_endpoint(const char* endpoint, char* ip_out, size_t 
     }
 }
 
-// ===== SET IDENTITY =====
 void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, int port) {
     (void)disc;
     if (id) strcpy(g_my_id, id);
@@ -86,19 +81,16 @@ void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, 
     DLOG("Identity set: ID='%s' IP='%s' PORT=%d", g_my_id, g_my_ip, g_my_port);
 }
 
-// ===== SET REQUEST MANAGER =====
 void discovery_set_request_manager(RequestManager* rm) {
     g_request_manager = rm;
     DLOG("RequestManager set");
 }
 
-// ===== SET REGISTRY =====
 void discovery_set_registry(Registry* reg) {
     g_registry = reg;
     DLOG("Registry set");
 }
 
-// ===== CREATE =====
 Discovery* discovery_create(void) {
     Discovery* disc = (Discovery*)calloc(1, sizeof(Discovery));
     if (!disc) return NULL;
@@ -107,6 +99,7 @@ Discovery* discovery_create(void) {
     disc->port = DISCOVERY_PORT;
     disc->running = false;
     disc->peer_count = 0;
+    disc->pending_count = 0;
     
     pthread_mutex_init(&disc->mutex, NULL);
     
@@ -114,7 +107,6 @@ Discovery* discovery_create(void) {
     return disc;
 }
 
-// ===== DESTROY =====
 void discovery_destroy(Discovery* disc) {
     if (!disc) return;
     
@@ -131,7 +123,6 @@ void discovery_destroy(Discovery* disc) {
     DLOG("Discovery destroyed");
 }
 
-// ===== INIT =====
 bool discovery_init(Discovery* disc, int port) {
     if (!disc) return false;
     
@@ -163,7 +154,6 @@ bool discovery_init(Discovery* disc, int port) {
     return true;
 }
 
-// ===== START =====
 void discovery_start(Discovery* disc) {
     if (!disc || disc->running) return;
     
@@ -175,7 +165,6 @@ void discovery_start(Discovery* disc) {
          (unsigned long)disc->listen_thread, (unsigned long)disc->broadcast_thread);
 }
 
-// ===== STOP =====
 void discovery_stop(Discovery* disc) {
     if (!disc || !disc->running) return;
     
@@ -193,7 +182,6 @@ void discovery_stop(Discovery* disc) {
     DLOG("Discovery stopped");
 }
 
-// ===== LISTEN LOOP =====
 static void* listen_loop(void* arg) {
     Discovery* disc = (Discovery*)arg;
     char buffer[BUFFER_SIZE];
@@ -240,7 +228,6 @@ static void* listen_loop(void* arg) {
     return NULL;
 }
 
-// ===== BROADCAST LOOP =====
 static void* broadcast_loop(void* arg) {
     Discovery* disc = (Discovery*)arg;
     
@@ -255,7 +242,6 @@ static void* broadcast_loop(void* arg) {
     return NULL;
 }
 
-// ===== BROADCAST PRESENCE =====
 void discovery_broadcast_presence(Discovery* disc, const char* id, const char* endpoint) {
     if (!disc) return;
     
@@ -277,7 +263,6 @@ void discovery_broadcast_presence(Discovery* disc, const char* id, const char* e
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
-// ===== BROADCAST SEARCH =====
 void discovery_broadcast_search(Discovery* disc, const char* id) {
     if (!disc) return;
     
@@ -299,7 +284,6 @@ void discovery_broadcast_search(Discovery* disc, const char* id) {
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
-// ===== ACTIVE QUERY =====
 void discovery_query_peer(Discovery* disc, const char* id) {
     if (!disc || !id) return;
     
@@ -324,7 +308,6 @@ void discovery_query_peer(Discovery* disc, const char* id) {
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
-// ===== SEND ADD_REQUEST WITH ACK =====
 void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id, const char* my_id, const char* my_ip, int my_port) {
     if (!disc || !target_id || !my_id) return;
     
@@ -380,7 +363,6 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
     }
 }
 
-// ===== SEND ADD_REQUEST_ACK =====
 void discovery_send_add_request_ack(Discovery* disc, const char* target_id, const char* from_id) {
     if (!disc || !target_id || !from_id) return;
     
@@ -401,7 +383,6 @@ void discovery_send_add_request_ack(Discovery* disc, const char* target_id, cons
     DLOG("ADD_REQUEST_ACK sent to %s (%s:%d): %s", target_id, peer.ip, peer.port, msg);
 }
 
-// ===== SEND UDP =====
 static void send_udp(Discovery* disc, const char* msg, const char* ip, int port) {
     if (!disc || !msg || !ip) return;
     
@@ -417,19 +398,64 @@ static void send_udp(Discovery* disc, const char* msg, const char* ip, int port)
            (struct sockaddr*)&addr, sizeof(addr));
 }
 
-// ===== PARSE MESSAGE =====
+void discovery_push_pending(Discovery* disc, const char* from_id, const char* from_ip, int from_port) {
+    if (!disc || !from_id) return;
+    
+    pthread_mutex_lock(&disc->mutex);
+    
+    if (disc->pending_count < MAX_PEERS) {
+        PendingRequest* req = &disc->pending_requests[disc->pending_count++];
+        strcpy(req->from_id, from_id);
+        strcpy(req->from_ip, from_ip);
+        req->from_port = from_port;
+        DLOG("Pending request pushed: %s at %s:%d", from_id, from_ip, from_port);
+    } else {
+        DLOG("Pending queue full! Cannot add %s", from_id);
+    }
+    
+    pthread_mutex_unlock(&disc->mutex);
+}
+
+bool discovery_pop_pending(Discovery* disc, PendingRequest* out) {
+    if (!disc || !out) return false;
+    
+    pthread_mutex_lock(&disc->mutex);
+    
+    if (disc->pending_count == 0) {
+        pthread_mutex_unlock(&disc->mutex);
+        return false;
+    }
+    
+    *out = disc->pending_requests[0];
+    
+    for (int i = 0; i < disc->pending_count - 1; i++) {
+        disc->pending_requests[i] = disc->pending_requests[i + 1];
+    }
+    disc->pending_count--;
+    
+    pthread_mutex_unlock(&disc->mutex);
+    return true;
+}
+
+int discovery_pending_count(Discovery* disc) {
+    if (!disc) return 0;
+    
+    pthread_mutex_lock(&disc->mutex);
+    int count = disc->pending_count;
+    pthread_mutex_unlock(&disc->mutex);
+    return count;
+}
+
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_port;
     
     DLOG("parse_message: '%s' from %s", msg, sender_ip);
     
-    // Skip self
     if (strlen(g_my_ip) > 0 && strcmp(sender_ip, g_my_ip) == 0) {
         DLOG("Skipping self-message from %s", sender_ip);
         return;
     }
     
-    // ===== HANDLE PRESENCE =====
     if (strncmp(msg, "ORCA_PRESENCE:", 14) == 0) {
         const char* rest = msg + 14;
         const char* colon = strchr(rest, ':');
@@ -488,7 +514,6 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
         }
     }
     
-    // ===== HANDLE WHO_HAS =====
     if (strncmp(msg, "WHO_HAS:", 8) == 0) {
         const char* search_id = msg + 8;
         
@@ -515,7 +540,6 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
         }
     }
     
-    // ===== HANDLE I_AM =====
     if (strncmp(msg, "I_AM:", 5) == 0) {
         const char* rest = msg + 5;
         const char* colon1 = strchr(rest, ':');
@@ -568,7 +592,6 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
         }
     }
     
-    // ===== HANDLE ADD_REQUEST =====
     if (strncmp(msg, "ADD_REQUEST:", 12) == 0) {
         const char* rest = msg + 12;
         const char* colon1 = strchr(rest, ':');
@@ -600,16 +623,13 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
             normalize_id(g_my_id, norm_my, sizeof(norm_my));
             
             if (strcmp(norm_target, norm_my) == 0) {
-                // Send ACK
                 discovery_send_add_request_ack(disc, from_id, g_my_id);
                 
-                // Save to request manager
                 if (g_request_manager) {
                     request_send(g_request_manager, from_id, g_my_id);
                     DLOG("ADD_REQUEST saved to request.json from %s", from_id);
                 }
                 
-                // Store peer info
                 pthread_mutex_lock(&disc->mutex);
                 
                 int found = -1;
@@ -638,43 +658,13 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
                 
                 pthread_mutex_unlock(&disc->mutex);
                 
-                // ===== INTERACTIVE ACCEPT =====
-                printf("\n[ORCA] Friend request from %s (%s:%d)\n", from_id, from_ip, from_port);
-                printf("  Accept? (y/n): ");
-                fflush(stdout);
-                
-                char answer[16];
-                if (fgets(answer, sizeof(answer), stdin)) {
-                    if (answer[0] == 'y' || answer[0] == 'Y') {
-                        // Accept the request
-                        if (g_request_manager) {
-                            if (request_accept(g_request_manager, from_id, g_my_id)) {
-                                printf("Accepted friend request from %s\n", from_id);
-                                
-                                // Add to registry
-                                if (g_registry) {
-                                    registry_register_peer(g_registry, from_id, from_ip, "9000");
-                                    DLOG("Peer %s added to registry at %s:9000", from_id, from_ip);
-                                }
-                            } else {
-                                printf("Failed to accept request from %s\n", from_id);
-                            }
-                        }
-                    } else {
-                        // Reject the request
-                        if (g_request_manager) {
-                            request_reject(g_request_manager, from_id, g_my_id);
-                            printf("Rejected friend request from %s\n", from_id);
-                        }
-                    }
-                }
+                discovery_push_pending(disc, from_id, from_ip, from_port);
             } else {
                 DLOG("ADD_REQUEST not for us: target=%s, my=%s", target_id, g_my_id);
             }
         }
     }
     
-    // ===== HANDLE ADD_REQUEST_ACK =====
     if (strncmp(msg, "ADD_REQUEST_ACK:", 16) == 0) {
         const char* rest = msg + 16;
         const char* colon1 = strchr(rest, ':');
@@ -714,7 +704,6 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
         }
     }
     
-    // ===== HANDLE SEARCH =====
     if (strncmp(msg, "ORCA_SEARCH:", 12) == 0) {
         const char* search_id = msg + 12;
         
@@ -739,7 +728,6 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
     }
 }
 
-// ===== FIND PEER =====
 bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
     if (!disc || !out_peer) return false;
     
@@ -770,7 +758,6 @@ bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
     return false;
 }
 
-// ===== GET PEERS =====
 int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers) {
     if (!disc || !peers) return 0;
     
@@ -789,7 +776,6 @@ int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers) {
     return count;
 }
 
-// ===== CLEANUP STALE =====
 static time_t last_cleanup = 0;
 
 void discovery_cleanup_stale(Discovery* disc) {
@@ -821,7 +807,6 @@ void discovery_cleanup_stale(Discovery* disc) {
     pthread_mutex_unlock(&disc->mutex);
 }
 
-// ===== GET LOCAL IP =====
 char* discovery_get_local_ip(void) {
     static char ip[INET_ADDRSTRLEN];
     struct ifaddrs* ifaddr;
@@ -849,7 +834,6 @@ char* discovery_get_local_ip(void) {
     return ip;
 }
 
-// ===== CALLBACKS =====
 void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*)) {
     if (disc) {
         disc->on_peer_found = callback;
