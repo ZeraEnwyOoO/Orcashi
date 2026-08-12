@@ -120,7 +120,6 @@ void stop_daemon(void) {
     printf("Daemon stopped\n");
 }
 
-// ===== FIXED: Non-blocking chat loop (REAL-TIME!) =====
 void chat_loop(void) {
     printf("Type /exit to quit\n");
     printf("---\n");
@@ -155,13 +154,11 @@ void chat_loop(void) {
     }
 }
 
-// ===== Show interactive peers =====
 void show_peers_interactive(ORCASHI* orcashi) {
     printf("\n");
     printf("ORCASHI PEERS\n");
     printf("────────────────────────────────────────────\n");
     
-    // Show pending requests
     Request pending[MAX_REQUESTS];
     int count = request_get_pending(orcashi->requests, orcashi->my_id, pending, MAX_REQUESTS);
     if (count > 0) {
@@ -172,7 +169,6 @@ void show_peers_interactive(ORCASHI* orcashi) {
         printf("\n");
     }
     
-    // Show accepted peers
     RegistryPeer peers[MAX_REGISTRY_PEERS];
     int peer_count = registry_get_all_peers(orcashi->registry, peers, MAX_REGISTRY_PEERS);
     
@@ -339,7 +335,31 @@ int main(int argc, char* argv[]) {
             } else {
                 printf("Standing by - listening for connection requests...\n");
                 printf("Press Ctrl+C to stop\n");
+                
                 while (running) {
+                    if (discovery_pending_count(g_orcashi->discovery) > 0) {
+                        PendingRequest req;
+                        if (discovery_pop_pending(g_orcashi->discovery, &req)) {
+                            printf("\n[ORCA] Friend request from %s (%s:%d)\n", 
+                                   req.from_id, req.from_ip, req.from_port);
+                            printf("  Accept? (y/n): ");
+                            fflush(stdout);
+                            
+                            char answer[16];
+                            if (fgets(answer, sizeof(answer), stdin)) {
+                                if (answer[0] == 'y' || answer[0] == 'Y') {
+                                    if (request_accept(g_orcashi->requests, req.from_id, g_orcashi->my_id)) {
+                                        printf("Accepted friend request from %s\n", req.from_id);
+                                        registry_register_peer(g_orcashi->registry, req.from_id, req.from_ip, "9000");
+                                    }
+                                } else {
+                                    request_reject(g_orcashi->requests, req.from_id, g_orcashi->my_id);
+                                    printf("Rejected friend request from %s\n", req.from_id);
+                                }
+                            }
+                        }
+                    }
+                    
                     sleep(1);
                 }
             }
@@ -349,7 +369,6 @@ int main(int argc, char* argv[]) {
         orcashi_destroy(g_orcashi);
         return 0;
     }
-    // ===== ADD COMMAND =====
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         char* id = argv[2];
         
@@ -379,10 +398,7 @@ int main(int argc, char* argv[]) {
         
         if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
             registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
-            
-            // Send ADD_REQUEST with ACK
             discovery_send_add_request_with_ack(g_orcashi->discovery, id, g_orcashi->my_id, g_orcashi->local_ip, ORCASHI_PORT);
-            
             if (request_send(g_orcashi->requests, g_orcashi->my_id, id)) {
                 printf("Friend request sent to %s\n", id);
                 printf("Use './orcashi peers' to check status\n");
@@ -393,14 +409,12 @@ int main(int argc, char* argv[]) {
         orcashi_destroy(g_orcashi);
         return 0;
     }
-    // ===== ACCEPT COMMAND - FIXED =====
     else if (strcmp(cmd, "accept") == 0 && argc >= 3) {
         char* id = argv[2];
         
         if (request_accept(g_orcashi->requests, id, g_orcashi->my_id)) {
             printf("Accepted friend request from %s\n", id);
             
-            // ===== FIX: Add peer to registry =====
             RegistryPeer reg_peer;
             if (!registry_get_peer(g_orcashi->registry, id, &reg_peer)) {
                 PeerInfo p;
