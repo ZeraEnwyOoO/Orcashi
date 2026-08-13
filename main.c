@@ -25,6 +25,7 @@ void show_help(void) {
     printf("Usage:\n");
     printf("  ./orcashi create          - Create room (server)\n");
     printf("  ./orcashi join <ip>       - Join room by IP\n");
+    printf("  ./orcashi join <id>       - Join room by peer ID (uses discovery)\n");
     printf("  ./orcashi register        - Register identity (foreground)\n");
     printf("  ./orcashi register -d     - Register as daemon (background)\n");
     printf("  ./orcashi add <id>        - Send friend request\n");
@@ -310,18 +311,32 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     else if (strcmp(cmd, "join") == 0 && argc >= 3) {
-        char* ip = argv[2];
-        int port = (argc >= 4) ? atoi(argv[3]) : 9000;
-        printf("Joining %s:%d...\n", ip, port);
+        char* target = argv[2];
         
-        if (!orcashi_join_room(g_orcashi, ip, port)) {
-            fprintf(stderr, "Failed to join!\n");
-            orcashi_destroy(g_orcashi);
-            return 1;
+        struct sockaddr_in sa;
+        int is_ip = inet_pton(AF_INET, target, &sa.sin_addr);
+        
+        if (is_ip == 1) {
+            int port = (argc >= 4) ? atoi(argv[3]) : 9000;
+            printf("Joining %s:%d...\n", target, port);
+            
+            if (!orcashi_join_room(g_orcashi, target, port)) {
+                fprintf(stderr, "Failed to join!\n");
+                orcashi_destroy(g_orcashi);
+                return 1;
+            }
+            
+            printf("Connected to: %s\n", orcashi_get_peer_ip(g_orcashi));
+            chat_loop();
+        } else {
+            printf("Looking for peer %s...\n", target);
+            if (!orcashi_connect_peer(g_orcashi, target)) {
+                fprintf(stderr, "Failed to find/connect to peer %s!\n", target);
+                orcashi_destroy(g_orcashi);
+                return 1;
+            }
+            chat_loop();
         }
-        
-        printf("Connected to: %s\n", orcashi_get_peer_ip(g_orcashi));
-        chat_loop();
         
         printf("Disconnected.\n");
         orcashi_disconnect(g_orcashi);
@@ -339,33 +354,51 @@ int main(int argc, char* argv[]) {
             } else {
                 printf("Standing by - listening for connection requests...\n");
                 printf("Press Ctrl+C to stop\n");
+                printf("\n");
                 
                 while (running) {
-                    if (discovery_pending_count(g_orcashi->discovery) > 0) {
+                    // ===== FIXED: Check for pending requests and show y/n =====
+                    int pending = discovery_pending_count(g_orcashi->discovery);
+                    
+                    if (pending > 0) {
                         PendingRequest req;
                         if (discovery_pop_pending(g_orcashi->discovery, &req)) {
-                            printf("\n[ORCA] Friend request from %s (%s:%d)\n", 
-                                   req.from_id, req.from_ip, req.from_port);
-                            printf("  Accept? (y/n): ");
+                            printf("\n");
+                            printf("╔══════════════════════════════════════════════════════╗\n");
+                            printf("║  [ORCA] NEW FRIEND REQUEST                           ║\n");
+                            printf("╠══════════════════════════════════════════════════════╣\n");
+                            printf("║  From: %s\n", req.from_id);
+                            printf("║  IP:   %s\n", req.from_ip);
+                            printf("║  Port: %d\n", req.from_port);
+                            printf("╠══════════════════════════════════════════════════════╣\n");
+                            printf("║  Accept? (y/n): ");
                             fflush(stdout);
                             
                             char answer[16];
                             if (fgets(answer, sizeof(answer), stdin)) {
-                                if (answer[0] == 'y' || answer[0] == 'Y') {
-                                    char norm_from[64], norm_my[64];
-                                    strip_brackets(req.from_id, norm_from, sizeof(norm_from));
-                                    strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
-                                    
-                                    registry_update_status(g_orcashi->registry, norm_from, "accepted");
-                                    printf("Accepted friend request from %s\n", req.from_id);
+                                answer[strcspn(answer, "\n")] = '\0';
+                                
+                                if (strcmp(answer, "y") == 0 || strcmp(answer, "Y") == 0 || 
+                                    strcmp(answer, "yes") == 0 || strcmp(answer, "YES") == 0) {
+                                    registry_update_status(g_orcashi->registry, req.from_id, "accepted");
+                                    printf("║  Accepted friend request from %s\n", req.from_id);
+                                    printf("╚══════════════════════════════════════════════════════╝\n");
+                                    printf("\n");
                                 } else {
-                                    char norm_from[64], norm_my[64];
-                                    strip_brackets(req.from_id, norm_from, sizeof(norm_from));
-                                    strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
-                                    registry_update_status(g_orcashi->registry, norm_from, "rejected");
-                                    printf("Rejected friend request from %s\n", req.from_id);
+                                    registry_update_status(g_orcashi->registry, req.from_id, "rejected");
+                                    printf("║   Rejected friend request from %s\n", req.from_id);
+                                    printf("╚══════════════════════════════════════════════════════╝\n");
+                                    printf("\n");
                                 }
                             }
+                        }
+                    }
+                    
+                    if (orcashi_is_connected(g_orcashi)) {
+                        char msg[4096];
+                        if (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
+                            printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
+                            fflush(stdout);
                         }
                     }
                     
