@@ -73,6 +73,7 @@ void discovery_set_registry(Registry* reg);
 void discovery_push_pending(Discovery* disc, const char* from_id, const char* from_ip, int from_port);
 bool discovery_pop_pending(Discovery* disc, PendingRequest* out);
 int discovery_pending_count(Discovery* disc);
+bool discovery_has_pending(Discovery* disc);  // <-- ADDED
 char* discovery_get_local_ip(void);
 void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*));
 void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*));
