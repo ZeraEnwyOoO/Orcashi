@@ -403,12 +403,22 @@ void discovery_push_pending(Discovery* disc, const char* from_id, const char* fr
     
     pthread_mutex_lock(&disc->mutex);
     
+    for (int i = 0; i < disc->pending_count; i++) {
+        if (strcmp(disc->pending_requests[i].from_id, from_id) == 0) {
+            DLOG("Pending request from %s already exists, updating", from_id);
+            strcpy(disc->pending_requests[i].from_ip, from_ip);
+            disc->pending_requests[i].from_port = from_port;
+            pthread_mutex_unlock(&disc->mutex);
+            return;
+        }
+    }
+    
     if (disc->pending_count < MAX_PEERS) {
         PendingRequest* req = &disc->pending_requests[disc->pending_count++];
         strcpy(req->from_id, from_id);
         strcpy(req->from_ip, from_ip);
         req->from_port = from_port;
-        DLOG("Pending request pushed: %s at %s:%d", from_id, from_ip, from_port);
+        DLOG("Pending request pushed: %s at %s:%d (total: %d)", from_id, from_ip, from_port, disc->pending_count);
     } else {
         DLOG("Pending queue full! Cannot add %s", from_id);
     }
@@ -433,6 +443,8 @@ bool discovery_pop_pending(Discovery* disc, PendingRequest* out) {
     }
     disc->pending_count--;
     
+    DLOG("Pop pending request from %s, remaining: %d", out->from_id, disc->pending_count);
+    
     pthread_mutex_unlock(&disc->mutex);
     return true;
 }
@@ -444,6 +456,14 @@ int discovery_pending_count(Discovery* disc) {
     int count = disc->pending_count;
     pthread_mutex_unlock(&disc->mutex);
     return count;
+}
+
+bool discovery_has_pending(Discovery* disc) {
+    if (!disc) return false;
+    pthread_mutex_lock(&disc->mutex);
+    bool has = disc->pending_count > 0;
+    pthread_mutex_unlock(&disc->mutex);
+    return has;
 }
 
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
@@ -592,6 +612,7 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
         }
     }
     
+    // ===== ADD_REQUEST - FIXED: Register peer in registry =====
     if (strncmp(msg, "ADD_REQUEST:", 12) == 0) {
         const char* rest = msg + 12;
         const char* colon1 = strchr(rest, ':');
@@ -630,6 +651,15 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
                     DLOG("ADD_REQUEST saved to request.json from %s", from_id);
                 }
                 
+                // ===== FIXED: Register peer in registry with actual IP/port =====
+                if (g_registry) {
+                    char port_str[16];
+                    snprintf(port_str, sizeof(port_str), "%d", from_port);
+                    registry_register_peer(g_registry, from_id, from_ip, port_str);
+                    DLOG("ADD_REQUEST: registered peer %s in registry with IP %s:%s", 
+                         from_id, from_ip, port_str);
+                }
+                
                 pthread_mutex_lock(&disc->mutex);
                 
                 int found = -1;
@@ -659,6 +689,15 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
                 pthread_mutex_unlock(&disc->mutex);
                 
                 discovery_push_pending(disc, from_id, from_ip, from_port);
+                DLOG("ADD_REQUEST: pushed to pending queue, pending_count=%d", disc->pending_count);
+                
+                printf("\n[ORCA] ========================================\n");
+                printf("[ORCA] Friend request from %s (%s:%d)\n", from_id, from_ip, from_port);
+                printf("[ORCA] Use './orcashi accept %s' to accept\n", from_id);
+                printf("[ORCA] Use './orcashi reject %s' to reject\n", from_id);
+                printf("[ORCA] ========================================\n");
+                fflush(stdout);
+                
             } else {
                 DLOG("ADD_REQUEST not for us: target=%s, my=%s", target_id, g_my_id);
             }
