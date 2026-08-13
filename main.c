@@ -159,10 +159,8 @@ void show_peers_interactive(ORCASHI* orcashi) {
     printf("ORCASHI PEERS\n");
     printf("────────────────────────────────────────────\n");
     
-    // Load registry first
     registry_load(orcashi->registry);
     
-    // Show pending requests
     RegistryPeer pending[MAX_REGISTRY_PEERS];
     int pending_count = registry_get_pending_peers(orcashi->registry, pending, MAX_REGISTRY_PEERS);
     if (pending_count > 0) {
@@ -173,7 +171,6 @@ void show_peers_interactive(ORCASHI* orcashi) {
         printf("\n");
     }
     
-    // Show accepted peers
     RegistryPeer peers[MAX_REGISTRY_PEERS];
     int peer_count = registry_get_accepted_peers(orcashi->registry, peers, MAX_REGISTRY_PEERS);
     
@@ -359,7 +356,6 @@ int main(int argc, char* argv[]) {
                                     strip_brackets(req.from_id, norm_from, sizeof(norm_from));
                                     strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
                                     
-                                    // ===== FIX: Update status in registry =====
                                     registry_update_status(g_orcashi->registry, norm_from, "accepted");
                                     printf("Accepted friend request from %s\n", req.from_id);
                                 } else {
@@ -410,7 +406,6 @@ int main(int argc, char* argv[]) {
         }
         
         if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
-            // ===== FIX: Use registry directly =====
             registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
             discovery_send_add_request_with_ack(g_orcashi->discovery, id, g_orcashi->my_id, g_orcashi->local_ip, ORCASHI_PORT);
             printf("Friend request sent to %s\n", id);
@@ -428,7 +423,6 @@ int main(int argc, char* argv[]) {
         strip_brackets(id, norm_from, sizeof(norm_from));
         strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
         
-        // ===== FIX: Update status in registry =====
         registry_update_status(g_orcashi->registry, norm_from, "accepted");
         printf("Accepted friend request from %s\n", id);
         
