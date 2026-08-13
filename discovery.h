@@ -1,4 +1,4 @@
- #ifndef DISCOVERY_H
+#ifndef DISCOVERY_H
 #define DISCOVERY_H
 
 #include <stdio.h>
@@ -14,6 +14,9 @@
 #include <ifaddrs.h>
 #include <time.h>
 #include <errno.h>
+
+#include "request.h"
+#include "registry.h"
 
 #define DISCOVERY_PORT 9001
 #define MAX_PEERS 256
