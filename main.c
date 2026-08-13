@@ -160,10 +160,10 @@ void show_peers_interactive(ORCASHI* orcashi) {
     printf("────────────────────────────────────────────\n");
     
     Request pending[MAX_REQUESTS];
-    int count = request_get_pending(orcashi->requests, orcashi->my_id, pending, MAX_REQUESTS);
-    if (count > 0) {
+    int pending_count = request_get_pending(orcashi->requests, orcashi->my_id, pending, MAX_REQUESTS);
+    if (pending_count > 0) {
         printf("PENDING REQUESTS:\n");
-        for (int i = 0; i < count; i++) {
+        for (int i = 0; i < pending_count; i++) {
             printf("  [%s] from %s\n", pending[i].from_id, pending[i].from_id);
         }
         printf("\n");
@@ -172,21 +172,23 @@ void show_peers_interactive(ORCASHI* orcashi) {
     RegistryPeer peers[MAX_REGISTRY_PEERS];
     int peer_count = registry_get_all_peers(orcashi->registry, peers, MAX_REGISTRY_PEERS);
     
-    if (peer_count == 0 && count == 0) {
+    if (peer_count == 0 && pending_count == 0) {
         printf("  No peers yet. Use './orcashi add <id>' to add friends.\n");
     } else {
-        printf("ACCEPTED PEERS:\n");
-        for (int i = 0; i < peer_count; i++) {
-            PeerInfo p;
-            bool online = false;
-            if (discovery_find_peer(orcashi->discovery, peers[i].id, &p)) {
-                online = p.online;
+        if (peer_count > 0) {
+            printf("ACCEPTED PEERS:\n");
+            for (int i = 0; i < peer_count; i++) {
+                PeerInfo p;
+                bool online = false;
+                if (discovery_find_peer(orcashi->discovery, peers[i].id, &p)) {
+                    online = p.online;
+                }
+                printf("  [%d] %s  %s  %s\n", 
+                       i + 1,
+                       peers[i].id, 
+                       peers[i].ip,
+                       online ? "ONLINE" : "OFFLINE");
             }
-            printf("  [%d] %s  %s  %s\n", 
-                   i + 1,
-                   peers[i].id, 
-                   peers[i].ip,
-                   online ? "ONLINE" : "OFFLINE");
         }
     }
     
@@ -348,12 +350,19 @@ int main(int argc, char* argv[]) {
                             char answer[16];
                             if (fgets(answer, sizeof(answer), stdin)) {
                                 if (answer[0] == 'y' || answer[0] == 'Y') {
-                                    if (request_accept(g_orcashi->requests, req.from_id, g_orcashi->my_id)) {
+                                    char norm_from[64], norm_my[64];
+                                    strip_brackets(req.from_id, norm_from, sizeof(norm_from));
+                                    strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
+                                    
+                                    if (request_accept(g_orcashi->requests, norm_from, norm_my)) {
                                         printf("Accepted friend request from %s\n", req.from_id);
                                         registry_register_peer(g_orcashi->registry, req.from_id, req.from_ip, "9000");
                                     }
                                 } else {
-                                    request_reject(g_orcashi->requests, req.from_id, g_orcashi->my_id);
+                                    char norm_from[64], norm_my[64];
+                                    strip_brackets(req.from_id, norm_from, sizeof(norm_from));
+                                    strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
+                                    request_reject(g_orcashi->requests, norm_from, norm_my);
                                     printf("Rejected friend request from %s\n", req.from_id);
                                 }
                             }
@@ -412,7 +421,11 @@ int main(int argc, char* argv[]) {
     else if (strcmp(cmd, "accept") == 0 && argc >= 3) {
         char* id = argv[2];
         
-        if (request_accept(g_orcashi->requests, id, g_orcashi->my_id)) {
+        char norm_from[64], norm_my[64];
+        strip_brackets(id, norm_from, sizeof(norm_from));
+        strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
+        
+        if (request_accept(g_orcashi->requests, norm_from, norm_my)) {
             printf("Accepted friend request from %s\n", id);
             
             RegistryPeer reg_peer;
@@ -433,7 +446,12 @@ int main(int argc, char* argv[]) {
     }
     else if (strcmp(cmd, "reject") == 0 && argc >= 3) {
         char* id = argv[2];
-        if (request_reject(g_orcashi->requests, id, g_orcashi->my_id)) {
+        
+        char norm_from[64], norm_my[64];
+        strip_brackets(id, norm_from, sizeof(norm_from));
+        strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
+        
+        if (request_reject(g_orcashi->requests, norm_from, norm_my)) {
             printf("Rejected friend request from %s\n", id);
         } else {
             printf("No pending request from %s\n", id);
