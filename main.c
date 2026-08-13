@@ -159,18 +159,23 @@ void show_peers_interactive(ORCASHI* orcashi) {
     printf("ORCASHI PEERS\n");
     printf("────────────────────────────────────────────\n");
     
-    Request pending[MAX_REQUESTS];
-    int pending_count = request_get_pending(orcashi->requests, orcashi->my_id, pending, MAX_REQUESTS);
+    // Load registry first
+    registry_load(orcashi->registry);
+    
+    // Show pending requests
+    RegistryPeer pending[MAX_REGISTRY_PEERS];
+    int pending_count = registry_get_pending_peers(orcashi->registry, pending, MAX_REGISTRY_PEERS);
     if (pending_count > 0) {
         printf("PENDING REQUESTS:\n");
         for (int i = 0; i < pending_count; i++) {
-            printf("  [%s] from %s\n", pending[i].from_id, pending[i].from_id);
+            printf("  [%s] from %s\n", pending[i].id, pending[i].id);
         }
         printf("\n");
     }
     
+    // Show accepted peers
     RegistryPeer peers[MAX_REGISTRY_PEERS];
-    int peer_count = registry_get_all_peers(orcashi->registry, peers, MAX_REGISTRY_PEERS);
+    int peer_count = registry_get_accepted_peers(orcashi->registry, peers, MAX_REGISTRY_PEERS);
     
     if (peer_count == 0 && pending_count == 0) {
         printf("  No peers yet. Use './orcashi add <id>' to add friends.\n");
@@ -354,15 +359,14 @@ int main(int argc, char* argv[]) {
                                     strip_brackets(req.from_id, norm_from, sizeof(norm_from));
                                     strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
                                     
-                                    if (request_accept(g_orcashi->requests, norm_from, norm_my)) {
-                                        printf("Accepted friend request from %s\n", req.from_id);
-                                        registry_register_peer(g_orcashi->registry, req.from_id, req.from_ip, "9000");
-                                    }
+                                    // ===== FIX: Update status in registry =====
+                                    registry_update_status(g_orcashi->registry, norm_from, "accepted");
+                                    printf("Accepted friend request from %s\n", req.from_id);
                                 } else {
                                     char norm_from[64], norm_my[64];
                                     strip_brackets(req.from_id, norm_from, sizeof(norm_from));
                                     strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
-                                    request_reject(g_orcashi->requests, norm_from, norm_my);
+                                    registry_update_status(g_orcashi->registry, norm_from, "rejected");
                                     printf("Rejected friend request from %s\n", req.from_id);
                                 }
                             }
@@ -406,12 +410,11 @@ int main(int argc, char* argv[]) {
         }
         
         if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
+            // ===== FIX: Use registry directly =====
             registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
             discovery_send_add_request_with_ack(g_orcashi->discovery, id, g_orcashi->my_id, g_orcashi->local_ip, ORCASHI_PORT);
-            if (request_send(g_orcashi->requests, g_orcashi->my_id, id)) {
-                printf("Friend request sent to %s\n", id);
-                printf("Use './orcashi peers' to check status\n");
-            }
+            printf("Friend request sent to %s\n", id);
+            printf("Use './orcashi peers' to check status\n");
         } else {
             printf("Peer %s not found after 30 seconds.\n", id);
         }
@@ -425,22 +428,10 @@ int main(int argc, char* argv[]) {
         strip_brackets(id, norm_from, sizeof(norm_from));
         strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
         
-        if (request_accept(g_orcashi->requests, norm_from, norm_my)) {
-            printf("Accepted friend request from %s\n", id);
-            
-            RegistryPeer reg_peer;
-            if (!registry_get_peer(g_orcashi->registry, id, &reg_peer)) {
-                PeerInfo p;
-                if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
-                    registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
-                    printf("Peer %s added to registry at %s\n", id, p.ip);
-                } else {
-                    printf("Warning: Peer %s not found. They may be offline.\n", id);
-                }
-            }
-        } else {
-            printf("No pending request from %s\n", id);
-        }
+        // ===== FIX: Update status in registry =====
+        registry_update_status(g_orcashi->registry, norm_from, "accepted");
+        printf("Accepted friend request from %s\n", id);
+        
         orcashi_destroy(g_orcashi);
         return 0;
     }
@@ -451,11 +442,9 @@ int main(int argc, char* argv[]) {
         strip_brackets(id, norm_from, sizeof(norm_from));
         strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
         
-        if (request_reject(g_orcashi->requests, norm_from, norm_my)) {
-            printf("Rejected friend request from %s\n", id);
-        } else {
-            printf("No pending request from %s\n", id);
-        }
+        registry_update_status(g_orcashi->registry, norm_from, "rejected");
+        printf("Rejected friend request from %s\n", id);
+        
         orcashi_destroy(g_orcashi);
         return 0;
     }
