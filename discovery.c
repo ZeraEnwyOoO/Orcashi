@@ -57,7 +57,7 @@ static void normalize_id(const char* input, char* output, size_t out_size) {
 static void extract_ip_from_endpoint(const char* endpoint, char* ip_out, size_t out_size) {
     if (!endpoint || !ip_out || out_size == 0) return;
     
-    char* port_colon = strchr(endpoint, ':');
+    const char* port_colon = strchr(endpoint, ':');
     if (port_colon) {
         int ip_len = port_colon - endpoint;
         if (ip_len < (int)out_size - 1) {
