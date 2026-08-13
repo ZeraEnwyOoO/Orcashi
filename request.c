@@ -6,7 +6,7 @@
 #define REQUEST_FILE "/tmp/.orcashi/requests.json"
 
 // ===== Helper: Remove < and > from ID =====
-static void strip_brackets(const char* input, char* output, size_t out_size) {
+void strip_brackets(const char* input, char* output, size_t out_size) {
     if (!input || !output || out_size == 0) return;
     
     size_t i = 0, j = 0;
