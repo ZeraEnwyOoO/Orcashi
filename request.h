@@ -32,4 +32,7 @@ bool request_exists(RequestManager* rm, const char* from_id, const char* to_id);
 void request_save(RequestManager* rm);
 void request_load(RequestManager* rm);
 
+// ===== Helper: Remove < and > from ID =====
+void strip_brackets(const char* input, char* output, size_t out_size);
+
 #endif
