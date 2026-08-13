@@ -192,6 +192,7 @@ const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
     return orcashi ? orcashi->peer_ip : NULL;
 }
 
+// ===== FIXED: Register Identity with discovery_set_my_identity() =====
 bool orcashi_register_identity(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
@@ -226,7 +227,9 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         orcashi->registered = true;
         strcpy(orcashi->local_ip, input_ip);
         
+        // ===== FIX: Update identity in discovery =====
         discovery_set_my_identity(orcashi->discovery, orcashi->my_id, input_ip, ORCASHI_PORT);
+        printf("[DEBUG] discovery_set_my_identity: ID=%s, IP=%s\n", orcashi->my_id, input_ip);
         
         CachePeer peer;
         memset(&peer, 0, sizeof(peer));
@@ -252,31 +255,26 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     return false;
 }
 
-// ===== CONNECT PEER - NOW USING ACTIVE QUERY =====
 bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     if (!orcashi) return false;
     
     printf("\n  [ORCA] Looking for %s...\n", id);
     
-    // 1. Check Cache
     CachePeer peer;
     if (peer_cache_get_peer(orcashi->cache, id, &peer) && peer.online) {
         printf("  [ORCA] Found in cache: %s:%d\n", peer.ip, peer.port);
         return orcashi_join_room(orcashi, peer.ip, peer.port);
     }
     
-    // 2. Check Registry
     RegistryPeer reg_peer;
     if (registry_get_peer(orcashi->registry, id, &reg_peer)) {
         printf("  [ORCA] Found in registry: %s:%s\n", reg_peer.ip, reg_peer.port);
         return orcashi_join_room(orcashi, reg_peer.ip, atoi(reg_peer.port));
     }
     
-    // 3. ACTIVE QUERY: WHO_HAS → I_AM
     discovery_query_peer(orcashi->discovery, id);
     printf("  [ORCA] Querying network for %s...\n", id);
     
-    // Wait up to 3 seconds for I_AM response
     time_t start = time(NULL);
     while (time(NULL) - start < 3) {
         PeerInfo p;
@@ -288,7 +286,7 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
             printf("  [ORCA] Found in cache: %s:%d\n", peer.ip, peer.port);
             return orcashi_join_room(orcashi, peer.ip, peer.port);
         }
-        usleep(100000);  // 100ms
+        usleep(100000);
     }
     
     printf("  [ERROR] Peer %s not found!\n", id);
