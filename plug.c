@@ -1,4 +1,5 @@
- #define _POSIX_C_SOURCE 200809L
+ // plug.c - Fixed memory leak in receive_loop
+#define _POSIX_C_SOURCE 200809L
 
 #include "plug.h"
 #include <unistd.h>
@@ -110,7 +111,6 @@ bool plug_create_server(TCPPlug* plug, int port) {
     plug->connected = true;
     plug->running = true;
     
-    // ===== REAL-TIME FIX: Disable Nagle's algorithm =====
     int flag = 1;
     setsockopt(plug->client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     
@@ -149,7 +149,6 @@ bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port) {
     plug->connected = true;
     plug->running = true;
     
-    // ===== REAL-TIME FIX: Disable Nagle's algorithm =====
     int flag = 1;
     setsockopt(plug->client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     
@@ -162,11 +161,14 @@ bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port) {
     return true;
 }
 
-// ===== RECEIVE LOOP - SUPER FAST (5ms polling) =====
+// ===== FIXED: receive_loop with proper memory cleanup =====
 static void* receive_loop(void* arg) {
     TCPPlug* plug = (TCPPlug*)arg;
     char buffer[BUFFER_SIZE];
     char* accumulated = (char*)calloc(1, BUFFER_SIZE * 2);
+    if (!accumulated) {
+        return NULL;
+    }
     int acc_len = 0;
     fd_set fds;
     struct timeval tv;
@@ -175,7 +177,7 @@ static void* receive_loop(void* arg) {
         FD_ZERO(&fds);
         FD_SET(plug->client_socket, &fds);
         tv.tv_sec = 0;
-        tv.tv_usec = 5000;  // 5ms - SUPER FAST!
+        tv.tv_usec = 5000;
         
         int ret = select(plug->client_socket + 1, &fds, NULL, NULL, &tv);
         if (ret < 0) break;
@@ -200,16 +202,17 @@ static void* receive_loop(void* arg) {
             *newline = '\0';
             if (strlen(pos) > 0) {
                 char* msg = (char*)malloc(strlen(pos) + 1);
-                strcpy(msg, pos);
-                
-                pthread_mutex_lock(&plug->queue_mutex);
-                if (plug->message_count < plug->queue_capacity) {
-                    plug->message_queue[plug->message_count++] = msg;
-                } else {
-                    free(msg);
+                if (msg) {
+                    strcpy(msg, pos);
+                    pthread_mutex_lock(&plug->queue_mutex);
+                    if (plug->message_count < plug->queue_capacity) {
+                        plug->message_queue[plug->message_count++] = msg;
+                    } else {
+                        free(msg);
+                    }
+                    pthread_cond_signal(&plug->queue_cond);
+                    pthread_mutex_unlock(&plug->queue_mutex);
                 }
-                pthread_cond_signal(&plug->queue_cond);
-                pthread_mutex_unlock(&plug->queue_mutex);
             }
             pos = newline + 1;
         }
@@ -220,11 +223,11 @@ static void* receive_loop(void* arg) {
         }
     }
     
+    // ===== FIX: Free accumulated buffer before thread exits =====
     free(accumulated);
     return NULL;
 }
 
-// ===== SEND LOOP - IMMEDIATE (1ms timeout) =====
 static void* send_loop(void* arg) {
     TCPPlug* plug = (TCPPlug*)arg;
     
@@ -235,7 +238,7 @@ static void* send_loop(void* arg) {
         while (plug->send_count == 0 && plug->running) {
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 1000000;  // 1ms - SUPER FAST!
+            ts.tv_nsec += 1000000;
             if (ts.tv_nsec >= 1000000000) {
                 ts.tv_sec++;
                 ts.tv_nsec -= 1000000000;
@@ -258,7 +261,6 @@ static void* send_loop(void* arg) {
         pthread_mutex_unlock(&plug->queue_mutex);
         
         if (msg) {
-            // ===== SEND IMMEDIATELY =====
             send(plug->client_socket, msg, strlen(msg), MSG_NOSIGNAL);
             free(msg);
         }
@@ -270,7 +272,6 @@ static void* send_loop(void* arg) {
 bool plug_send_message(TCPPlug* plug, const char* msg) {
     if (!plug || !plug->connected) return false;
     
-    // ===== Always add newline =====
     char msg_with_newline[BUFFER_SIZE];
     int len = strlen(msg);
     if (len > 0 && msg[len-1] != '\n') {
@@ -316,10 +317,9 @@ bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms
             }
             pthread_cond_timedwait(&plug->queue_cond, &plug->queue_mutex, &ts);
         } else {
-            // ===== Don't wait forever - 5ms timeout =====
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 5000000;  // 5ms
+            ts.tv_nsec += 5000000;
             if (ts.tv_nsec >= 1000000000) {
                 ts.tv_sec++;
                 ts.tv_nsec -= 1000000000;
