@@ -1,4 +1,5 @@
- #ifndef DISCOVERY_H
+ // discovery.h - Fixed port to match ORCASHI_PORT
+#ifndef DISCOVERY_H
 #define DISCOVERY_H
 
 #include <stdio.h>
@@ -18,7 +19,8 @@
 #include "request.h"
 #include "registry.h"
 
-#define DISCOVERY_PORT 9001
+// ===== FIXED: Use same port as ORCASHI_PORT =====
+#define DISCOVERY_PORT 9000
 #define MAX_PEERS 256
 #define PEER_TIMEOUT 300
 
@@ -73,7 +75,7 @@ void discovery_set_registry(Registry* reg);
 void discovery_push_pending(Discovery* disc, const char* from_id, const char* from_ip, int from_port);
 bool discovery_pop_pending(Discovery* disc, PendingRequest* out);
 int discovery_pending_count(Discovery* disc);
-bool discovery_has_pending(Discovery* disc);  // <-- ADDED
+bool discovery_has_pending(Discovery* disc);
 char* discovery_get_local_ip(void);
 void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*));
 void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*));
