@@ -1,4 +1,4 @@
- // nat_punch.c - Complete fixed file
+ // nat_punch.c
 #include "nat_punch.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +8,14 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <time.h>  // for nanosleep
+
+static void micro_sleep(long microseconds) {
+    struct timespec ts;
+    ts.tv_sec = microseconds / 1000000;
+    ts.tv_nsec = (microseconds % 1000000) * 1000;
+    nanosleep(&ts, NULL);
+}
 
 int punch_init(PunchState* p, int port) {
     p->udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -86,7 +94,7 @@ int punch_punch(PunchState* p, const char* target_ip, int target_port) {
     
     for (int i = 0; i < 10; i++) {
         punch_send(p, target_ip, target_port + i);
-        usleep(10000);
+        micro_sleep(10000);
     }
     
     char peer_ip[INET_ADDRSTRLEN];
@@ -100,7 +108,7 @@ int punch_punch(PunchState* p, const char* target_ip, int target_port) {
             p->peer_port = peer_port;
             return 0;
         }
-        usleep(100000);
+        micro_sleep(100000);
     }
     
     printf("[NAT] Punch failed!\n");
@@ -112,7 +120,7 @@ int punch_try_connect(PunchState* p, const char* target_ip, int target_port) {
     
     for (int i = 0; i < 5; i++) {
         punch_send(p, target_ip, target_port);
-        usleep(50000);
+        micro_sleep(50000);
     }
     
     char peer_ip[INET_ADDRSTRLEN];
@@ -130,7 +138,7 @@ int punch_try_connect(PunchState* p, const char* target_ip, int target_port) {
         if (i % 3 == 0) {
             punch_send(p, target_ip, target_port);
         }
-        usleep(100000);
+        micro_sleep(100000);
     }
     
     printf("[NAT] Punch failed, falling back to direct connection\n");
