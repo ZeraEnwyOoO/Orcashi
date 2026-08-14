@@ -308,7 +308,9 @@ void discovery_query_peer(Discovery* disc, const char* id) {
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
-void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id, const char* my_id, const char* my_ip, int my_port) {
+// ===== FIXED: discovery_send_add_request_with_ack =====
+void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id, 
+                                         const char* my_id, const char* my_ip, int my_port) {
     if (!disc || !target_id || !my_id) return;
     
     char norm_target[64], norm_my[64];
@@ -319,48 +321,33 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
     snprintf(msg, sizeof(msg), "ADD_REQUEST:%s:%s:%s:%d", 
              norm_target, norm_my, my_ip, my_port);
     
+    // ===== FIX: Try to find peer in discovery first =====
     PeerInfo peer;
     if (!discovery_find_peer(disc, target_id, &peer)) {
-        DLOG("Cannot send ADD_REQUEST: peer %s not found", target_id);
-        printf("[ORCA] Peer %s not found\n", target_id);
-        return;
+        DLOG("Peer %s not found in discovery, trying registry...", target_id);
+        
+        // ===== Try registry =====
+        RegistryPeer reg_peer;
+        if (g_registry && registry_get_peer(g_registry, target_id, &reg_peer)) {
+            DLOG("Found peer %s in registry: %s:%s", target_id, reg_peer.ip, reg_peer.port);
+            strcpy(peer.id, target_id);
+            strcpy(peer.ip, reg_peer.ip);
+            peer.port = atoi(reg_peer.port);
+            peer.online = true;
+        } else {
+            DLOG("Cannot send ADD_REQUEST: peer %s not found", target_id);
+            printf("[ORCA] Peer %s not found\n", target_id);
+            return;
+        }
     }
     
     DLOG("Sending ADD_REQUEST to %s (%s:%d)", target_id, peer.ip, peer.port);
     printf("[ORCA] Sending friend request to %s...\n", target_id);
     
-    int max_attempts = 5;
-    int ack_received = 0;
-    
-    for (int attempt = 0; attempt < max_attempts; attempt++) {
-        send_udp(disc, msg, peer.ip, DISCOVERY_PORT);
-        DLOG("ADD_REQUEST sent (attempt %d/%d) to %s (%s:%d)", attempt + 1, max_attempts, target_id, peer.ip, peer.port);
-        
-        int waited = 0;
-        int max_wait = 30;
-        
-        while (waited < max_wait) {
-            usleep(100000);
-            waited++;
-        }
-        
-        PeerInfo check_peer;
-        if (discovery_find_peer(disc, target_id, &check_peer) && check_peer.online) {
-            DLOG("Peer %s is online, assuming ACK received", target_id);
-            ack_received = 1;
-            break;
-        }
-        
-        DLOG("No response for attempt %d, retrying...", attempt + 1);
-    }
-    
-    if (ack_received) {
-        DLOG("ADD_REQUEST delivered successfully to %s", target_id);
-        printf("[ORCA] Friend request delivered to %s\n", target_id);
-    } else {
-        DLOG("ADD_REQUEST failed after %d attempts to %s", max_attempts, target_id);
-        printf("[ORCA] Could not deliver request to %s (no response)\n", target_id);
-    }
+    // ===== Send directly to peer's IP =====
+    send_udp(disc, msg, peer.ip, DISCOVERY_PORT);
+    DLOG("ADD_REQUEST sent to %s (%s:%d)", target_id, peer.ip, peer.port);
+    printf("[ORCA] Friend request sent to %s\n", target_id);
 }
 
 void discovery_send_add_request_ack(Discovery* disc, const char* target_id, const char* from_id) {
@@ -612,7 +599,7 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
         }
     }
     
-    // ===== ADD_REQUEST - FIXED: Register peer in registry =====
+    // ===== ADD_REQUEST - Register peer in registry =====
     if (strncmp(msg, "ADD_REQUEST:", 12) == 0) {
         const char* rest = msg + 12;
         const char* colon1 = strchr(rest, ':');
@@ -651,7 +638,6 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
                     DLOG("ADD_REQUEST saved to request.json from %s", from_id);
                 }
                 
-                // ===== FIXED: Register peer in registry with actual IP/port =====
                 if (g_registry) {
                     char port_str[16];
                     snprintf(port_str, sizeof(port_str), "%d", from_port);
