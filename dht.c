@@ -16,15 +16,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
-/* Please, please, please.
-   You are welcome to integrate this code in your favourite Bittorrent
-   client.  Please remember, however, that it is meant to be usable by
-   others, including myself.  This means no C++, no relicensing, and no
-   gratuitious changes to the coding style.  And please send back any
-   improvements to the author. */
-/* For memmem. */
 
-#ifndef _GNU_SOURCE 
+#ifndef _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
 
@@ -33,6 +26,13 @@ THE SOFTWARE.
 #include <errno.h>
 #include <string.h>
 #include <stdarg.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #if !defined(_WIN32) || defined(__MINGW32__)
 #include <sys/time.h>
@@ -58,12 +58,6 @@ THE SOFTWARE.
 
 #include "dht.h"
 
-#ifndef HAVE_MEMMEM
-#ifdef __GLIBC__
-#define HAVE_MEMMEM
-#endif
-#endif
-
 #ifndef MSG_CONFIRM
 #define MSG_CONFIRM 0
 #endif
@@ -78,8 +72,6 @@ extern int dht_gettimeofday(struct timeval *tv, struct timezone *tz);
 #undef EAFNOSUPPORT
 #define EAFNOSUPPORT WSAEAFNOSUPPORT
 
-static int random(void) { return rand(); }
-
 #if _WIN32_WINNT < 0x0600
 extern const char *inet_ntop(int, const void *, char *, socklen_t);
 #endif
@@ -87,6 +79,32 @@ extern const char *inet_ntop(int, const void *, char *, socklen_t);
 #ifdef _MSC_VER
 #define snprintf _snprintf
 #endif
+#endif
+
+/* ===== FIX: Provide random() function for systems without it ===== */
+#ifndef HAVE_RANDOM
+static long my_random(void) {
+    return rand() | ((long)rand() << 16);
+}
+#define random my_random
+#endif
+
+/* ===== FIX: Provide memmem() function for systems without it ===== */
+#ifndef HAVE_MEMMEM
+static void * my_memmem(const void *haystack, size_t haystacklen,
+                        const void *needle, size_t needlelen) {
+    const char *h = haystack;
+    const char *n = needle;
+    size_t i;
+    if(needlelen > haystacklen)
+        return NULL;
+    for(i = 0; i <= haystacklen - needlelen; i++) {
+        if(memcmp(h + i, n, needlelen) == 0)
+            return (void*)(h + i);
+    }
+    return NULL;
+}
+#define memmem my_memmem
 #endif
 
 #define MAX(x, y) ((x) >= (y) ? (x) : (y))
@@ -2323,27 +2341,6 @@ static int send_error(const struct sockaddr *sa, int salen,
 #undef COPY
 #undef ADD_V
 
-#ifdef HAVE_MEMMEM
-static void * dht_memmem(const void *haystack, size_t haystacklen,
-                         const void *needle, size_t needlelen) {
-    return memmem(haystack, haystacklen, needle, needlelen);
-}
-#else
-static void * dht_memmem(const void *haystack, size_t haystacklen,
-                         const void *needle, size_t needlelen) {
-    const char *h = haystack;
-    const char *n = needle;
-    size_t i;
-    if(needlelen > haystacklen)
-        return NULL;
-    for(i = 0; i <= haystacklen - needlelen; i++) {
-        if(memcmp(h + i, n, needlelen) == 0)
-            return (void*)(h + i);
-    }
-    return NULL;
-}
-#endif
-
 static int parse_message(const unsigned char *buf, int buflen,
                          struct parsed_message *m) {
     const unsigned char *p;
@@ -2353,7 +2350,7 @@ static int parse_message(const unsigned char *buf, int buflen,
     }
 #define CHECK(ptr, len)                                                 \
     if(((unsigned char*)ptr) + (len) > (buf) + (buflen)) goto overflow;
-    p = dht_memmem(buf, buflen, "1:t", 3);
+    p = memmem(buf, buflen, "1:t", 3);
     if(p) {
         long l;
         char *q;
@@ -2364,17 +2361,17 @@ static int parse_message(const unsigned char *buf, int buflen,
             m->tid_len = l;
         }
     }
-    p = dht_memmem(buf, buflen, "2:id20:", 7);
+    p = memmem(buf, buflen, "2:id20:", 7);
     if(p) {
         CHECK(p + 7, 20);
         memcpy(m->id, p + 7, 20);
     }
-    p = dht_memmem(buf, buflen, "9:info_hash20:", 14);
+    p = memmem(buf, buflen, "9:info_hash20:", 14);
     if(p) {
         CHECK(p + 14, 20);
         memcpy(m->info_hash, p + 14, 20);
     }
-    p = dht_memmem(buf, buflen, "4:porti", 7);
+    p = memmem(buf, buflen, "4:porti", 7);
     if(p) {
         long l;
         char *q;
@@ -2382,7 +2379,7 @@ static int parse_message(const unsigned char *buf, int buflen,
         if(q && *q == 'e' && l > 0 && l < 0x10000)
             m->port = l;
     }
-    p = dht_memmem(buf, buflen, "12:implied_porti", 16);
+    p = memmem(buf, buflen, "12:implied_porti", 16);
     if(p) {
         long l;
         char *q;
@@ -2390,12 +2387,12 @@ static int parse_message(const unsigned char *buf, int buflen,
         if(q && *q == 'e' && l > 0 && l < 0x10000)
             m->implied_port = l;
     }
-    p = dht_memmem(buf, buflen, "6:target20:", 11);
+    p = memmem(buf, buflen, "6:target20:", 11);
     if(p) {
         CHECK(p + 11, 20);
         memcpy(m->target, p + 11, 20);
     }
-    p = dht_memmem(buf, buflen, "5:token", 7);
+    p = memmem(buf, buflen, "5:token", 7);
     if(p) {
         long l;
         char *q;
@@ -2406,7 +2403,7 @@ static int parse_message(const unsigned char *buf, int buflen,
             m->token_len = l;
         }
     }
-    p = dht_memmem(buf, buflen, "5:nodes", 7);
+    p = memmem(buf, buflen, "5:nodes", 7);
     if(p) {
         long l;
         char *q;
@@ -2417,7 +2414,7 @@ static int parse_message(const unsigned char *buf, int buflen,
             m->nodes_len = l;
         }
     }
-    p = dht_memmem(buf, buflen, "6:nodes6", 8);
+    p = memmem(buf, buflen, "6:nodes6", 8);
     if(p) {
         long l;
         char *q;
@@ -2428,7 +2425,7 @@ static int parse_message(const unsigned char *buf, int buflen,
             m->nodes6_len = l;
         }
     }
-    p = dht_memmem(buf, buflen, "6:valuesl", 9);
+    p = memmem(buf, buflen, "6:valuesl", 9);
     if(p) {
         int i = p - buf + 9;
         int j = 0, j6 = 0;
@@ -2461,7 +2458,7 @@ static int parse_message(const unsigned char *buf, int buflen,
         m->values_len = j;
         m->values6_len = j6;
     }
-    p = dht_memmem(buf, buflen, "4:wantl", 7);
+    p = memmem(buf, buflen, "4:wantl", 7);
     if(p) {
         int i = p - buf + 7;
         m->want = 0;
@@ -2480,19 +2477,19 @@ static int parse_message(const unsigned char *buf, int buflen,
             debugf("eek... unexpected end for want.\n");
     }
 #undef CHECK
-    if(dht_memmem(buf, buflen, "1:y1:r", 6))
+    if(memmem(buf, buflen, "1:y1:r", 6))
         return REPLY;
-    if(dht_memmem(buf, buflen, "1:y1:e", 6))
+    if(memmem(buf, buflen, "1:y1:e", 6))
         return ERROR;
-    if(!dht_memmem(buf, buflen, "1:y1:q", 6))
+    if(!memmem(buf, buflen, "1:y1:q", 6))
         return -1;
-    if(dht_memmem(buf, buflen, "1:q4:ping", 9))
+    if(memmem(buf, buflen, "1:q4:ping", 9))
         return PING;
-    if(dht_memmem(buf, buflen, "1:q9:find_node", 14))
+    if(memmem(buf, buflen, "1:q9:find_node", 14))
        return FIND_NODE;
-    if(dht_memmem(buf, buflen, "1:q9:get_peers", 14))
+    if(memmem(buf, buflen, "1:q9:get_peers", 14))
         return GET_PEERS;
-    if(dht_memmem(buf, buflen, "1:q13:announce_peer", 19))
+    if(memmem(buf, buflen, "1:q13:announce_peer", 19))
        return ANNOUNCE_PEER;
     return -1;
  overflow:
