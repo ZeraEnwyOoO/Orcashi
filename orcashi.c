@@ -2,7 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "orcashi.h"
-#include <unistd.h>
+#include <unistd.h>     // For usleep
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -265,7 +265,6 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     
     printf("\n  [ORCA] Looking for %s...\n", id);
     
-    // Step 1: Try Registry
     RegistryPeer reg_peer;
     if (registry_get_peer(orcashi->registry, norm_id, &reg_peer)) {
         printf("  [ORCA] Found in registry: %s:%s (status: %s)\n", 
@@ -280,7 +279,6 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
         }
     }
     
-    // Step 2: Try Cache
     CachePeer peer;
     if (peer_cache_get_peer(orcashi->cache, norm_id, &peer) && peer.online) {
         if (strlen(peer.ip) > 0 && strcmp(peer.ip, "0.0.0.0") != 0) {
@@ -289,7 +287,6 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
         }
     }
     
-    // Step 3: Try Discovery
     printf("  [ORCA] Not found in registry/cache, querying network...\n");
     discovery_query_peer(orcashi->discovery, norm_id);
     
