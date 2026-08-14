@@ -1,4 +1,5 @@
- #define _POSIX_C_SOURCE 200809L
+ // discovery.c - refactored parse_message into smaller functions
+#define _POSIX_C_SOURCE 200809L
 
 #include "discovery.h"
 #include <sys/select.h>
@@ -32,6 +33,14 @@ static void* listen_loop(void* arg);
 static void* broadcast_loop(void* arg);
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port);
 static void send_udp(Discovery* disc, const char* msg, const char* ip, int port);
+
+// ===== Message handler functions =====
+static void handle_presence(Discovery* disc, const char* msg, const char* sender_ip);
+static void handle_who_has(Discovery* disc, const char* msg, const char* sender_ip);
+static void handle_i_am(Discovery* disc, const char* msg);
+static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port);
+static void handle_add_request_ack(Discovery* disc, const char* msg);
+static void handle_search(Discovery* disc, const char* msg, const char* sender_ip);
 
 static char g_my_id[64] = {0};
 static char g_my_ip[64] = {0};
@@ -308,7 +317,6 @@ void discovery_query_peer(Discovery* disc, const char* id) {
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
-// ===== FIXED: discovery_send_add_request_with_ack =====
 void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id, 
                                          const char* my_id, const char* my_ip, int my_port) {
     if (!disc || !target_id || !my_id) return;
@@ -321,12 +329,10 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
     snprintf(msg, sizeof(msg), "ADD_REQUEST:%s:%s:%s:%d", 
              norm_target, norm_my, my_ip, my_port);
     
-    // ===== FIX: Try to find peer in discovery first =====
     PeerInfo peer;
     if (!discovery_find_peer(disc, target_id, &peer)) {
         DLOG("Peer %s not found in discovery, trying registry...", target_id);
         
-        // ===== Try registry =====
         RegistryPeer reg_peer;
         if (g_registry && registry_get_peer(g_registry, target_id, &reg_peer)) {
             DLOG("Found peer %s in registry: %s:%s", target_id, reg_peer.ip, reg_peer.port);
@@ -344,7 +350,6 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
     DLOG("Sending ADD_REQUEST to %s (%s:%d)", target_id, peer.ip, peer.port);
     printf("[ORCA] Sending friend request to %s...\n", target_id);
     
-    // ===== Send directly to peer's IP =====
     send_udp(disc, msg, peer.ip, DISCOVERY_PORT);
     DLOG("ADD_REQUEST sent to %s (%s:%d)", target_id, peer.ip, peer.port);
     printf("[ORCA] Friend request sent to %s\n", target_id);
@@ -453,6 +458,7 @@ bool discovery_has_pending(Discovery* disc) {
     return has;
 }
 
+// ===== parse_message - refactored into smaller handlers =====
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_port;
     
@@ -464,292 +470,316 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
     }
     
     if (strncmp(msg, "ORCA_PRESENCE:", 14) == 0) {
-        const char* rest = msg + 14;
-        const char* colon = strchr(rest, ':');
-        if (colon) {
-            char id[64];
-            char endpoint[128];
-            int id_len = colon - rest;
-            strncpy(id, rest, id_len);
-            id[id_len] = '\0';
-            strcpy(endpoint, colon + 1);
-            
-            char peer_ip[INET_ADDRSTRLEN];
-            extract_ip_from_endpoint(endpoint, peer_ip, sizeof(peer_ip));
-            
-            DLOG("ORCA_PRESENCE: id='%s', endpoint='%s', peer_ip='%s' (sender_ip=%s)", 
-                 id, endpoint, peer_ip, sender_ip);
-            
-            pthread_mutex_lock(&disc->mutex);
-            
-            int found = -1;
-            for (int i = 0; i < disc->peer_count; i++) {
-                if (strcmp(disc->peers[i].id, id) == 0) {
-                    found = i;
-                    break;
-                }
-            }
-            
-            if (found == -1 && disc->peer_count < MAX_PEERS) {
-                found = disc->peer_count++;
-                DLOG("Added new peer slot %d", found);
-            }
-            
-            if (found >= 0) {
-                PeerInfo* peer = &disc->peers[found];
-                strcpy(peer->id, id);
-                strcpy(peer->endpoint, endpoint);
-                strcpy(peer->ip, peer_ip);
-                peer->last_seen = time(NULL);
-                peer->online = true;
-                
-                char* port_colon = strchr(endpoint, ':');
-                if (port_colon) {
-                    peer->port = atoi(port_colon + 1);
-                } else {
-                    peer->port = 9000;
-                }
-                
-                DLOG("Peer updated: %s at %s:%d", id, peer->ip, peer->port);
-                
-                if (disc->on_peer_found) {
-                    disc->on_peer_found(peer);
-                }
-            }
-            
-            pthread_mutex_unlock(&disc->mutex);
-        }
+        handle_presence(disc, msg, sender_ip);
     }
-    
-    if (strncmp(msg, "WHO_HAS:", 8) == 0) {
-        const char* search_id = msg + 8;
-        
-        char norm_search[64], norm_my[64];
-        normalize_id(search_id, norm_search, sizeof(norm_search));
-        normalize_id(g_my_id, norm_my, sizeof(norm_my));
-        
-        DLOG("WHO_HAS: search='%s' (normalized='%s'), my='%s' (normalized='%s')", 
-             search_id, norm_search, g_my_id, norm_my);
-        
-        if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
-            char response[512];
-            snprintf(response, sizeof(response), 
-                    "I_AM:%s:%s:%d", 
-                    g_my_id, g_my_ip, g_my_port);
-            
-            DLOG("MATCH! Sending I_AM: %s", response);
-            
-            send_udp(disc, response, sender_ip, DISCOVERY_PORT);
-            
-            DLOG("Responded to WHO_HAS: %s -> %s:%d", search_id, g_my_ip, g_my_port);
-        } else {
-            DLOG("No match: '%s' != '%s'", norm_search, norm_my);
-        }
+    else if (strncmp(msg, "WHO_HAS:", 8) == 0) {
+        handle_who_has(disc, msg, sender_ip);
     }
-    
-    if (strncmp(msg, "I_AM:", 5) == 0) {
-        const char* rest = msg + 5;
-        const char* colon1 = strchr(rest, ':');
-        const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
-        
-        if (colon1 && colon2) {
-            char id[64];
-            char ip[INET_ADDRSTRLEN];
-            int port;
-            
-            int id_len = colon1 - rest;
-            strncpy(id, rest, id_len);
-            id[id_len] = '\0';
-            
-            int ip_len = colon2 - colon1 - 1;
-            strncpy(ip, colon1 + 1, ip_len);
-            ip[ip_len] = '\0';
-            
-            port = atoi(colon2 + 1);
-            
-            DLOG("I_AM: id='%s', ip='%s', port=%d (sender_ip=%s)", id, ip, port, sender_ip);
-            
-            pthread_mutex_lock(&disc->mutex);
-            
-            int found = -1;
-            for (int i = 0; i < disc->peer_count; i++) {
-                if (strcmp(disc->peers[i].id, id) == 0) {
-                    found = i;
-                    break;
-                }
-            }
-            
-            if (found == -1 && disc->peer_count < MAX_PEERS) {
-                found = disc->peer_count++;
-            }
-            
-            if (found >= 0) {
-                PeerInfo* peer = &disc->peers[found];
-                strcpy(peer->id, id);
-                strcpy(peer->ip, ip);
-                peer->port = port;
-                peer->online = true;
-                peer->last_seen = time(NULL);
-                snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", ip, port);
-                
-                DLOG("I_AM stored: %s at %s:%d", id, ip, port);
-            }
-            
-            pthread_mutex_unlock(&disc->mutex);
-        }
+    else if (strncmp(msg, "I_AM:", 5) == 0) {
+        handle_i_am(disc, msg);
     }
-    
-    // ===== ADD_REQUEST - Register peer in registry =====
-    if (strncmp(msg, "ADD_REQUEST:", 12) == 0) {
-        const char* rest = msg + 12;
-        const char* colon1 = strchr(rest, ':');
-        const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
-        const char* colon3 = colon2 ? strchr(colon2 + 1, ':') : NULL;
+    else if (strncmp(msg, "ADD_REQUEST:", 12) == 0) {
+        handle_add_request(disc, msg, sender_ip, sender_port);
+    }
+    else if (strncmp(msg, "ADD_REQUEST_ACK:", 16) == 0) {
+        handle_add_request_ack(disc, msg);
+    }
+    else if (strncmp(msg, "ORCA_SEARCH:", 12) == 0) {
+        handle_search(disc, msg, sender_ip);
+    }
+}
+
+// ===== handle_presence =====
+static void handle_presence(Discovery* disc, const char* msg, const char* sender_ip) {
+    const char* rest = msg + 14;
+    const char* colon = strchr(rest, ':');
+    if (colon) {
+        char id[64];
+        char endpoint[128];
+        int id_len = colon - rest;
+        strncpy(id, rest, id_len);
+        id[id_len] = '\0';
+        strcpy(endpoint, colon + 1);
         
-        if (colon1 && colon2 && colon3) {
-            char target_id[64], from_id[64], from_ip[INET_ADDRSTRLEN];
-            int from_port;
+        char peer_ip[INET_ADDRSTRLEN];
+        extract_ip_from_endpoint(endpoint, peer_ip, sizeof(peer_ip));
+        
+        DLOG("ORCA_PRESENCE: id='%s', endpoint='%s', peer_ip='%s' (sender_ip=%s)", 
+             id, endpoint, peer_ip, sender_ip);
+        
+        pthread_mutex_lock(&disc->mutex);
+        
+        int found = -1;
+        for (int i = 0; i < disc->peer_count; i++) {
+            if (strcmp(disc->peers[i].id, id) == 0) {
+                found = i;
+                break;
+            }
+        }
+        
+        if (found == -1 && disc->peer_count < MAX_PEERS) {
+            found = disc->peer_count++;
+            DLOG("Added new peer slot %d", found);
+        }
+        
+        if (found >= 0) {
+            PeerInfo* peer = &disc->peers[found];
+            strcpy(peer->id, id);
+            strcpy(peer->endpoint, endpoint);
+            strcpy(peer->ip, peer_ip);
+            peer->last_seen = time(NULL);
+            peer->online = true;
             
-            int len = colon1 - rest;
-            strncpy(target_id, rest, len);
-            target_id[len] = '\0';
-            
-            len = colon2 - colon1 - 1;
-            strncpy(from_id, colon1 + 1, len);
-            from_id[len] = '\0';
-            
-            len = colon3 - colon2 - 1;
-            strncpy(from_ip, colon2 + 1, len);
-            from_ip[len] = '\0';
-            
-            from_port = atoi(colon3 + 1);
-            
-            DLOG("ADD_REQUEST: target=%s, from=%s at %s:%d", target_id, from_id, from_ip, from_port);
-            
-            char norm_target[64], norm_my[64];
-            normalize_id(target_id, norm_target, sizeof(norm_target));
-            normalize_id(g_my_id, norm_my, sizeof(norm_my));
-            
-            if (strcmp(norm_target, norm_my) == 0) {
-                discovery_send_add_request_ack(disc, from_id, g_my_id);
-                
-                if (g_request_manager) {
-                    request_send(g_request_manager, from_id, g_my_id);
-                    DLOG("ADD_REQUEST saved to request.json from %s", from_id);
-                }
-                
-                if (g_registry) {
-                    char port_str[16];
-                    snprintf(port_str, sizeof(port_str), "%d", from_port);
-                    registry_register_peer(g_registry, from_id, from_ip, port_str);
-                    DLOG("ADD_REQUEST: registered peer %s in registry with IP %s:%s", 
-                         from_id, from_ip, port_str);
-                }
-                
-                pthread_mutex_lock(&disc->mutex);
-                
-                int found = -1;
-                for (int i = 0; i < disc->peer_count; i++) {
-                    if (strcmp(disc->peers[i].id, from_id) == 0) {
-                        found = i;
-                        break;
-                    }
-                }
-                
-                if (found == -1 && disc->peer_count < MAX_PEERS) {
-                    found = disc->peer_count++;
-                }
-                
-                if (found >= 0) {
-                    PeerInfo* peer = &disc->peers[found];
-                    strcpy(peer->id, from_id);
-                    strcpy(peer->ip, from_ip);
-                    peer->port = from_port;
-                    peer->online = true;
-                    peer->last_seen = time(NULL);
-                    snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", from_ip, from_port);
-                    
-                    DLOG("ADD_REQUEST: stored peer %s at %s:%d", from_id, from_ip, from_port);
-                }
-                
-                pthread_mutex_unlock(&disc->mutex);
-                
-                discovery_push_pending(disc, from_id, from_ip, from_port);
-                DLOG("ADD_REQUEST: pushed to pending queue, pending_count=%d", disc->pending_count);
-                
-                printf("\n[ORCA] ========================================\n");
-                printf("[ORCA] Friend request from %s (%s:%d)\n", from_id, from_ip, from_port);
-                printf("[ORCA] Use './orcashi accept %s' to accept\n", from_id);
-                printf("[ORCA] Use './orcashi reject %s' to reject\n", from_id);
-                printf("[ORCA] ========================================\n");
-                fflush(stdout);
-                
+            char* port_colon = strchr(endpoint, ':');
+            if (port_colon) {
+                peer->port = atoi(port_colon + 1);
             } else {
-                DLOG("ADD_REQUEST not for us: target=%s, my=%s", target_id, g_my_id);
+                peer->port = 9000;
+            }
+            
+            DLOG("Peer updated: %s at %s:%d", id, peer->ip, peer->port);
+            
+            if (disc->on_peer_found) {
+                disc->on_peer_found(peer);
             }
         }
-    }
-    
-    if (strncmp(msg, "ADD_REQUEST_ACK:", 16) == 0) {
-        const char* rest = msg + 16;
-        const char* colon1 = strchr(rest, ':');
         
-        if (colon1) {
-            char target_id[64], from_id[64];
-            
-            int len = colon1 - rest;
-            strncpy(target_id, rest, len);
-            target_id[len] = '\0';
-            
-            strcpy(from_id, colon1 + 1);
-            
-            DLOG("ADD_REQUEST_ACK: target=%s, from=%s", target_id, from_id);
-            
-            char norm_target[64], norm_my[64];
-            normalize_id(target_id, norm_target, sizeof(norm_target));
-            normalize_id(g_my_id, norm_my, sizeof(norm_my));
-            
-            if (strcmp(norm_target, norm_my) == 0) {
-                DLOG("ADD_REQUEST_ACK: request delivered to %s", target_id);
-                printf("[ORCA] Friend request delivered to %s\n", target_id);
-                
-                pthread_mutex_lock(&disc->mutex);
-                
-                for (int i = 0; i < disc->peer_count; i++) {
-                    if (strcmp(disc->peers[i].id, from_id) == 0) {
-                        disc->peers[i].online = true;
-                        disc->peers[i].last_seen = time(NULL);
-                        DLOG("Peer %s marked online (ACK received)", from_id);
-                        break;
-                    }
-                }
-                
-                pthread_mutex_unlock(&disc->mutex);
+        pthread_mutex_unlock(&disc->mutex);
+    }
+}
+
+// ===== handle_who_has =====
+static void handle_who_has(Discovery* disc, const char* msg, const char* sender_ip) {
+    const char* search_id = msg + 8;
+    
+    char norm_search[64], norm_my[64];
+    normalize_id(search_id, norm_search, sizeof(norm_search));
+    normalize_id(g_my_id, norm_my, sizeof(norm_my));
+    
+    DLOG("WHO_HAS: search='%s' (normalized='%s'), my='%s' (normalized='%s')", 
+         search_id, norm_search, g_my_id, norm_my);
+    
+    if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
+        char response[512];
+        snprintf(response, sizeof(response), 
+                "I_AM:%s:%s:%d", 
+                g_my_id, g_my_ip, g_my_port);
+        
+        DLOG("MATCH! Sending I_AM: %s", response);
+        
+        send_udp(disc, response, sender_ip, DISCOVERY_PORT);
+        
+        DLOG("Responded to WHO_HAS: %s -> %s:%d", search_id, g_my_ip, g_my_port);
+    } else {
+        DLOG("No match: '%s' != '%s'", norm_search, norm_my);
+    }
+}
+
+// ===== handle_i_am =====
+static void handle_i_am(Discovery* disc, const char* msg) {
+    const char* rest = msg + 5;
+    const char* colon1 = strchr(rest, ':');
+    const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
+    
+    if (colon1 && colon2) {
+        char id[64];
+        char ip[INET_ADDRSTRLEN];
+        int port;
+        
+        int id_len = colon1 - rest;
+        strncpy(id, rest, id_len);
+        id[id_len] = '\0';
+        
+        int ip_len = colon2 - colon1 - 1;
+        strncpy(ip, colon1 + 1, ip_len);
+        ip[ip_len] = '\0';
+        
+        port = atoi(colon2 + 1);
+        
+        DLOG("I_AM: id='%s', ip='%s', port=%d", id, ip, port);
+        
+        pthread_mutex_lock(&disc->mutex);
+        
+        int found = -1;
+        for (int i = 0; i < disc->peer_count; i++) {
+            if (strcmp(disc->peers[i].id, id) == 0) {
+                found = i;
+                break;
             }
         }
-    }
-    
-    if (strncmp(msg, "ORCA_SEARCH:", 12) == 0) {
-        const char* search_id = msg + 12;
         
-        char norm_search[64], norm_my[64];
-        normalize_id(search_id, norm_search, sizeof(norm_search));
+        if (found == -1 && disc->peer_count < MAX_PEERS) {
+            found = disc->peer_count++;
+        }
+        
+        if (found >= 0) {
+            PeerInfo* peer = &disc->peers[found];
+            strcpy(peer->id, id);
+            strcpy(peer->ip, ip);
+            peer->port = port;
+            peer->online = true;
+            peer->last_seen = time(NULL);
+            snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", ip, port);
+            
+            DLOG("I_AM stored: %s at %s:%d", id, ip, port);
+        }
+        
+        pthread_mutex_unlock(&disc->mutex);
+    }
+}
+
+// ===== handle_add_request =====
+static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
+    const char* rest = msg + 12;
+    const char* colon1 = strchr(rest, ':');
+    const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
+    const char* colon3 = colon2 ? strchr(colon2 + 1, ':') : NULL;
+    
+    if (colon1 && colon2 && colon3) {
+        char target_id[64], from_id[64], from_ip[INET_ADDRSTRLEN];
+        int from_port;
+        
+        int len = colon1 - rest;
+        strncpy(target_id, rest, len);
+        target_id[len] = '\0';
+        
+        len = colon2 - colon1 - 1;
+        strncpy(from_id, colon1 + 1, len);
+        from_id[len] = '\0';
+        
+        len = colon3 - colon2 - 1;
+        strncpy(from_ip, colon2 + 1, len);
+        from_ip[len] = '\0';
+        
+        from_port = atoi(colon3 + 1);
+        
+        DLOG("ADD_REQUEST: target=%s, from=%s at %s:%d", target_id, from_id, from_ip, from_port);
+        
+        char norm_target[64], norm_my[64];
+        normalize_id(target_id, norm_target, sizeof(norm_target));
         normalize_id(g_my_id, norm_my, sizeof(norm_my));
         
-        DLOG("ORCA_SEARCH: '%s' (normalized='%s')", search_id, norm_search);
-        
-        if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
-            char response[512];
-            snprintf(response, sizeof(response), 
-                    "ORCA_PRESENCE:%s:%s:%d", 
-                    g_my_id, g_my_ip, g_my_port);
+        if (strcmp(norm_target, norm_my) == 0) {
+            discovery_send_add_request_ack(disc, from_id, g_my_id);
             
-            DLOG("MATCH! Sending ORCA_PRESENCE response: %s", response);
+            if (g_request_manager) {
+                request_send(g_request_manager, from_id, g_my_id);
+                DLOG("ADD_REQUEST saved to request.json from %s", from_id);
+            }
             
-            send_udp(disc, response, sender_ip, DISCOVERY_PORT);
+            if (g_registry) {
+                char port_str[16];
+                snprintf(port_str, sizeof(port_str), "%d", from_port);
+                registry_register_peer(g_registry, from_id, from_ip, port_str);
+                DLOG("ADD_REQUEST: registered peer %s in registry with IP %s:%s", 
+                     from_id, from_ip, port_str);
+            }
+            
+            pthread_mutex_lock(&disc->mutex);
+            
+            int found = -1;
+            for (int i = 0; i < disc->peer_count; i++) {
+                if (strcmp(disc->peers[i].id, from_id) == 0) {
+                    found = i;
+                    break;
+                }
+            }
+            
+            if (found == -1 && disc->peer_count < MAX_PEERS) {
+                found = disc->peer_count++;
+            }
+            
+            if (found >= 0) {
+                PeerInfo* peer = &disc->peers[found];
+                strcpy(peer->id, from_id);
+                strcpy(peer->ip, from_ip);
+                peer->port = from_port;
+                peer->online = true;
+                peer->last_seen = time(NULL);
+                snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", from_ip, from_port);
+                
+                DLOG("ADD_REQUEST: stored peer %s at %s:%d", from_id, from_ip, from_port);
+            }
+            
+            pthread_mutex_unlock(&disc->mutex);
+            
+            discovery_push_pending(disc, from_id, from_ip, from_port);
+            DLOG("ADD_REQUEST: pushed to pending queue, pending_count=%d", disc->pending_count);
+            
+            printf("\n[ORCA] ========================================\n");
+            printf("[ORCA] Friend request from %s (%s:%d)\n", from_id, from_ip, from_port);
+            printf("[ORCA] Use './orcashi accept %s' to accept\n", from_id);
+            printf("[ORCA] Use './orcashi reject %s' to reject\n", from_id);
+            printf("[ORCA] ========================================\n");
+            fflush(stdout);
+            
         } else {
-            DLOG("No match for ORCA_SEARCH");
+            DLOG("ADD_REQUEST not for us: target=%s, my=%s", target_id, g_my_id);
         }
+    }
+}
+
+// ===== handle_add_request_ack =====
+static void handle_add_request_ack(Discovery* disc, const char* msg) {
+    const char* rest = msg + 16;
+    const char* colon1 = strchr(rest, ':');
+    
+    if (colon1) {
+        char target_id[64], from_id[64];
+        
+        int len = colon1 - rest;
+        strncpy(target_id, rest, len);
+        target_id[len] = '\0';
+        
+        strcpy(from_id, colon1 + 1);
+        
+        DLOG("ADD_REQUEST_ACK: target=%s, from=%s", target_id, from_id);
+        
+        char norm_target[64], norm_my[64];
+        normalize_id(target_id, norm_target, sizeof(norm_target));
+        normalize_id(g_my_id, norm_my, sizeof(norm_my));
+        
+        if (strcmp(norm_target, norm_my) == 0) {
+            DLOG("ADD_REQUEST_ACK: request delivered to %s", target_id);
+            printf("[ORCA] Friend request delivered to %s\n", target_id);
+            
+            pthread_mutex_lock(&disc->mutex);
+            
+            for (int i = 0; i < disc->peer_count; i++) {
+                if (strcmp(disc->peers[i].id, from_id) == 0) {
+                    disc->peers[i].online = true;
+                    disc->peers[i].last_seen = time(NULL);
+                    DLOG("Peer %s marked online (ACK received)", from_id);
+                    break;
+                }
+            }
+            
+            pthread_mutex_unlock(&disc->mutex);
+        }
+    }
+}
+
+// ===== handle_search =====
+static void handle_search(Discovery* disc, const char* msg, const char* sender_ip) {
+    const char* search_id = msg + 12;
+    
+    char norm_search[64], norm_my[64];
+    normalize_id(search_id, norm_search, sizeof(norm_search));
+    normalize_id(g_my_id, norm_my, sizeof(norm_my));
+    
+    DLOG("ORCA_SEARCH: '%s' (normalized='%s')", search_id, norm_search);
+    
+    if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
+        char response[512];
+        snprintf(response, sizeof(response), 
+                "ORCA_PRESENCE:%s:%s:%d", 
+                g_my_id, g_my_ip, g_my_port);
+        
+        DLOG("MATCH! Sending ORCA_PRESENCE response: %s", response);
+        
+        send_udp(disc, response, sender_ip, DISCOVERY_PORT);
+    } else {
+        DLOG("No match for ORCA_SEARCH");
     }
 }
 
