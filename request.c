@@ -1,11 +1,41 @@
- #include "request.h"
+ // request.c
+#include "request.h"
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #define REQUEST_FILE "/tmp/.orcashi/requests.json"
 
-// ===== Helper: Remove < and > from ID =====
+// ===== JSON Escape Function =====
+static void json_escape(const char* input, char* output, size_t out_size) {
+    if (!input || !output || out_size == 0) return;
+    
+    size_t i = 0, j = 0;
+    size_t len = strlen(input);
+    
+    for (i = 0; i < len && j < out_size - 6; i++) {
+        char c = input[i];
+        switch (c) {
+            case '"':  output[j++] = '\\'; output[j++] = '"'; break;
+            case '\\': output[j++] = '\\'; output[j++] = '\\'; break;
+            case '\b': output[j++] = '\\'; output[j++] = 'b'; break;
+            case '\f': output[j++] = '\\'; output[j++] = 'f'; break;
+            case '\n': output[j++] = '\\'; output[j++] = 'n'; break;
+            case '\r': output[j++] = '\\'; output[j++] = 'r'; break;
+            case '\t': output[j++] = '\\'; output[j++] = 't'; break;
+            default:
+                if (c < 0x20) {
+                    snprintf(output + j, out_size - j, "\\u%04x", c);
+                    j += 6;
+                } else {
+                    output[j++] = c;
+                }
+                break;
+        }
+    }
+    output[j] = '\0';
+}
+
 void strip_brackets(const char* input, char* output, size_t out_size) {
     if (!input || !output || out_size == 0) return;
     
@@ -148,21 +178,29 @@ bool request_exists(RequestManager* rm, const char* from_id, const char* to_id) 
     return false;
 }
 
+// ===== FIXED: request_save with JSON escaping =====
 void request_save(RequestManager* rm) {
     if (!rm) return;
     
     FILE* f = fopen(rm->request_file, "w");
     if (!f) return;
     
+    char escaped_from[512], escaped_to[512], escaped_status[64];
+    
     fprintf(f, "{\n  \"requests\": [\n");
     
     for (int i = 0; i < rm->request_count; i++) {
         if (i > 0) fprintf(f, ",\n");
         Request* r = &rm->requests[i];
+        
+        json_escape(r->from_id, escaped_from, sizeof(escaped_from));
+        json_escape(r->to_id, escaped_to, sizeof(escaped_to));
+        json_escape(r->status, escaped_status, sizeof(escaped_status));
+        
         fprintf(f, "    {\n");
-        fprintf(f, "      \"from_id\": \"%s\",\n", r->from_id);
-        fprintf(f, "      \"to_id\": \"%s\",\n", r->to_id);
-        fprintf(f, "      \"status\": \"%s\",\n", r->status);
+        fprintf(f, "      \"from_id\": \"%s\",\n", escaped_from);
+        fprintf(f, "      \"to_id\": \"%s\",\n", escaped_to);
+        fprintf(f, "      \"status\": \"%s\",\n", escaped_status);
         fprintf(f, "      \"timestamp\": %ld\n", (long)r->timestamp);
         fprintf(f, "    }");
     }
@@ -171,49 +209,89 @@ void request_save(RequestManager* rm) {
     fclose(f);
 }
 
+// ===== FIXED: request_load with proper JSON parsing =====
 void request_load(RequestManager* rm) {
     if (!rm) return;
     
     FILE* f = fopen(rm->request_file, "r");
     if (!f) return;
     
-    char line[1024];
+    char line[2048];
     Request req;
     bool in_request = false;
+    int brace_depth = 0;
     
     while (fgets(line, sizeof(line), f)) {
-        if (strstr(line, "\"from_id\":\"") != NULL) {
-            char* start = strstr(line, "\"from_id\":\"") + 11;
-            char* end = strchr(start, '"');
-            if (end) {
-                int len = end - start;
-                strncpy(req.from_id, start, len);
-                req.from_id[len] = '\0';
-                in_request = true;
+        char* p = line;
+        
+        // Count braces to handle nested objects properly
+        for (char* c = line; *c; c++) {
+            if (*c == '{') brace_depth++;
+            if (*c == '}') brace_depth--;
+        }
+        
+        // Parse "from_id"
+        char* from_start = strstr(line, "\"from_id\":");
+        if (from_start) {
+            char* start = strchr(from_start, '"');
+            if (start) {
+                start++;
+                char* end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    if (len < (int)sizeof(req.from_id)) {
+                        strncpy(req.from_id, start, len);
+                        req.from_id[len] = '\0';
+                        in_request = true;
+                    }
+                }
             }
         }
         
-        if (in_request && strstr(line, "\"to_id\":\"") != NULL) {
-            char* start = strstr(line, "\"to_id\":\"") + 9;
-            char* end = strchr(start, '"');
-            if (end) {
-                int len = end - start;
-                strncpy(req.to_id, start, len);
-                req.to_id[len] = '\0';
+        // Parse "to_id"
+        char* to_start = strstr(line, "\"to_id\":");
+        if (to_start) {
+            char* start = strchr(to_start, '"');
+            if (start) {
+                start++;
+                char* end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    if (len < (int)sizeof(req.to_id)) {
+                        strncpy(req.to_id, start, len);
+                        req.to_id[len] = '\0';
+                    }
+                }
             }
         }
         
-        if (in_request && strstr(line, "\"status\":\"") != NULL) {
-            char* start = strstr(line, "\"status\":\"") + 10;
-            char* end = strchr(start, '"');
-            if (end) {
-                int len = end - start;
-                strncpy(req.status, start, len);
-                req.status[len] = '\0';
+        // Parse "status"
+        char* status_start = strstr(line, "\"status\":");
+        if (status_start) {
+            char* start = strchr(status_start, '"');
+            if (start) {
+                start++;
+                char* end = strchr(start, '"');
+                if (end) {
+                    int len = end - start;
+                    if (len < (int)sizeof(req.status)) {
+                        strncpy(req.status, start, len);
+                        req.status[len] = '\0';
+                    }
+                }
             }
         }
         
-        if (in_request && strchr(line, '}') != NULL) {
+        // Parse "timestamp"
+        char* ts_start = strstr(line, "\"timestamp\":");
+        if (ts_start) {
+            char* start = ts_start + 12;
+            while (*start == ' ' || *start == '\t') start++;
+            req.timestamp = atol(start);
+        }
+        
+        // End of request object
+        if (in_request && brace_depth == 0 && strchr(line, '}') != NULL) {
             if (strlen(req.from_id) > 0 && rm->request_count < MAX_REQUESTS) {
                 rm->requests[rm->request_count++] = req;
                 memset(&req, 0, sizeof(req));
