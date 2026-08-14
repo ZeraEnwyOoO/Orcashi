@@ -2,7 +2,7 @@
 #include "dht.h"
 #include <stdio.h>
 #include <string.h>
-#include <netdb.h>      // for gethostbyname
+#include <netdb.h>
 #include <arpa/inet.h>
 #include <stdlib.h>
 
