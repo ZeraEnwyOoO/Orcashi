@@ -1,59 +1,85 @@
- 
-#ifndef DHT_H
-#define DHT_H
+ // discovery.h - Fixed port to match ORCASHI_PORT
+#ifndef DISCOVERY_H
+#define DISCOVERY_H
 
 #include <stdio.h>
-#include <time.h>
-#include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <ifaddrs.h>
+#include <time.h>
+#include <errno.h>
 
-#ifdef __cplusplus
-extern "C" {
+#include "request.h"
+#include "registry.h"
+
+// ===== FIXED: Separate ports for discovery and TCP =====
+#define DISCOVERY_PORT 9000   // UDP port for discovery
+#define TCP_PORT 9001         // TCP port for chat
+#define MAX_PEERS 256
+#define PEER_TIMEOUT 300
+
+typedef struct {
+    char id[64];
+    char endpoint[128];
+    char ip[INET_ADDRSTRLEN];
+    int tcp_port;           // ← FIXED: Changed from 'port' to 'tcp_port'
+    char name[128];
+    time_t last_seen;
+    bool online;
+    char public_key[256];
+} PeerInfo;
+
+typedef struct {
+    char from_id[64];
+    char from_ip[INET_ADDRSTRLEN];
+    int from_tcp_port;      // ← FIXED: Changed from 'from_port'
+} PendingRequest;
+
+typedef struct {
+    int udp_socket;
+    int port;
+    bool running;
+    pthread_t listen_thread;
+    pthread_t broadcast_thread;
+    pthread_mutex_t mutex;
+    PeerInfo peers[MAX_PEERS];
+    int peer_count;
+    PendingRequest pending_requests[MAX_PEERS];
+    int pending_count;
+    void (*on_peer_found)(PeerInfo* peer);
+    void (*on_peer_offline)(PeerInfo* peer);
+} Discovery;
+
+Discovery* discovery_create(void);
+void discovery_destroy(Discovery* disc);
+bool discovery_init(Discovery* disc, int port);
+void discovery_start(Discovery* disc);
+void discovery_stop(Discovery* disc);
+void discovery_broadcast_presence(Discovery* disc, const char* id, const char* endpoint);
+void discovery_broadcast_search(Discovery* disc, const char* id);
+void discovery_query_peer(Discovery* disc, const char* id);
+void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id, const char* my_id, const char* my_ip, int my_tcp_port);
+void discovery_send_add_request_ack(Discovery* disc, const char* target_id, const char* from_id);
+bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer);
+int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers);
+void discovery_cleanup_stale(Discovery* disc);
+void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, int tcp_port);
+void discovery_set_request_manager(RequestManager* rm);
+void discovery_set_registry(Registry* reg);
+void discovery_push_pending(Discovery* disc, const char* from_id, const char* from_ip, int from_tcp_port);
+bool discovery_pop_pending(Discovery* disc, PendingRequest* out);
+int discovery_pending_count(Discovery* disc);
+bool discovery_has_pending(Discovery* disc);
+char* discovery_get_local_ip(void);
+void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*));
+void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*));
+void discovery_set_tcp_port(int tcp_port);  // ← NEW: Set TCP port for this peer
+
 #endif
-
-typedef void
-dht_callback_t(void *closure, int event,
-               const unsigned char *info_hash,
-               const void *data, size_t data_len);
-
-#define DHT_EVENT_NONE 0
-#define DHT_EVENT_VALUES 1
-#define DHT_EVENT_VALUES6 2
-#define DHT_EVENT_SEARCH_DONE 3
-#define DHT_EVENT_SEARCH_DONE6 4
-
-extern FILE *dht_debug;
-
-int dht_init(int s, int s6, const unsigned char *id, const unsigned char *v);
-int dht_insert_node(const unsigned char *id, struct sockaddr *sa, int salen);
-int dht_ping_node(const struct sockaddr *sa, int salen);
-int dht_periodic(const void *buf, size_t buflen,
-                 const struct sockaddr *from, int fromlen, time_t *tosleep,
-                 dht_callback_t *callback, void *closure);
-int dht_search(const unsigned char *id, int port, int af,
-               dht_callback_t *callback, void *closure);
-int dht_nodes(int af,
-              int *good_return, int *dubious_return, int *cached_return,
-              int *incoming_return);
-void dht_dump_tables(FILE *f);
-int dht_get_nodes(struct sockaddr_in *sin, int *num,
-                  struct sockaddr_in6 *sin6, int *num6);
-int dht_uninit(void);
-
-int dht_sendto(int sockfd, const void *buf, int len, int flags,
-               const struct sockaddr *to, int tolen);
-int dht_blacklisted(const struct sockaddr *sa, int salen);
-void dht_hash(void *hash_return, int hash_size,
-              const void *v1, int len1,
-              const void *v2, int len2,
-              const void *v3, int len3);
-int dht_random_bytes(void *buf, size_t size);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif
- 
