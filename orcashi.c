@@ -1,4 +1,4 @@
- // orcashi.c - Complete fixed file
+ // orcashi.c
 #define _POSIX_C_SOURCE 200809L
 
 #include "orcashi.h"
@@ -11,6 +11,13 @@
 #include <ifaddrs.h>
 
 #define MAX_MSG_LEN 4096
+
+static void micro_sleep(long microseconds) {
+    struct timespec ts;
+    ts.tv_sec = microseconds / 1000000;
+    ts.tv_nsec = (microseconds % 1000000) * 1000;
+    nanosleep(&ts, NULL);
+}
 
 static void orcashi_broadcast_presence(ORCASHI* orcashi);
 static void orcashi_show_banner(ORCASHI* orcashi);
@@ -317,7 +324,7 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
                 return orcashi_join_room(orcashi, peer.ip, peer.port);
             }
         }
-        usleep(100000);
+        micro_sleep(100000);
     }
     
     printf("  [ERROR] Peer %s not found!\n", id);
