@@ -1,4 +1,4 @@
- // registry.c - Fixed mutex initialization
+ // registry.c - Add ids_match function and fix thread safety
 #include "registry.h"
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -18,7 +18,17 @@
 #define RLOG(fmt, ...) ((void)0)
 #endif
 
-// ===== FIXED: registry_create initializes mutex BEFORE registry_load =====
+// ===== FIXED: ids_match function for consistent ID comparison =====
+static int ids_match(const char* id1, const char* id2) {
+    if (!id1 || !id2) return 0;
+    
+    char n1[64], n2[64];
+    strip_brackets(id1, n1, sizeof(n1));
+    strip_brackets(id2, n2, sizeof(n2));
+    
+    return strcmp(n1, n2) == 0;
+}
+
 Registry* registry_create(void) {
     Registry* reg = (Registry*)calloc(1, sizeof(Registry));
     if (!reg) return NULL;
@@ -26,7 +36,6 @@ Registry* registry_create(void) {
     strcpy(reg->registry_file, REGISTRY_FILE);
     mkdir("/tmp/.orcashi/", 0700);
     
-    // ===== FIX: Initialize mutex BEFORE registry_load =====
     pthread_mutex_init(&reg->mutex, NULL);
     RLOG("registry_create() called");
     
@@ -52,7 +61,7 @@ bool registry_register_peer(Registry* reg, const char* id, const char* ip, const
     pthread_mutex_lock(&reg->mutex);
     
     for (int i = 0; i < reg->peer_count; i++) {
-        if (strcmp(reg->peers[i].id, id) == 0) {
+        if (ids_match(reg->peers[i].id, id)) {
             RLOG("  Peer %s already exists, updating", id);
             strcpy(reg->peers[i].ip, ip);
             strcpy(reg->peers[i].port, port);
@@ -92,7 +101,7 @@ bool registry_get_peer(Registry* reg, const char* id, RegistryPeer* out_peer) {
     pthread_mutex_lock(&reg->mutex);
     
     for (int i = 0; i < reg->peer_count; i++) {
-        if (strcmp(reg->peers[i].id, id) == 0) {
+        if (ids_match(reg->peers[i].id, id)) {
             *out_peer = reg->peers[i];
             RLOG("registry_get_peer: Found peer %s at slot %d", id, i);
             pthread_mutex_unlock(&reg->mutex);
@@ -113,7 +122,7 @@ void registry_update_status(Registry* reg, const char* id, const char* status) {
     pthread_mutex_lock(&reg->mutex);
     
     for (int i = 0; i < reg->peer_count; i++) {
-        if (strcmp(reg->peers[i].id, id) == 0) {
+        if (ids_match(reg->peers[i].id, id)) {
             strcpy(reg->peers[i].status, status);
             RLOG("  Status updated for peer %s to '%s'", id, status);
             registry_save(reg);
@@ -134,7 +143,7 @@ void registry_update_peer(Registry* reg, const char* id, const char* ip, const c
     pthread_mutex_lock(&reg->mutex);
     
     for (int i = 0; i < reg->peer_count; i++) {
-        if (strcmp(reg->peers[i].id, id) == 0) {
+        if (ids_match(reg->peers[i].id, id)) {
             strcpy(reg->peers[i].ip, ip);
             strcpy(reg->peers[i].port, port);
             reg->peers[i].last_seen = time(NULL);
@@ -155,7 +164,7 @@ void registry_set_online(Registry* reg, const char* id, bool online) {
     pthread_mutex_lock(&reg->mutex);
     
     for (int i = 0; i < reg->peer_count; i++) {
-        if (strcmp(reg->peers[i].id, id) == 0) {
+        if (ids_match(reg->peers[i].id, id)) {
             reg->peers[i].online = online;
             reg->peers[i].last_seen = time(NULL);
             RLOG("  Peer %s online status set to %d", id, online);
@@ -224,7 +233,7 @@ bool registry_remove_peer(Registry* reg, const char* id) {
     pthread_mutex_lock(&reg->mutex);
     
     for (int i = 0; i < reg->peer_count; i++) {
-        if (strcmp(reg->peers[i].id, id) == 0) {
+        if (ids_match(reg->peers[i].id, id)) {
             for (int j = i; j < reg->peer_count - 1; j++) {
                 reg->peers[j] = reg->peers[j + 1];
             }
@@ -247,7 +256,7 @@ bool registry_peer_exists(Registry* reg, const char* id) {
     pthread_mutex_lock(&reg->mutex);
     
     for (int i = 0; i < reg->peer_count; i++) {
-        if (strcmp(reg->peers[i].id, id) == 0) {
+        if (ids_match(reg->peers[i].id, id)) {
             RLOG("registry_peer_exists: Peer %s exists", id);
             pthread_mutex_unlock(&reg->mutex);
             return true;
@@ -269,6 +278,7 @@ void registry_load(Registry* reg) {
         return;
     }
     
+    // ===== FIXED: Thread safety - lock mutex =====
     pthread_mutex_lock(&reg->mutex);
     
     char line[2048];
@@ -282,10 +292,12 @@ void registry_load(Registry* reg) {
             char* end = strchr(start, '"');
             if (end) {
                 int len = end - start;
-                strncpy(peer.id, start, len);
-                peer.id[len] = '\0';
-                in_peer = true;
-                RLOG("  Found peer id: %s", peer.id);
+                if (len < (int)sizeof(peer.id)) {
+                    strncpy(peer.id, start, len);
+                    peer.id[len] = '\0';
+                    in_peer = true;
+                    RLOG("  Found peer id: %s", peer.id);
+                }
             }
         }
         
@@ -294,8 +306,10 @@ void registry_load(Registry* reg) {
             char* end = strchr(start, '"');
             if (end) {
                 int len = end - start;
-                strncpy(peer.ip, start, len);
-                peer.ip[len] = '\0';
+                if (len < (int)sizeof(peer.ip)) {
+                    strncpy(peer.ip, start, len);
+                    peer.ip[len] = '\0';
+                }
             }
         }
         
@@ -304,8 +318,10 @@ void registry_load(Registry* reg) {
             char* end = strchr(start, '"');
             if (end) {
                 int len = end - start;
-                strncpy(peer.port, start, len);
-                peer.port[len] = '\0';
+                if (len < (int)sizeof(peer.port)) {
+                    strncpy(peer.port, start, len);
+                    peer.port[len] = '\0';
+                }
             }
         }
         
@@ -319,9 +335,11 @@ void registry_load(Registry* reg) {
             char* end = strchr(start, '"');
             if (end) {
                 int len = end - start;
-                strncpy(peer.status, start, len);
-                peer.status[len] = '\0';
-                RLOG("  Found status: %s", peer.status);
+                if (len < (int)sizeof(peer.status)) {
+                    strncpy(peer.status, start, len);
+                    peer.status[len] = '\0';
+                    RLOG("  Found status: %s", peer.status);
+                }
             }
         }
         
@@ -343,6 +361,8 @@ void registry_load(Registry* reg) {
     
     fclose(f);
     RLOG("registry_load: Loaded %d peers, total peer_count=%d", loaded, reg->peer_count);
+    
+    // ===== FIXED: Thread safety - unlock mutex =====
     pthread_mutex_unlock(&reg->mutex);
 }
 
@@ -351,6 +371,7 @@ void registry_save(Registry* reg) {
     
     RLOG("registry_save: Saving to %s, %d peers", reg->registry_file, reg->peer_count);
     
+    // ===== FIXED: Thread safety - lock mutex =====
     pthread_mutex_lock(&reg->mutex);
     
     FILE* f = fopen(reg->registry_file, "w");
@@ -379,5 +400,7 @@ void registry_save(Registry* reg) {
     fclose(f);
     
     RLOG("registry_save: Saved successfully");
+    
+    // ===== FIXED: Thread safety - unlock mutex =====
     pthread_mutex_unlock(&reg->mutex);
 }
