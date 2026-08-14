@@ -1,4 +1,5 @@
- #ifndef NAT_PUNCH_H
+ // nat_punch.h - Added punch_try_connect
+#ifndef NAT_PUNCH_H
 #define NAT_PUNCH_H
 
 #include <stdbool.h>
@@ -20,6 +21,7 @@ int punch_init(PunchState* p, int port);
 int punch_send(PunchState* p, const char* target_ip, int target_port);
 int punch_listen(PunchState* p, char* peer_ip, int* peer_port);
 int punch_punch(PunchState* p, const char* target_ip, int target_port);
+int punch_try_connect(PunchState* p, const char* target_ip, int target_port);
 void punch_close(PunchState* p);
 
 #endif
