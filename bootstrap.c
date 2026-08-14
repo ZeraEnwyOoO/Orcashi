@@ -25,19 +25,16 @@ static const char* fallback_ips[BOOTSTRAP_NODES] = {
     "144.217.249.33"
 };
 
-/* Resolve hostname using getaddrinfo (works on musl) */
 static int resolve_host(const char* host, char* ipbuf, size_t bufsize) {
     struct addrinfo hints, *res, *rp;
     int status;
 
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;      /* IPv4 only for now */
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
 
     status = getaddrinfo(host, NULL, &hints, &res);
-    if (status != 0) {
-        return -1;
-    }
+    if (status != 0) return -1;
 
     for (rp = res; rp != NULL; rp = rp->ai_next) {
         struct sockaddr_in* addr = (struct sockaddr_in*)rp->ai_addr;
@@ -53,7 +50,6 @@ static int resolve_host(const char* host, char* ipbuf, size_t bufsize) {
 
 void bootstrap_init(void) {
     printf("[BOOTSTRAP] Loading %d bootstrap nodes...\n", BOOTSTRAP_NODES);
-    
     for (int i = 0; i < BOOTSTRAP_NODES; i++) {
         if (resolve_host(bootstrap_nodes[i].host, bootstrap_nodes[i].ip, INET_ADDRSTRLEN) == 0) {
             printf("[BOOTSTRAP] %s -> %s\n", bootstrap_nodes[i].host, bootstrap_nodes[i].ip);
