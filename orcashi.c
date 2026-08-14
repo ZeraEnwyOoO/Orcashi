@@ -1,4 +1,5 @@
- #define _POSIX_C_SOURCE 200809L
+ // orcashi.c - Full with DHT Node
+#define _POSIX_C_SOURCE 200809L
 
 #include "orcashi.h"
 #include <unistd.h>
@@ -37,9 +38,11 @@ ORCASHI* orcashi_create(void) {
     orcashi->cache = peer_cache_create();
     orcashi->endpoints = endpoint_registry_create();
     orcashi->punch = (PunchState*)calloc(1, sizeof(PunchState));
+    orcashi->dht = dht_node_create();
     
     if (!orcashi->plug || !orcashi->discovery || !orcashi->registry ||
-        !orcashi->requests || !orcashi->cache || !orcashi->endpoints || !orcashi->punch) {
+        !orcashi->requests || !orcashi->cache || !orcashi->endpoints ||
+        !orcashi->punch || !orcashi->dht) {
         orcashi_destroy(orcashi);
         return NULL;
     }
@@ -76,6 +79,7 @@ void orcashi_destroy(ORCASHI* orcashi) {
     if (orcashi->cache) { peer_cache_destroy(orcashi->cache); orcashi->cache = NULL; }
     if (orcashi->endpoints) { endpoint_registry_destroy(orcashi->endpoints); orcashi->endpoints = NULL; }
     if (orcashi->punch) { punch_close(orcashi->punch); free(orcashi->punch); orcashi->punch = NULL; }
+    if (orcashi->dht) { dht_node_destroy(orcashi->dht); orcashi->dht = NULL; }
     
     pthread_mutex_destroy(&orcashi->mutex);
     free(orcashi);
@@ -104,6 +108,11 @@ bool orcashi_init(ORCASHI* orcashi) {
     }
     
     bootstrap_init();
+    
+    // Start DHT Node
+    if (dht_node_start(orcashi->dht, DHT_NODE_PORT) < 0) {
+        fprintf(stderr, "[WARNING] Failed to start DHT node!\n");
+    }
     
     printf("[ORCA] Initialized with ID: %s\n", orcashi->my_id);
     
@@ -188,6 +197,7 @@ void orcashi_disconnect(ORCASHI* orcashi) {
         orcashi->heartbeat_thread = 0;
     }
     discovery_stop(orcashi->discovery);
+    dht_node_stop(orcashi->dht);
 }
 
 const char* orcashi_get_my_id(ORCASHI* orcashi) {
@@ -251,11 +261,16 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         
         orcashi_broadcast_presence(orcashi);
         
+        // Announce to DHT
+        dht_node_announce(orcashi->dht, orcashi->my_id, ORCASHI_PORT);
+        
         printf("\n  [SUCCESS] Registered!\n");
         printf("  Your ID: %s\n", orcashi->my_id);
         printf("  Your IP: %s\n", input_ip);
         printf("  Your friends can connect using:\n");
         printf("    ./orcashi join %s\n", input_ip);
+        printf("  Or using your ID (DHT):\n");
+        printf("    ./orcashi add %s\n", orcashi->my_id);
         return true;
     }
     
@@ -271,6 +286,7 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     
     printf("\n  [ORCA] Looking for %s...\n", id);
     
+    // Step 1: Try Registry
     RegistryPeer reg_peer;
     if (registry_get_peer(orcashi->registry, norm_id, &reg_peer)) {
         printf("  [ORCA] Found in registry: %s:%s (status: %s)\n", 
@@ -285,6 +301,7 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
         }
     }
     
+    // Step 2: Try Cache
     CachePeer peer;
     if (peer_cache_get_peer(orcashi->cache, norm_id, &peer) && peer.online) {
         if (strlen(peer.ip) > 0 && strcmp(peer.ip, "0.0.0.0") != 0) {
@@ -293,6 +310,7 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
         }
     }
     
+    // Step 3: Try Discovery (LAN Broadcast)
     printf("  [ORCA] Not found in registry/cache, querying network...\n");
     discovery_query_peer(orcashi->discovery, norm_id);
     
@@ -324,6 +342,30 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
             }
         }
         micro_sleep(100000);
+    }
+    
+    // Step 4: DHT Fallback (Internet-wide)
+    printf("  [ORCA] Trying DHT lookup for %s (can take up to 20s)...\n", id);
+    char dht_ip[INET_ADDRSTRLEN];
+    int dht_port;
+    if (dht_node_lookup(orcashi->dht, norm_id, 20, dht_ip, &dht_port)) {
+        printf("  [ORCA] Found via DHT: %s:%d\n", dht_ip, dht_port);
+        
+        // Save to registry and cache for future
+        char port_str[16];
+        snprintf(port_str, sizeof(port_str), "%d", dht_port);
+        registry_update_peer(orcashi->registry, norm_id, dht_ip, port_str);
+        
+        CachePeer cache_peer;
+        memset(&cache_peer, 0, sizeof(cache_peer));
+        strcpy(cache_peer.id, norm_id);
+        strcpy(cache_peer.ip, dht_ip);
+        cache_peer.port = dht_port;
+        cache_peer.online = true;
+        cache_peer.last_seen = time(NULL);
+        peer_cache_save_peer(orcashi->cache, &cache_peer);
+        
+        return orcashi_join_room(orcashi, dht_ip, dht_port);
     }
     
     printf("  [ERROR] Peer %s not found!\n", id);
@@ -388,12 +430,22 @@ static void on_peer_offline_callback(PeerInfo* peer) {
 
 static void* heartbeat_loop(void* arg) {
     ORCASHI* orcashi = (ORCASHI*)arg;
+    int tick = 0;
+    
     while (orcashi->running) {
         sleep(30);
+        tick++;
+        
         endpoint_cleanup_stale(orcashi->endpoints, 60);
         peer_cache_auto_save(orcashi->cache);
+        dht_node_periodic(orcashi->dht);
+        
         if (orcashi->registered) {
             orcashi_broadcast_presence(orcashi);
+            // Re-announce to DHT every ~25 minutes (50 * 30s)
+            if (tick % 50 == 0) {
+                dht_node_announce(orcashi->dht, orcashi->my_id, ORCASHI_PORT);
+            }
         }
     }
     return NULL;
