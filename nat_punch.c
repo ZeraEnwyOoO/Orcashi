@@ -1,9 +1,9 @@
- // nat_punch.c - Fixed with proper includes
+ // nat_punch.c - Complete fixed file
 #include "nat_punch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>     // For usleep
+#include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <errno.h>
