@@ -1,4 +1,5 @@
- #ifndef ORCASHI_H
+ // orcashi.h - Full with DHT Node
+#ifndef ORCASHI_H
 #define ORCASHI_H
 
 #include <stdio.h>
@@ -25,9 +26,13 @@
 #include "endpoint.h"
 #include "nat_punch.h"
 #include "bootstrap.h"
+#include "dht_node.h"
 
 #define ORCASHI_VERSION "3.1"
 #define ORCASHI_PORT 9000
+#define DISCOVERY_PORT 9001
+#define PUNCH_PORT 33445
+#define DHT_NODE_PORT 33446
 #define ORCASHI_HOME "/tmp/.orcashi/"
 #define ID_FILE ORCASHI_HOME "id"
 
@@ -39,6 +44,7 @@ typedef struct ORCASHI {
     PeerCache* cache;
     EndpointRegistry* endpoints;
     PunchState* punch;
+    DHTNode* dht;
     
     char my_id[64];
     char peer_id[64];
