@@ -1,4 +1,5 @@
- #ifndef BOOTSTRAP_H
+ // bootstrap.h - Added bootstrap_connect_dht
+#ifndef BOOTSTRAP_H
 #define BOOTSTRAP_H
 
 #include <arpa/inet.h>
@@ -15,5 +16,6 @@ extern BootstrapNode bootstrap_nodes[BOOTSTRAP_NODES];
 
 void bootstrap_init(void);
 int bootstrap_get_node(int index, BootstrapNode* node);
+void bootstrap_connect_dht(int dht_socket);
 
 #endif
