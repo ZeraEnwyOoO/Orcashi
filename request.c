@@ -1,4 +1,4 @@
- // request.c
+ // request.c - Add status checking for all statuses
 #include "request.h"
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -6,7 +6,6 @@
 
 #define REQUEST_FILE "/tmp/.orcashi/requests.json"
 
-// ===== JSON Escape Function =====
 static void json_escape(const char* input, char* output, size_t out_size) {
     if (!input || !output || out_size == 0) return;
     
@@ -48,6 +47,16 @@ void strip_brackets(const char* input, char* output, size_t out_size) {
         }
     }
     output[j] = '\0';
+}
+
+static int ids_match(const char* id1, const char* id2) {
+    if (!id1 || !id2) return 0;
+    
+    char n1[64], n2[64];
+    strip_brackets(id1, n1, sizeof(n1));
+    strip_brackets(id2, n2, sizeof(n2));
+    
+    return strcmp(n1, n2) == 0;
 }
 
 RequestManager* request_manager_create(void) {
@@ -92,16 +101,26 @@ bool request_send(RequestManager* rm, const char* from_id, const char* to_id) {
 int request_get_pending(RequestManager* rm, const char* to_id, Request* out, int max) {
     if (!rm || !out) return 0;
     
-    char nt[64];
-    strip_brackets(to_id, nt, sizeof(nt));
+    int count = 0;
+    for (int i = 0; i < rm->request_count && count < max; i++) {
+        // ===== FIXED: Check only pending status =====
+        if (strcmp(rm->requests[i].status, "pending") == 0 &&
+            ids_match(rm->requests[i].to_id, to_id)) {
+            out[count++] = rm->requests[i];
+        }
+    }
+    
+    return count;
+}
+
+// ===== FIXED: Get requests by status =====
+int request_get_by_status(RequestManager* rm, const char* to_id, const char* status, Request* out, int max) {
+    if (!rm || !out) return 0;
     
     int count = 0;
     for (int i = 0; i < rm->request_count && count < max; i++) {
-        char rnt[64];
-        strip_brackets(rm->requests[i].to_id, rnt, sizeof(rnt));
-        
-        if (strcmp(rnt, nt) == 0 &&
-            strcmp(rm->requests[i].status, "pending") == 0) {
+        if (strcmp(rm->requests[i].status, status) == 0 &&
+            ids_match(rm->requests[i].to_id, to_id)) {
             out[count++] = rm->requests[i];
         }
     }
@@ -112,16 +131,9 @@ int request_get_pending(RequestManager* rm, const char* to_id, Request* out, int
 bool request_accept(RequestManager* rm, const char* from_id, const char* to_id) {
     if (!rm) return false;
     
-    char nf[64], nt[64];
-    strip_brackets(from_id, nf, sizeof(nf));
-    strip_brackets(to_id, nt, sizeof(nt));
-    
     for (int i = 0; i < rm->request_count; i++) {
-        char rnf[64], rnt[64];
-        strip_brackets(rm->requests[i].from_id, rnf, sizeof(rnf));
-        strip_brackets(rm->requests[i].to_id, rnt, sizeof(rnt));
-        
-        if (strcmp(rnf, nf) == 0 && strcmp(rnt, nt) == 0 &&
+        if (ids_match(rm->requests[i].from_id, from_id) &&
+            ids_match(rm->requests[i].to_id, to_id) &&
             strcmp(rm->requests[i].status, "pending") == 0) {
             strcpy(rm->requests[i].status, "accepted");
             request_save(rm);
@@ -136,16 +148,9 @@ bool request_accept(RequestManager* rm, const char* from_id, const char* to_id) 
 bool request_reject(RequestManager* rm, const char* from_id, const char* to_id) {
     if (!rm) return false;
     
-    char nf[64], nt[64];
-    strip_brackets(from_id, nf, sizeof(nf));
-    strip_brackets(to_id, nt, sizeof(nt));
-    
     for (int i = 0; i < rm->request_count; i++) {
-        char rnf[64], rnt[64];
-        strip_brackets(rm->requests[i].from_id, rnf, sizeof(rnf));
-        strip_brackets(rm->requests[i].to_id, rnt, sizeof(rnt));
-        
-        if (strcmp(rnf, nf) == 0 && strcmp(rnt, nt) == 0 &&
+        if (ids_match(rm->requests[i].from_id, from_id) &&
+            ids_match(rm->requests[i].to_id, to_id) &&
             strcmp(rm->requests[i].status, "pending") == 0) {
             strcpy(rm->requests[i].status, "rejected");
             request_save(rm);
@@ -157,19 +162,13 @@ bool request_reject(RequestManager* rm, const char* from_id, const char* to_id) 
     return false;
 }
 
+// ===== FIXED: Check all statuses =====
 bool request_exists(RequestManager* rm, const char* from_id, const char* to_id) {
     if (!rm) return false;
     
-    char nf[64], nt[64];
-    strip_brackets(from_id, nf, sizeof(nf));
-    strip_brackets(to_id, nt, sizeof(nt));
-    
     for (int i = 0; i < rm->request_count; i++) {
-        char rnf[64], rnt[64];
-        strip_brackets(rm->requests[i].from_id, rnf, sizeof(rnf));
-        strip_brackets(rm->requests[i].to_id, rnt, sizeof(rnt));
-        
-        if (strcmp(rnf, nf) == 0 && strcmp(rnt, nt) == 0 &&
+        if (ids_match(rm->requests[i].from_id, from_id) &&
+            ids_match(rm->requests[i].to_id, to_id) &&
             strcmp(rm->requests[i].status, "pending") == 0) {
             return true;
         }
@@ -178,7 +177,34 @@ bool request_exists(RequestManager* rm, const char* from_id, const char* to_id) 
     return false;
 }
 
-// ===== FIXED: request_save with JSON escaping =====
+// ===== FIXED: Check if request exists in any status =====
+bool request_exists_any_status(RequestManager* rm, const char* from_id, const char* to_id) {
+    if (!rm) return false;
+    
+    for (int i = 0; i < rm->request_count; i++) {
+        if (ids_match(rm->requests[i].from_id, from_id) &&
+            ids_match(rm->requests[i].to_id, to_id)) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// ===== FIXED: Get request status =====
+const char* request_get_status(RequestManager* rm, const char* from_id, const char* to_id) {
+    if (!rm) return NULL;
+    
+    for (int i = 0; i < rm->request_count; i++) {
+        if (ids_match(rm->requests[i].from_id, from_id) &&
+            ids_match(rm->requests[i].to_id, to_id)) {
+            return rm->requests[i].status;
+        }
+    }
+    
+    return NULL;
+}
+
 void request_save(RequestManager* rm) {
     if (!rm) return;
     
@@ -209,7 +235,6 @@ void request_save(RequestManager* rm) {
     fclose(f);
 }
 
-// ===== FIXED: request_load with proper JSON parsing =====
 void request_load(RequestManager* rm) {
     if (!rm) return;
     
@@ -222,15 +247,11 @@ void request_load(RequestManager* rm) {
     int brace_depth = 0;
     
     while (fgets(line, sizeof(line), f)) {
-        char* p = line;
-        
-        // Count braces to handle nested objects properly
         for (char* c = line; *c; c++) {
             if (*c == '{') brace_depth++;
             if (*c == '}') brace_depth--;
         }
         
-        // Parse "from_id"
         char* from_start = strstr(line, "\"from_id\":");
         if (from_start) {
             char* start = strchr(from_start, '"');
@@ -248,7 +269,6 @@ void request_load(RequestManager* rm) {
             }
         }
         
-        // Parse "to_id"
         char* to_start = strstr(line, "\"to_id\":");
         if (to_start) {
             char* start = strchr(to_start, '"');
@@ -265,7 +285,6 @@ void request_load(RequestManager* rm) {
             }
         }
         
-        // Parse "status"
         char* status_start = strstr(line, "\"status\":");
         if (status_start) {
             char* start = strchr(status_start, '"');
@@ -282,7 +301,6 @@ void request_load(RequestManager* rm) {
             }
         }
         
-        // Parse "timestamp"
         char* ts_start = strstr(line, "\"timestamp\":");
         if (ts_start) {
             char* start = ts_start + 12;
@@ -290,7 +308,6 @@ void request_load(RequestManager* rm) {
             req.timestamp = atol(start);
         }
         
-        // End of request object
         if (in_request && brace_depth == 0 && strchr(line, '}') != NULL) {
             if (strlen(req.from_id) > 0 && rm->request_count < MAX_REQUESTS) {
                 rm->requests[rm->request_count++] = req;
