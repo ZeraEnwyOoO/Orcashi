@@ -1,8 +1,8 @@
- // orcashi.c - Complete file with all includes
+ // orcashi.c - Complete fixed file
 #define _POSIX_C_SOURCE 200809L
 
 #include "orcashi.h"
-#include <unistd.h>     // For usleep
+#include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
