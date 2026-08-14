@@ -1,4 +1,4 @@
- // nat_punch.c - Fixed with actual punch usage
+ // nat_punch.c - Fixed with proper includes
 #include "nat_punch.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +8,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <sys/time.h>
+
+// usleep is in unistd.h which is already included
 
 int punch_init(PunchState* p, int port) {
     p->udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -107,17 +109,14 @@ int punch_punch(PunchState* p, const char* target_ip, int target_port) {
     return -1;
 }
 
-// ===== FIXED: Try to punch through NAT when connecting =====
 int punch_try_connect(PunchState* p, const char* target_ip, int target_port) {
     printf("[NAT] Attempting NAT punch to %s:%d...\n", target_ip, target_port);
     
-    // Send initial punch packets
     for (int i = 0; i < 5; i++) {
         punch_send(p, target_ip, target_port);
         usleep(50000);
     }
     
-    // Listen for response
     char peer_ip[INET_ADDRSTRLEN];
     int peer_port;
     
@@ -130,7 +129,6 @@ int punch_try_connect(PunchState* p, const char* target_ip, int target_port) {
             return 0;
         }
         
-        // Keep sending punches while waiting
         if (i % 3 == 0) {
             punch_send(p, target_ip, target_port);
         }
