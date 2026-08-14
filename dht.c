@@ -24,7 +24,9 @@ THE SOFTWARE.
    improvements to the author. */
 /* For memmem. */
 
- #define _POSIX_C_SOURCE 200809L
+#ifndef _GNU_SOURCE 
+#define _POSIX_C_SOURCE 200809L
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
