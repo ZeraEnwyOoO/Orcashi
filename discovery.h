@@ -1,4 +1,4 @@
- // discovery.h - Fixed port to match ORCASHI_PORT
+  
 #ifndef DISCOVERY_H
 #define DISCOVERY_H
 
@@ -19,8 +19,7 @@
 #include "request.h"
 #include "registry.h"
 
-// ===== FIXED: Use same port as ORCASHI_PORT =====
-#define DISCOVERY_PORT 9000
+#define DISCOVERY_PORT 9001
 #define MAX_PEERS 256
 #define PEER_TIMEOUT 300
 
@@ -81,3 +80,4 @@ void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*));
 void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*));
 
 #endif
+ 
