@@ -1,4 +1,5 @@
- #include "nat_punch.h"
+ // nat_punch.c - Fixed with actual punch usage
+#include "nat_punch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,6 +104,40 @@ int punch_punch(PunchState* p, const char* target_ip, int target_port) {
     }
     
     printf("[NAT] Punch failed!\n");
+    return -1;
+}
+
+// ===== FIXED: Try to punch through NAT when connecting =====
+int punch_try_connect(PunchState* p, const char* target_ip, int target_port) {
+    printf("[NAT] Attempting NAT punch to %s:%d...\n", target_ip, target_port);
+    
+    // Send initial punch packets
+    for (int i = 0; i < 5; i++) {
+        punch_send(p, target_ip, target_port);
+        usleep(50000);
+    }
+    
+    // Listen for response
+    char peer_ip[INET_ADDRSTRLEN];
+    int peer_port;
+    
+    for (int i = 0; i < MAX_RETRY; i++) {
+        if (punch_listen(p, peer_ip, &peer_port) == 0) {
+            printf("[NAT] Punch successful! Connected to %s:%d\n", peer_ip, peer_port);
+            p->punched = true;
+            strcpy(p->peer_ip, peer_ip);
+            p->peer_port = peer_port;
+            return 0;
+        }
+        
+        // Keep sending punches while waiting
+        if (i % 3 == 0) {
+            punch_send(p, target_ip, target_port);
+        }
+        usleep(100000);
+    }
+    
+    printf("[NAT] Punch failed, falling back to direct connection\n");
     return -1;
 }
 
