@@ -85,7 +85,7 @@ bool orcashi_init(ORCASHI* orcashi) {
     
     discovery_set_my_identity(orcashi->discovery, orcashi->my_id, orcashi->local_ip, ORCASHI_PORT);
     
-    // ===== FIXED: Connect Registry and RequestManager to Discovery =====
+    // Connect Registry and RequestManager to Discovery
     discovery_set_registry(orcashi->registry);
     discovery_set_request_manager(orcashi->requests);
     
@@ -196,6 +196,7 @@ const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
     return orcashi ? orcashi->peer_ip : NULL;
 }
 
+// ===== FIXED: Register Identity with correct IP =====
 bool orcashi_register_identity(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
@@ -225,13 +226,16 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     
     printf("  Using IP: %s\n", input_ip);
     
-    if (registry_register_peer(orcashi->registry, orcashi->my_id, 
-                               input_ip, "9000")) {
+    // ===== FIX 1: Update local_ip FIRST =====
+    strcpy(orcashi->local_ip, input_ip);
+    
+    // ===== FIX 2: Update discovery identity with new IP =====
+    discovery_set_my_identity(orcashi->discovery, orcashi->my_id, input_ip, ORCASHI_PORT);
+    printf("[DEBUG] discovery_set_my_identity: ID=%s, IP=%s\n", orcashi->my_id, input_ip);
+    
+    // ===== FIX 3: Now register in registry =====
+    if (registry_register_peer(orcashi->registry, orcashi->my_id, input_ip, "9000")) {
         orcashi->registered = true;
-        strcpy(orcashi->local_ip, input_ip);
-        
-        discovery_set_my_identity(orcashi->discovery, orcashi->my_id, input_ip, ORCASHI_PORT);
-        printf("[DEBUG] discovery_set_my_identity: ID=%s, IP=%s\n", orcashi->my_id, input_ip);
         
         CachePeer peer;
         memset(&peer, 0, sizeof(peer));
@@ -243,6 +247,7 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
         peer.last_seen = time(NULL);
         peer_cache_save_peer(orcashi->cache, &peer);
         
+        // ===== FIX 4: Broadcast presence with new IP =====
         orcashi_broadcast_presence(orcashi);
         
         printf("\n  [SUCCESS] Registered!\n");
