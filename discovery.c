@@ -1,4 +1,4 @@
- // discovery.c - refactored parse_message into smaller functions
+ // discovery.c - Fixed all unused parameter warnings
 #define _POSIX_C_SOURCE 200809L
 
 #include "discovery.h"
@@ -34,7 +34,6 @@ static void* broadcast_loop(void* arg);
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port);
 static void send_udp(Discovery* disc, const char* msg, const char* ip, int port);
 
-// ===== Message handler functions =====
 static void handle_presence(Discovery* disc, const char* msg, const char* sender_ip);
 static void handle_who_has(Discovery* disc, const char* msg, const char* sender_ip);
 static void handle_i_am(Discovery* disc, const char* msg);
@@ -458,7 +457,6 @@ bool discovery_has_pending(Discovery* disc) {
     return has;
 }
 
-// ===== parse_message - refactored into smaller handlers =====
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_port;
     
@@ -489,8 +487,9 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
     }
 }
 
-// ===== handle_presence =====
 static void handle_presence(Discovery* disc, const char* msg, const char* sender_ip) {
+    (void)sender_ip;
+    
     const char* rest = msg + 14;
     const char* colon = strchr(rest, ':');
     if (colon) {
@@ -504,8 +503,8 @@ static void handle_presence(Discovery* disc, const char* msg, const char* sender
         char peer_ip[INET_ADDRSTRLEN];
         extract_ip_from_endpoint(endpoint, peer_ip, sizeof(peer_ip));
         
-        DLOG("ORCA_PRESENCE: id='%s', endpoint='%s', peer_ip='%s' (sender_ip=%s)", 
-             id, endpoint, peer_ip, sender_ip);
+        DLOG("ORCA_PRESENCE: id='%s', endpoint='%s', peer_ip='%s'", 
+             id, endpoint, peer_ip);
         
         pthread_mutex_lock(&disc->mutex);
         
@@ -548,7 +547,6 @@ static void handle_presence(Discovery* disc, const char* msg, const char* sender
     }
 }
 
-// ===== handle_who_has =====
 static void handle_who_has(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* search_id = msg + 8;
     
@@ -575,7 +573,6 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
     }
 }
 
-// ===== handle_i_am =====
 static void handle_i_am(Discovery* disc, const char* msg) {
     const char* rest = msg + 5;
     const char* colon1 = strchr(rest, ':');
@@ -628,8 +625,11 @@ static void handle_i_am(Discovery* disc, const char* msg) {
     }
 }
 
-// ===== handle_add_request =====
+// ===== FIXED: handle_add_request with unused parameters =====
 static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
+    (void)sender_ip;
+    (void)sender_port;
+    
     const char* rest = msg + 12;
     const char* colon1 = strchr(rest, ':');
     const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
@@ -719,7 +719,6 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
     }
 }
 
-// ===== handle_add_request_ack =====
 static void handle_add_request_ack(Discovery* disc, const char* msg) {
     const char* rest = msg + 16;
     const char* colon1 = strchr(rest, ':');
@@ -759,7 +758,6 @@ static void handle_add_request_ack(Discovery* disc, const char* msg) {
     }
 }
 
-// ===== handle_search =====
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* search_id = msg + 12;
     
