@@ -1,9 +1,8 @@
- // bootstrap.c - Clean version with DHT integration
-#include "bootstrap.h"
+ #include "bootstrap.h"
 #include "dht.h"
 #include <stdio.h>
 #include <string.h>
-#include <netdb.h>
+#include <netdb.h>      // for gethostbyname
 #include <arpa/inet.h>
 #include <stdlib.h>
 
@@ -49,12 +48,9 @@ int bootstrap_get_node(int index, BootstrapNode* node) {
     return 0;
 }
 
-// ===== FIXED: Connect DHT to bootstrap nodes =====
 void bootstrap_connect_dht(int dht_socket) {
     (void)dht_socket;
-    
     printf("[BOOTSTRAP] Connecting DHT to bootstrap nodes...\n");
-    
     for (int i = 0; i < BOOTSTRAP_NODES; i++) {
         BootstrapNode node;
         if (bootstrap_get_node(i, &node) == 0 && strlen(node.ip) > 0) {
@@ -63,7 +59,6 @@ void bootstrap_connect_dht(int dht_socket) {
             addr.sin_family = AF_INET;
             addr.sin_port = htons(node.port);
             inet_pton(AF_INET, node.ip, &addr.sin_addr);
-            
             printf("[BOOTSTRAP] Inserting node %s:%d\n", node.ip, node.port);
             dht_insert_node(NULL, (struct sockaddr*)&addr, sizeof(addr));
         }
