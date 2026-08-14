@@ -1,5 +1,6 @@
- // registry.c - Add ids_match function and fix thread safety
+ // registry.c - Fixed with strip_brackets declaration
 #include "registry.h"
+#include "request.h"  // For strip_brackets
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -18,7 +19,6 @@
 #define RLOG(fmt, ...) ((void)0)
 #endif
 
-// ===== FIXED: ids_match function for consistent ID comparison =====
 static int ids_match(const char* id1, const char* id2) {
     if (!id1 || !id2) return 0;
     
@@ -278,7 +278,6 @@ void registry_load(Registry* reg) {
         return;
     }
     
-    // ===== FIXED: Thread safety - lock mutex =====
     pthread_mutex_lock(&reg->mutex);
     
     char line[2048];
@@ -361,8 +360,6 @@ void registry_load(Registry* reg) {
     
     fclose(f);
     RLOG("registry_load: Loaded %d peers, total peer_count=%d", loaded, reg->peer_count);
-    
-    // ===== FIXED: Thread safety - unlock mutex =====
     pthread_mutex_unlock(&reg->mutex);
 }
 
@@ -371,7 +368,6 @@ void registry_save(Registry* reg) {
     
     RLOG("registry_save: Saving to %s, %d peers", reg->registry_file, reg->peer_count);
     
-    // ===== FIXED: Thread safety - lock mutex =====
     pthread_mutex_lock(&reg->mutex);
     
     FILE* f = fopen(reg->registry_file, "w");
@@ -400,7 +396,5 @@ void registry_save(Registry* reg) {
     fclose(f);
     
     RLOG("registry_save: Saved successfully");
-    
-    // ===== FIXED: Thread safety - unlock mutex =====
     pthread_mutex_unlock(&reg->mutex);
 }
