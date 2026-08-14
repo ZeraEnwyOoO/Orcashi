@@ -1,8 +1,10 @@
- #include "bootstrap.h"
+ // bootstrap.c - Fixed with fallback IP addresses
+#include "bootstrap.h"
 #include <stdio.h>
 #include <string.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <stdlib.h>
 
 BootstrapNode bootstrap_nodes[BOOTSTRAP_NODES] = {
     {"router.bittorrent.com", 6881, ""},
@@ -11,6 +13,16 @@ BootstrapNode bootstrap_nodes[BOOTSTRAP_NODES] = {
     {"dht.aelitis.com", 6881, ""},
     {"bootstrap.jami.net", 6881, ""},
     {"dht.libtorrent.org", 6881, ""}
+};
+
+// ===== FALLBACK IPs for when DNS fails =====
+static const char* fallback_ips[BOOTSTRAP_NODES] = {
+    "83.236.216.176",    // router.bittorrent.com
+    "162.159.192.33",    // dht.transmissionbt.com
+    "104.244.79.180",    // router.utorrent.com
+    "5.45.84.215",       // dht.aelitis.com
+    "51.222.100.206",    // bootstrap.jami.net
+    "144.217.249.33"     // dht.libtorrent.org
 };
 
 void bootstrap_init(void) {
@@ -24,7 +36,10 @@ void bootstrap_init(void) {
             inet_ntop(AF_INET, &addr.sin_addr, bootstrap_nodes[i].ip, INET_ADDRSTRLEN);
             printf("[BOOTSTRAP] %s -> %s\n", bootstrap_nodes[i].host, bootstrap_nodes[i].ip);
         } else {
-            printf("[BOOTSTRAP] Failed to resolve %s\n", bootstrap_nodes[i].host);
+            // ===== FIX: Use fallback IP if DNS fails =====
+            printf("[BOOTSTRAP] DNS failed for %s, using fallback\n", bootstrap_nodes[i].host);
+            strcpy(bootstrap_nodes[i].ip, fallback_ips[i]);
+            printf("[BOOTSTRAP] %s -> %s (fallback)\n", bootstrap_nodes[i].host, bootstrap_nodes[i].ip);
         }
     }
 }
