@@ -1,4 +1,4 @@
- // main.c - Fixed duplicate IP entry in register command
+ // main.c - Fixed y/n display and daemon mode
 #include "orcashi.h"
 #include <signal.h>
 #include <stdio.h>
@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/select.h>
+#include <termios.h>
 
 static ORCASHI* g_orcashi = NULL;
 static volatile int running = 1;
@@ -49,6 +50,7 @@ void show_help(void) {
 #define PID_FILE "/tmp/.orcashi/orcashi.pid"
 #define LOG_FILE "/tmp/.orcashi/orcashi.log"
 
+// ===== FIXED: daemonize with proper input handling =====
 void daemonize(void) {
     pid_t pid = fork();
     
@@ -79,12 +81,37 @@ void daemonize(void) {
     
     open("/dev/null", O_RDWR);
     int log_fd = open(LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0644);
-    dup2(log_fd, STDOUT_FILENO);
-    dup2(log_fd, STDERR_FILENO);
+    if (log_fd >= 0) {
+        dup2(log_fd, STDOUT_FILENO);
+        dup2(log_fd, STDERR_FILENO);
+        close(log_fd);
+    }
     
     chdir("/tmp");
     
+    // ===== FIX: Daemon now runs the main loop =====
     while (running) {
+        if (g_orcashi) {
+            int pending = discovery_pending_count(g_orcashi->discovery);
+            
+            if (pending > 0) {
+                PendingRequest req;
+                if (discovery_pop_pending(g_orcashi->discovery, &req)) {
+                    fprintf(stderr, "[ORCA] Friend request from %s (%s:%d)\n", 
+                            req.from_id, req.from_ip, req.from_port);
+                    fprintf(stderr, "[ORCA] Use './orcashi accept %s' to accept\n", req.from_id);
+                    fflush(stderr);
+                }
+            }
+            
+            if (orcashi_is_connected(g_orcashi)) {
+                char msg[4096];
+                if (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
+                    fprintf(stderr, "[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
+                    fflush(stderr);
+                }
+            }
+        }
         sleep(1);
     }
 }
@@ -154,6 +181,40 @@ void chat_loop(void) {
             }
         }
     }
+}
+
+// ===== FIXED: Non-blocking input for y/n =====
+static int get_nonblocking_answer(const char* prompt, char* answer, size_t size) {
+    struct termios oldt, newt;
+    fd_set fds;
+    struct timeval tv;
+    int ret;
+    
+    printf("%s", prompt);
+    fflush(stdout);
+    
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    tv.tv_sec = 30;
+    tv.tv_usec = 0;
+    
+    ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    
+    if (ret > 0) {
+        if (fgets(answer, size, stdin)) {
+            answer[strcspn(answer, "\n")] = '\0';
+        }
+    } else {
+        answer[0] = '\0';
+    }
+    
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    return ret > 0 ? 1 : 0;
 }
 
 void show_peers_interactive(ORCASHI* orcashi) {
@@ -345,7 +406,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     else if (strcmp(cmd, "register") == 0) {
-        // ===== FIXED: Register command no longer asks for IP separately =====
         if (orcashi_register_identity(g_orcashi)) {
             printf("Registered!\n");
             printf("ID: %s\n", orcashi_get_my_id(g_orcashi));
@@ -365,33 +425,31 @@ int main(int argc, char* argv[]) {
                         PendingRequest req;
                         if (discovery_pop_pending(g_orcashi->discovery, &req)) {
                             printf("\n");
-                            printf("╔══════════════════════════════════════════════════════╗\n");
-                            printf("║  [ORCA] NEW FRIEND REQUEST                          ║\n");
-                            printf("╠══════════════════════════════════════════════════════╣\n");
-                            printf("║  From: %s\n", req.from_id);
-                            printf("║  IP:   %s\n", req.from_ip);
-                            printf("║  Port: %d\n", req.from_port);
-                            printf("╠══════════════════════════════════════════════════════╣\n");
-                            printf("║  Accept? (y/n): ");
-                            fflush(stdout);
+                            printf("================================================\n");
+                            printf("[ORCA] NEW FRIEND REQUEST\n");
+                            printf("================================================\n");
+                            printf("  From: %s\n", req.from_id);
+                            printf("  IP:   %s\n", req.from_ip);
+                            printf("  Port: %d\n", req.from_port);
+                            printf("================================================\n");
                             
+                            // ===== FIXED: Non-blocking y/n input =====
                             char answer[16];
-                            if (fgets(answer, sizeof(answer), stdin)) {
-                                answer[strcspn(answer, "\n")] = '\0';
-                                
+                            if (get_nonblocking_answer("  Accept? (y/n): ", answer, sizeof(answer))) {
                                 if (strcmp(answer, "y") == 0 || strcmp(answer, "Y") == 0 || 
                                     strcmp(answer, "yes") == 0 || strcmp(answer, "YES") == 0) {
                                     registry_update_status(g_orcashi->registry, req.from_id, "accepted");
-                                    printf("║   Accepted friend request from %s\n", req.from_id);
-                                    printf("╚══════════════════════════════════════════════════════╝\n");
-                                    printf("\n");
-                                } else {
+                                    printf("  Accepted friend request from %s\n", req.from_id);
+                                } else if (strlen(answer) > 0) {
                                     registry_update_status(g_orcashi->registry, req.from_id, "rejected");
-                                    printf("║    Rejected friend request from %s\n", req.from_id);
-                                    printf("╚══════════════════════════════════════════════════════╝\n");
-                                    printf("\n");
+                                    printf("  Rejected friend request from %s\n", req.from_id);
+                                } else {
+                                    printf("  Timeout - request kept pending\n");
                                 }
+                            } else {
+                                printf("  No input - request kept pending\n");
                             }
+                            printf("================================================\n\n");
                         }
                     }
                     
