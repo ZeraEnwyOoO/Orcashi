@@ -357,7 +357,6 @@ int main(int argc, char* argv[]) {
                 printf("\n");
                 
                 while (running) {
-                    // ===== FIXED: Check for pending requests and show y/n =====
                     int pending = discovery_pending_count(g_orcashi->discovery);
                     
                     if (pending > 0) {
@@ -365,7 +364,7 @@ int main(int argc, char* argv[]) {
                         if (discovery_pop_pending(g_orcashi->discovery, &req)) {
                             printf("\n");
                             printf("╔══════════════════════════════════════════════════════╗\n");
-                            printf("║  [ORCA] NEW FRIEND REQUEST                           ║\n");
+                            printf("║  [ORCA] NEW FRIEND REQUEST                          ║\n");
                             printf("╠══════════════════════════════════════════════════════╣\n");
                             printf("║  From: %s\n", req.from_id);
                             printf("║  IP:   %s\n", req.from_ip);
@@ -381,12 +380,12 @@ int main(int argc, char* argv[]) {
                                 if (strcmp(answer, "y") == 0 || strcmp(answer, "Y") == 0 || 
                                     strcmp(answer, "yes") == 0 || strcmp(answer, "YES") == 0) {
                                     registry_update_status(g_orcashi->registry, req.from_id, "accepted");
-                                    printf("║  Accepted friend request from %s\n", req.from_id);
+                                    printf("║   Accepted friend request from %s\n", req.from_id);
                                     printf("╚══════════════════════════════════════════════════════╝\n");
                                     printf("\n");
                                 } else {
                                     registry_update_status(g_orcashi->registry, req.from_id, "rejected");
-                                    printf("║   Rejected friend request from %s\n", req.from_id);
+                                    printf("║    Rejected friend request from %s\n", req.from_id);
                                     printf("╚══════════════════════════════════════════════════════╝\n");
                                     printf("\n");
                                 }
@@ -411,6 +410,7 @@ int main(int argc, char* argv[]) {
         orcashi_destroy(g_orcashi);
         return 0;
     }
+    // ===== FIXED: add command with discovery_send_add_request_with_ack =====
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         char* id = argv[2];
         
@@ -440,7 +440,15 @@ int main(int argc, char* argv[]) {
         
         if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
             registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
-            discovery_send_add_request_with_ack(g_orcashi->discovery, id, g_orcashi->my_id, g_orcashi->local_ip, ORCASHI_PORT);
+            
+            // ===== FIX: Send ADD_REQUEST to peer =====
+            printf("[DEBUG] Sending ADD_REQUEST to %s at %s:%d\n", id, p.ip, p.port);
+            discovery_send_add_request_with_ack(g_orcashi->discovery, id, 
+                                               g_orcashi->my_id, 
+                                               g_orcashi->local_ip, 
+                                               ORCASHI_PORT);
+            // ===== END FIX =====
+            
             printf("Friend request sent to %s\n", id);
             printf("Use './orcashi peers' to check status\n");
         } else {
