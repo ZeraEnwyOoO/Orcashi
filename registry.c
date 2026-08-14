@@ -1,4 +1,5 @@
- #include "registry.h"
+ // registry.c - Fixed mutex initialization
+#include "registry.h"
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -9,7 +10,6 @@
 
 #define REGISTRY_FILE "/tmp/.orcashi/registry.json"
 
-// ===== RAW DEBUG LOGS =====
 #define DEBUG_REGISTRY 1
 
 #if DEBUG_REGISTRY
@@ -18,14 +18,18 @@
 #define RLOG(fmt, ...) ((void)0)
 #endif
 
+// ===== FIXED: registry_create initializes mutex BEFORE registry_load =====
 Registry* registry_create(void) {
     Registry* reg = (Registry*)calloc(1, sizeof(Registry));
     if (!reg) return NULL;
     
     strcpy(reg->registry_file, REGISTRY_FILE);
     mkdir("/tmp/.orcashi/", 0700);
+    
+    // ===== FIX: Initialize mutex BEFORE registry_load =====
     pthread_mutex_init(&reg->mutex, NULL);
     RLOG("registry_create() called");
+    
     registry_load(reg);
     
     return reg;
