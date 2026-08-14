@@ -1,8 +1,8 @@
  #ifndef DHT_H
 #define DHT_H
 
-#include <stdio.h>   // for FILE
-#include <time.h>    // for time_t
+#include <stdio.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
