@@ -1,4 +1,5 @@
- #ifndef REQUEST_H
+ // request.h - Updated with new functions
+#ifndef REQUEST_H
 #define REQUEST_H
 
 #include <stdio.h>
@@ -26,13 +27,15 @@ RequestManager* request_manager_create(void);
 void request_manager_destroy(RequestManager* rm);
 bool request_send(RequestManager* rm, const char* from_id, const char* to_id);
 int request_get_pending(RequestManager* rm, const char* to_id, Request* out, int max);
+int request_get_by_status(RequestManager* rm, const char* to_id, const char* status, Request* out, int max);
 bool request_accept(RequestManager* rm, const char* from_id, const char* to_id);
 bool request_reject(RequestManager* rm, const char* from_id, const char* to_id);
 bool request_exists(RequestManager* rm, const char* from_id, const char* to_id);
+bool request_exists_any_status(RequestManager* rm, const char* from_id, const char* to_id);
+const char* request_get_status(RequestManager* rm, const char* from_id, const char* to_id);
 void request_save(RequestManager* rm);
 void request_load(RequestManager* rm);
 
-// ===== Helper: Remove < and > from ID =====
 void strip_brackets(const char* input, char* output, size_t out_size);
 
 #endif
