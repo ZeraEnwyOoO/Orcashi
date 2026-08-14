@@ -3,13 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include <unistd.h>     // For usleep
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <sys/time.h>
-
-// usleep is in unistd.h which is already included
 
 int punch_init(PunchState* p, int port) {
     p->udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
