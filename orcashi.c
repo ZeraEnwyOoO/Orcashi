@@ -1,6 +1,4 @@
- 
- 
- // orcashi.c - Fixed warnings
+ // orcashi.c - Complete file with all includes
 #define _POSIX_C_SOURCE 200809L
 
 #include "orcashi.h"
@@ -259,7 +257,6 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     return false;
 }
 
-// ===== FIXED: orcashi_connect_peer without NULL checks on array =====
 bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     if (!orcashi) return false;
     
@@ -274,7 +271,6 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
         printf("  [ORCA] Found in registry: %s:%s (status: %s)\n", 
                reg_peer.ip, reg_peer.port, reg_peer.status);
         
-        // FIXED: No NULL check needed for array
         if (strlen(reg_peer.ip) > 0 && 
             strcmp(reg_peer.ip, "0.0.0.0") != 0 &&
             strcmp(reg_peer.status, "accepted") == 0) {
@@ -287,7 +283,6 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     // Step 2: Try Cache
     CachePeer peer;
     if (peer_cache_get_peer(orcashi->cache, norm_id, &peer) && peer.online) {
-        // FIXED: No NULL check needed for array
         if (strlen(peer.ip) > 0 && strcmp(peer.ip, "0.0.0.0") != 0) {
             printf("  [ORCA] Found in cache: %s:%d\n", peer.ip, peer.port);
             return orcashi_join_room(orcashi, peer.ip, peer.port);
@@ -320,7 +315,6 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
         }
         
         if (peer_cache_get_peer(orcashi->cache, norm_id, &peer) && peer.online) {
-            // FIXED: No NULL check needed for array
             if (strlen(peer.ip) > 0 && strcmp(peer.ip, "0.0.0.0") != 0) {
                 printf("  [ORCA] Found in cache during search: %s:%d\n", peer.ip, peer.port);
                 return orcashi_join_room(orcashi, peer.ip, peer.port);
