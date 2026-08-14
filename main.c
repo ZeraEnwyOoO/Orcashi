@@ -1,4 +1,5 @@
- #include "orcashi.h"
+ // main.c - Fixed duplicate IP entry in register command
+#include "orcashi.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -344,6 +345,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     else if (strcmp(cmd, "register") == 0) {
+        // ===== FIXED: Register command no longer asks for IP separately =====
         if (orcashi_register_identity(g_orcashi)) {
             printf("Registered!\n");
             printf("ID: %s\n", orcashi_get_my_id(g_orcashi));
@@ -410,7 +412,6 @@ int main(int argc, char* argv[]) {
         orcashi_destroy(g_orcashi);
         return 0;
     }
-    // ===== FIXED: add command with discovery_send_add_request_with_ack =====
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         char* id = argv[2];
         
@@ -441,13 +442,10 @@ int main(int argc, char* argv[]) {
         if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
             registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
             
-            // ===== FIX: Send ADD_REQUEST to peer =====
-            printf("[DEBUG] Sending ADD_REQUEST to %s at %s:%d\n", id, p.ip, p.port);
             discovery_send_add_request_with_ack(g_orcashi->discovery, id, 
                                                g_orcashi->my_id, 
                                                g_orcashi->local_ip, 
                                                ORCASHI_PORT);
-            // ===== END FIX =====
             
             printf("Friend request sent to %s\n", id);
             printf("Use './orcashi peers' to check status\n");
