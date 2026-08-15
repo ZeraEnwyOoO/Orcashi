@@ -107,6 +107,9 @@ int dht_node_start(DHTNode* node, int port) {
         return -1;
     }
     
+    // Small delay to let DHT initialize properly
+    usleep(200000);  // 200ms delay
+    
     bootstrap_connect_dht(node->udp_socket);
     
     node->running = true;
