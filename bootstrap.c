@@ -1,4 +1,5 @@
- #include "bootstrap.h"
+ 
+#include "bootstrap.h"
 #include "dht.h"
 #include <stdio.h>
 #include <string.h>
@@ -67,9 +68,15 @@ int bootstrap_get_node(int index, BootstrapNode* node) {
     return 0;
 }
 
+// ===== FIXED: Check if DHT is initialized before inserting nodes =====
 void bootstrap_connect_dht(int dht_socket) {
     (void)dht_socket;
+    
+    // Small delay to let DHT initialize
+    usleep(100000);  // 100ms delay
+    
     printf("[BOOTSTRAP] Connecting DHT to bootstrap nodes...\n");
+    
     for (int i = 0; i < BOOTSTRAP_NODES; i++) {
         BootstrapNode node;
         if (bootstrap_get_node(i, &node) == 0 && strlen(node.ip) > 0) {
@@ -78,8 +85,15 @@ void bootstrap_connect_dht(int dht_socket) {
             addr.sin_family = AF_INET;
             addr.sin_port = htons(node.port);
             inet_pton(AF_INET, node.ip, &addr.sin_addr);
+            
             printf("[BOOTSTRAP] Inserting node %s:%d\n", node.ip, node.port);
-            dht_insert_node(NULL, (struct sockaddr*)&addr, sizeof(addr));
+            
+            // Try to insert node with error checking
+            int ret = dht_insert_node(NULL, (struct sockaddr*)&addr, sizeof(addr));
+            if (ret < 0) {
+                printf("[BOOTSTRAP] Failed to insert node %s:%d (error: %d)\n", node.ip, node.port, ret);
+            }
         }
     }
 }
+ 
