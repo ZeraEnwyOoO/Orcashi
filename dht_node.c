@@ -1,4 +1,4 @@
-
+ 
 #include "dht_node.h"
 #include "dht.h"
 #include "bootstrap.h"
@@ -12,7 +12,6 @@
 #include <arpa/inet.h>
 #include <time.h>
 
-#define DHT_PORT 33446
 #define DHT_BUF_SIZE 4096
 
 struct DHTNode {
@@ -25,7 +24,6 @@ struct DHTNode {
     char my_orcashi_id[64];
     int my_port;
     bool announced;
-    // Lookup state
     char lookup_id[64];
     char lookup_ip[INET_ADDRSTRLEN];
     int lookup_port;
@@ -44,7 +42,7 @@ DHTNode* dht_node_create(void) {
     if (!node) return NULL;
     
     node->udp_socket = -1;
-    node->port = DHT_PORT;
+    node->port = 33446;
     node->running = false;
     node->announced = false;
     node->lookup_done = false;
@@ -74,7 +72,6 @@ int dht_node_start(DHTNode* node, int port) {
     
     node->port = port;
     
-    // Create UDP socket
     node->udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (node->udp_socket < 0) {
         fprintf(stderr, "[DHT] Failed to create UDP socket: %s\n", strerror(errno));
@@ -97,12 +94,10 @@ int dht_node_start(DHTNode* node, int port) {
         return -1;
     }
     
-    // Generate DHT ID from "Orcashi" + random
     char seed[64];
-    snprintf(seed, sizeof(seed), "Orcashi-%d-%ld", getpid(), time(NULL));
+    snprintf(seed, sizeof(seed), "Orcashi-%d-%lld", getpid(), (long long)time(NULL));
     dht_hash(node->my_dht_id, 20, seed, strlen(seed), NULL, 0, NULL, 0);
     
-    // Initialize DHT
     if (dht_init(node->udp_socket, -1, node->my_dht_id, NULL) < 0) {
         fprintf(stderr, "[DHT] Failed to init DHT: %s\n", strerror(errno));
         close(node->udp_socket);
@@ -110,7 +105,6 @@ int dht_node_start(DHTNode* node, int port) {
         return -1;
     }
     
-    // Connect to bootstrap nodes
     bootstrap_connect_dht(node->udp_socket);
     
     node->running = true;
@@ -167,7 +161,6 @@ static void* dht_node_thread(void* arg) {
             }
         }
         
-        // Periodic DHT maintenance
         dht_periodic(NULL, 0, NULL, 0, &tosleep, dht_node_callback, node);
     }
     
@@ -182,7 +175,6 @@ static void dht_node_callback(void* closure, int event,
     (void)info_hash;
     
     if (event == DHT_EVENT_VALUES || event == DHT_EVENT_VALUES6) {
-        // Found peer!
         const unsigned char* peer_data = (const unsigned char*)data;
         char ip[INET_ADDRSTRLEN];
         int port;
@@ -241,7 +233,6 @@ int dht_node_lookup(DHTNode* node, const char* id, int timeout_sec, char* ip_out
         return 0;
     }
     
-    // Wait for result
     time_t start = time(NULL);
     while (time(NULL) - start < timeout_sec) {
         pthread_mutex_lock(&node->mutex);
@@ -265,3 +256,4 @@ void dht_node_periodic(DHTNode* node) {
     time_t tosleep;
     dht_periodic(NULL, 0, NULL, 0, &tosleep, dht_node_callback, node);
 }
+ 
