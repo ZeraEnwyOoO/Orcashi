@@ -32,6 +32,7 @@ struct DHTNode {
     bool lookup_done;
     time_t lookup_start;
     int lookup_timeout;
+    bool bootstrap_done;
 };
 
 static void* dht_node_thread(void* arg);
@@ -49,6 +50,7 @@ DHTNode* dht_node_create(void) {
     node->announced = false;
     node->lookup_done = false;
     node->lookup_timeout = 20;
+    node->bootstrap_done = false;
     
     pthread_mutex_init(&node->mutex, NULL);
     
@@ -107,11 +109,6 @@ int dht_node_start(DHTNode* node, int port) {
         return -1;
     }
     
-    // Small delay to let DHT initialize properly
-    usleep(200000);  // 200ms delay
-    
-    bootstrap_connect_dht(node->udp_socket);
-    
     node->running = true;
     pthread_create(&node->thread, NULL, dht_node_thread, node);
     
@@ -143,6 +140,9 @@ static void* dht_node_thread(void* arg) {
     time_t tosleep;
     
     printf("[DHT] Thread started\n");
+    
+    // DHT will learn bootstrap nodes automatically via periodic()
+    // No need to manually insert nodes!
     
     while (node->running) {
         FD_ZERO(&fds);
