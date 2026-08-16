@@ -1,5 +1,4 @@
-// ecdh.c - Full implementation of ECDH Key Exchange for Orcashi
-#include "ecdh.h"
+ #include "ecdh.h"
 #include "orca_crypto.h"
 #include <openssl/evp.h>
 #include <openssl/ec.h>
@@ -10,10 +9,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
-
-/* ============================================================================
- * STATIC HELPERS
- * ============================================================================ */
 
 static void set_ecdh_error(const char* msg) {
     orca_clear_error();
@@ -38,10 +33,6 @@ static void zeroize(void* ptr, size_t len) {
     }
 }
 
-/* ============================================================================
- * KEYPAIR MANAGEMENT
- * ============================================================================ */
-
 int orca_ecdh_generate_keypair(OrcaECDHKeypair* keypair_out) {
     if (!keypair_out) {
         set_ecdh_error("NULL pointer in orca_ecdh_generate_keypair");
@@ -50,7 +41,6 @@ int orca_ecdh_generate_keypair(OrcaECDHKeypair* keypair_out) {
     
     openssl_ecdh_init();
     
-    // Create X25519 keypair using EVP
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_X25519, NULL);
     if (!ctx) {
         set_ecdh_error("Failed to create X25519 context");
@@ -71,7 +61,6 @@ int orca_ecdh_generate_keypair(OrcaECDHKeypair* keypair_out) {
     }
     EVP_PKEY_CTX_free(ctx);
     
-    // Extract public key
     size_t pub_len = ORCA_ECDH_PUBLIC_KEY_LEN;
     if (EVP_PKEY_get_raw_public_key(pkey, keypair_out->public_key, &pub_len) <= 0) {
         EVP_PKEY_free(pkey);
@@ -79,7 +68,6 @@ int orca_ecdh_generate_keypair(OrcaECDHKeypair* keypair_out) {
         return -1;
     }
     
-    // Extract private key
     size_t priv_len = ORCA_ECDH_PRIVATE_KEY_LEN;
     if (EVP_PKEY_get_raw_private_key(pkey, keypair_out->private_key, &priv_len) <= 0) {
         EVP_PKEY_free(pkey);
@@ -121,10 +109,6 @@ int orca_ecdh_hex_to_private_key(const char* hex, unsigned char* private_key_out
     return orca_hex_to_bytes(hex, private_key_out, ORCA_ECDH_PRIVATE_KEY_LEN);
 }
 
-/* ============================================================================
- * KEY EXCHANGE
- * ============================================================================ */
-
 int orca_ecdh_compute_shared_secret(const unsigned char* private_key,
                                     const unsigned char* peer_public_key,
                                     unsigned char* shared_secret_out) {
@@ -135,7 +119,6 @@ int orca_ecdh_compute_shared_secret(const unsigned char* private_key,
     
     openssl_ecdh_init();
     
-    // Import private key
     EVP_PKEY* private_pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, NULL,
                                                           private_key,
                                                           ORCA_ECDH_PRIVATE_KEY_LEN);
@@ -144,7 +127,6 @@ int orca_ecdh_compute_shared_secret(const unsigned char* private_key,
         return -1;
     }
     
-    // Import peer public key
     EVP_PKEY* peer_pkey = EVP_PKEY_new_raw_public_key(EVP_PKEY_X25519, NULL,
                                                       peer_public_key,
                                                       ORCA_ECDH_PUBLIC_KEY_LEN);
@@ -154,7 +136,6 @@ int orca_ecdh_compute_shared_secret(const unsigned char* private_key,
         return -1;
     }
     
-    // Compute shared secret
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(private_pkey, NULL);
     if (!ctx) {
         EVP_PKEY_free(private_pkey);
@@ -240,16 +221,11 @@ int orca_ecdh_compute_shared_secret_hex(const char* private_key_hex,
     
     orca_bytes_to_hex(shared_secret, ORCA_ECDH_SHARED_SECRET_LEN, shared_secret_hex_out);
     
-    // Zeroize sensitive data
     zeroize(private_key, ORCA_ECDH_PRIVATE_KEY_LEN);
     zeroize(shared_secret, ORCA_ECDH_SHARED_SECRET_LEN);
     
     return 0;
 }
-
-/* ============================================================================
- * KEY DERIVATION (HKDF)
- * ============================================================================ */
 
 int orca_ecdh_derive_aes_key(const unsigned char* shared_secret,
                              const unsigned char* salt, size_t salt_len,
@@ -262,7 +238,6 @@ int orca_ecdh_derive_aes_key(const unsigned char* shared_secret,
     
     openssl_ecdh_init();
     
-    // Use HKDF to derive AES key
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
     if (!ctx) {
         set_ecdh_error("Failed to create HKDF context");
@@ -281,10 +256,12 @@ int orca_ecdh_derive_aes_key(const unsigned char* shared_secret,
         return -1;
     }
     
-    if (EVP_PKEY_CTX_set1_hkdf_salt(ctx, salt, salt_len) <= 0) {
-        EVP_PKEY_CTX_free(ctx);
-        set_ecdh_error("Failed to set HKDF salt");
-        return -1;
+    if (salt && salt_len > 0) {
+        if (EVP_PKEY_CTX_set1_hkdf_salt(ctx, salt, salt_len) <= 0) {
+            EVP_PKEY_CTX_free(ctx);
+            set_ecdh_error("Failed to set HKDF salt");
+            return -1;
+        }
     }
     
     if (EVP_PKEY_CTX_set1_hkdf_key(ctx, shared_secret, ORCA_ECDH_SHARED_SECRET_LEN) <= 0) {
@@ -293,13 +270,15 @@ int orca_ecdh_derive_aes_key(const unsigned char* shared_secret,
         return -1;
     }
     
-    if (EVP_PKEY_CTX_add1_hkdf_info(ctx, info, info_len) <= 0) {
-        EVP_PKEY_CTX_free(ctx);
-        set_ecdh_error("Failed to set HKDF info");
-        return -1;
+    if (info && info_len > 0) {
+        if (EVP_PKEY_CTX_add1_hkdf_info(ctx, info, info_len) <= 0) {
+            EVP_PKEY_CTX_free(ctx);
+            set_ecdh_error("Failed to set HKDF info");
+            return -1;
+        }
     }
     
-    size_t key_len = ORCA_AES_KEY_LEN;
+    size_t key_len = 32;
     if (EVP_PKEY_derive(ctx, aes_key_out, &key_len) <= 0) {
         EVP_PKEY_CTX_free(ctx);
         set_ecdh_error("Failed to derive AES key");
@@ -308,7 +287,7 @@ int orca_ecdh_derive_aes_key(const unsigned char* shared_secret,
     
     EVP_PKEY_CTX_free(ctx);
     
-    if (key_len != ORCA_AES_KEY_LEN) {
+    if (key_len != 32) {
         set_ecdh_error("Unexpected AES key length");
         return -1;
     }
@@ -342,54 +321,21 @@ int orca_ecdh_derive_aes_key_hex(const char* shared_secret_hex,
         }
     }
     
-    unsigned char aes_key[ORCA_AES_KEY_LEN];
+    unsigned char aes_key[32];
     if (orca_ecdh_derive_aes_key(shared_secret, salt_hex ? salt : NULL,
                                  salt_len, info, info_len, aes_key) < 0) {
         zeroize(shared_secret, ORCA_ECDH_SHARED_SECRET_LEN);
-        zeroize(aes_key, ORCA_AES_KEY_LEN);
+        zeroize(aes_key, 32);
         return -1;
     }
     
-    orca_bytes_to_hex(aes_key, ORCA_AES_KEY_LEN, aes_key_hex_out);
+    orca_bytes_to_hex(aes_key, 32, aes_key_hex_out);
     
     zeroize(shared_secret, ORCA_ECDH_SHARED_SECRET_LEN);
-    zeroize(aes_key, ORCA_AES_KEY_LEN);
+    zeroize(aes_key, 32);
     
     return 0;
 }
-
-int orca_ecdh_derive_keys(const unsigned char* shared_secret,
-                          const unsigned char* salt, size_t salt_len,
-                          int key_count,
-                          unsigned char* keys_out, size_t key_len) {
-    if (!shared_secret || !keys_out || key_count <= 0 || key_len == 0) {
-        set_ecdh_error("NULL pointer or invalid parameters in orca_ecdh_derive_keys");
-        return -1;
-    }
-    
-    openssl_ecdh_init();
-    
-    // Use HKDF with context info for each key
-    for (int i = 0; i < key_count; i++) {
-        unsigned char info[4];
-        info[0] = (i >> 24) & 0xFF;
-        info[1] = (i >> 16) & 0xFF;
-        info[2] = (i >> 8) & 0xFF;
-        info[3] = i & 0xFF;
-        
-        unsigned char* key_out = keys_out + (i * key_len);
-        if (orca_ecdh_derive_aes_key(shared_secret, salt, salt_len,
-                                     info, 4, key_out) < 0) {
-            return -1;
-        }
-    }
-    
-    return 0;
-}
-
-/* ============================================================================
- * SESSION MANAGEMENT
- * ============================================================================ */
 
 int orca_ecdh_session_init(OrcaECDSession* session,
                            bool is_initiator,
@@ -402,21 +348,18 @@ int orca_ecdh_session_init(OrcaECDSession* session,
     memset(session, 0, sizeof(OrcaECDSession));
     session->is_initiator = is_initiator;
     session->created_at = time(NULL);
-    session->expires_at = session->created_at + 3600; // 1 hour default
+    session->expires_at = session->created_at + 3600;
     
-    // Generate ephemeral keypair
     if (orca_ecdh_generate_ephemeral(&session->ephemeral_keypair) < 0) {
         set_ecdh_error("Failed to generate ephemeral keypair");
         return -1;
     }
     
-    // Store peer public key if provided
     if (peer_public_key) {
         memcpy(session->peer_public_key, peer_public_key,
                ORCA_ECDH_PUBLIC_KEY_LEN);
     }
     
-    // Generate session ID from public key
     unsigned char hash[32];
     orca_hash(session->ephemeral_keypair.public_key,
               ORCA_ECDH_PUBLIC_KEY_LEN, hash);
@@ -456,11 +399,9 @@ int orca_ecdh_session_respond(OrcaECDSession* session,
         return -1;
     }
     
-    // Store peer public key
     memcpy(session->peer_public_key, peer_public_key,
            ORCA_ECDH_PUBLIC_KEY_LEN);
     
-    // Compute shared secret
     if (orca_ecdh_compute_shared_secret_keypair(&session->ephemeral_keypair,
                                                 peer_public_key,
                                                 session->shared_secret) < 0) {
@@ -470,7 +411,6 @@ int orca_ecdh_session_respond(OrcaECDSession* session,
     
     session->established = true;
     
-    // Return our public key
     memcpy(public_key_out, session->ephemeral_keypair.public_key,
            ORCA_ECDH_PUBLIC_KEY_LEN);
     
@@ -489,11 +429,9 @@ int orca_ecdh_session_complete(OrcaECDSession* session,
         return -1;
     }
     
-    // Store peer public key
     memcpy(session->peer_public_key, peer_public_key,
            ORCA_ECDH_PUBLIC_KEY_LEN);
     
-    // Compute shared secret
     if (orca_ecdh_compute_shared_secret_keypair(&session->ephemeral_keypair,
                                                 peer_public_key,
                                                 session->shared_secret) < 0) {
@@ -540,10 +478,6 @@ bool orca_ecdh_session_expired(OrcaECDSession* session) {
     return time(NULL) > session->expires_at;
 }
 
-/* ============================================================================
- * KEY SERIALIZATION
- * ============================================================================ */
-
 int orca_ecdh_keypair_to_hex(const OrcaECDHKeypair* keypair,
                              char* public_hex_out,
                              char* private_hex_out) {
@@ -578,130 +512,9 @@ int orca_ecdh_keypair_from_hex(const char* public_hex,
     return 0;
 }
 
-/* ============================================================================
- * PERFECT FORWARD SECRECY
- * ============================================================================ */
-
-int orca_ecdh_generate_pfs_keypair(OrcaECDHKeypair* keypair_out,
-                                   const unsigned char* seed,
-                                   size_t seed_len) {
-    if (!keypair_out) {
-        set_ecdh_error("NULL pointer in orca_ecdh_generate_pfs_keypair");
-        return -1;
-    }
-    
-    // If seed provided, use it to derive keypair
-    if (seed && seed_len > 0) {
-        unsigned char hash[32];
-        orca_hash(seed, seed_len, hash);
-        
-        // Use hash as private key
-        memcpy(keypair_out->private_key, hash, ORCA_ECDH_PRIVATE_KEY_LEN);
-        
-        // Compute public key from private key
-        openssl_ecdh_init();
-        
-        EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, NULL,
-                                                      keypair_out->private_key,
-                                                      ORCA_ECDH_PRIVATE_KEY_LEN);
-        if (!pkey) {
-            set_ecdh_error("Failed to import private key");
-            return -1;
-        }
-        
-        size_t pub_len = ORCA_ECDH_PUBLIC_KEY_LEN;
-        if (EVP_PKEY_get_raw_public_key(pkey, keypair_out->public_key, &pub_len) <= 0) {
-            EVP_PKEY_free(pkey);
-            set_ecdh_error("Failed to extract public key");
-            return -1;
-        }
-        
-        EVP_PKEY_free(pkey);
-        return 0;
-    }
-    
-    // Otherwise generate fresh keypair
-    return orca_ecdh_generate_keypair(keypair_out);
-}
-
-int orca_ecdh_compute_pfs_secret(const unsigned char* private_key,
-                                 const unsigned char* peer_public_key,
-                                 const unsigned char* previous_secret,
-                                 unsigned char* secret_out) {
-    if (!private_key || !peer_public_key || !secret_out) {
-        set_ecdh_error("NULL pointer in orca_ecdh_compute_pfs_secret");
-        return -1;
-    }
-    
-    unsigned char shared_secret[ORCA_ECDH_SHARED_SECRET_LEN];
-    
-    // Compute ECDH shared secret
-    if (orca_ecdh_compute_shared_secret(private_key, peer_public_key,
-                                        shared_secret) < 0) {
-        return -1;
-    }
-    
-    // If previous secret exists, combine with hash
-    if (previous_secret) {
-        unsigned char combined[ORCA_ECDH_SHARED_SECRET_LEN * 2];
-        memcpy(combined, shared_secret, ORCA_ECDH_SHARED_SECRET_LEN);
-        memcpy(combined + ORCA_ECDH_SHARED_SECRET_LEN,
-               previous_secret, ORCA_ECDH_SHARED_SECRET_LEN);
-        
-        orca_hash(combined, ORCA_ECDH_SHARED_SECRET_LEN * 2, secret_out);
-        zeroize(combined, ORCA_ECDH_SHARED_SECRET_LEN * 2);
-    } else {
-        memcpy(secret_out, shared_secret, ORCA_ECDH_SHARED_SECRET_LEN);
-    }
-    
-    zeroize(shared_secret, ORCA_ECDH_SHARED_SECRET_LEN);
-    return 0;
-}
-
-/* ============================================================================
- * DEBUG FUNCTIONS
- * ============================================================================ */
-
-void orca_ecdh_debug_print_keypair(const OrcaECDHKeypair* keypair,
-                                   const char* label) {
-    if (!keypair) return;
-    
-    char hex[65];
-    if (label) printf("[ECDH DEBUG] %s\n", label);
-    printf("  Public Key:  %s\n",
-           orca_ecdh_public_key_to_hex(keypair->public_key, hex));
-    printf("  Private Key: %s\n",
-           orca_ecdh_private_key_to_hex(keypair->private_key, hex));
-}
-
-void orca_ecdh_debug_print_public_key(const unsigned char* public_key,
-                                      const char* label) {
-    if (!public_key) return;
-    
-    char hex[65];
-    if (label) printf("[ECDH DEBUG] %s\n", label);
-    printf("  Public Key: %s\n",
-           orca_ecdh_public_key_to_hex(public_key, hex));
-}
-
-void orca_ecdh_debug_print_shared_secret(const unsigned char* shared_secret,
-                                         const char* label) {
-    if (!shared_secret) return;
-    
-    char hex[65];
-    if (label) printf("[ECDH DEBUG] %s\n", label);
-    printf("  Shared Secret: %s\n",
-           orca_bytes_to_hex(shared_secret, ORCA_ECDH_SHARED_SECRET_LEN, hex));
-}
-
-/* ============================================================================
- * TEST FUNCTIONS
- * ============================================================================ */
-
 int orca_ecdh_test_self(void) {
     printf("[ECDH TEST] Running self-test...\n");
     
-    // Generate two keypairs
     OrcaECDHKeypair alice, bob;
     if (orca_ecdh_generate_keypair(&alice) < 0) {
         printf("[ECDH TEST] FAIL: Alice keypair generation\n");
@@ -712,7 +525,6 @@ int orca_ecdh_test_self(void) {
         return -1;
     }
     
-    // Compute shared secrets
     unsigned char secret_alice[ORCA_ECDH_SHARED_SECRET_LEN];
     unsigned char secret_bob[ORCA_ECDH_SHARED_SECRET_LEN];
     
@@ -728,88 +540,11 @@ int orca_ecdh_test_self(void) {
         return -1;
     }
     
-    // Compare
     if (memcmp(secret_alice, secret_bob, ORCA_ECDH_SHARED_SECRET_LEN) != 0) {
         printf("[ECDH TEST] FAIL: Shared secrets don't match!\n");
         return -1;
     }
     
     printf("[ECDH TEST] SUCCESS: Shared secrets match!\n");
-    
-    // Test key derivation
-    unsigned char aes_key[ORCA_AES_KEY_LEN];
-    if (orca_ecdh_derive_aes_key(secret_alice, NULL, 0, NULL, 0, aes_key) < 0) {
-        printf("[ECDH TEST] FAIL: AES key derivation\n");
-        return -1;
-    }
-    
-    printf("[ECDH TEST] SUCCESS: All tests passed!\n");
-    
-    zeroize(secret_alice, ORCA_ECDH_SHARED_SECRET_LEN);
-    zeroize(secret_bob, ORCA_ECDH_SHARED_SECRET_LEN);
-    zeroize(aes_key, ORCA_AES_KEY_LEN);
-    
-    return 0;
-}
-
-int orca_ecdh_test_vector(void) {
-    printf("[ECDH TEST] Running vector test...\n");
-    
-    // RFC 7748 test vector for X25519
-    // Private key: a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4
-    // Public key: e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c
-    
-    const char* alice_priv_hex =
-        "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4";
-    const char* alice_pub_hex =
-        "e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c";
-    const char* bob_priv_hex =
-        "4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d";
-    const char* bob_pub_hex =
-        "e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493";
-    
-    const char* expected_secret =
-        "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552";
-    
-    unsigned char alice_priv[32], alice_pub[32], bob_priv[32], bob_pub[32];
-    unsigned char alice_secret[32], bob_secret[32];
-    unsigned char expected[32];
-    
-    orca_hex_to_bytes(alice_priv_hex, alice_priv, 32);
-    orca_hex_to_bytes(alice_pub_hex, alice_pub, 32);
-    orca_hex_to_bytes(bob_priv_hex, bob_priv, 32);
-    orca_hex_to_bytes(bob_pub_hex, bob_pub, 32);
-    orca_hex_to_bytes(expected_secret, expected, 32);
-    
-    // Alice computes secret from Bob's public
-    if (orca_ecdh_compute_shared_secret(alice_priv, bob_pub, alice_secret) < 0) {
-        printf("[ECDH TEST] FAIL: Vector computation (Alice)\n");
-        return -1;
-    }
-    
-    // Bob computes secret from Alice's public
-    if (orca_ecdh_compute_shared_secret(bob_priv, alice_pub, bob_secret) < 0) {
-        printf("[ECDH TEST] FAIL: Vector computation (Bob)\n");
-        return -1;
-    }
-    
-    // Check both match expected
-    if (memcmp(alice_secret, expected, 32) != 0) {
-        printf("[ECDH TEST] FAIL: Alice's secret doesn't match expected\n");
-        return -1;
-    }
-    
-    if (memcmp(bob_secret, expected, 32) != 0) {
-        printf("[ECDH TEST] FAIL: Bob's secret doesn't match expected\n");
-        return -1;
-    }
-    
-    printf("[ECDH TEST] SUCCESS: Vector test passed!\n");
-    
-    zeroize(alice_priv, 32);
-    zeroize(bob_priv, 32);
-    zeroize(alice_secret, 32);
-    zeroize(bob_secret, 32);
-    
     return 0;
 }
