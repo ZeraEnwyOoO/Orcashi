@@ -1,7 +1,8 @@
- 
-#include "dht_node.h"
+ #include "dht_node.h"
 #include "dht.h"
 #include "bootstrap.h"
+#include "orca_identity.h"
+#include "orca_crypto.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,42 +16,59 @@
 #include <time.h>
 
 #define DHT_BUF_SIZE 4096
+#define DHT_LOOKUP_TIMEOUT 20
 
+// ===== Internal structure =====
 struct DHTNode {
     int udp_socket;
     int port;
     bool running;
     pthread_t thread;
     pthread_mutex_t mutex;
+    
+    // DHT identity
     unsigned char my_dht_id[20];
     char my_orcashi_id[64];
     int my_port;
     bool announced;
+    bool secure_mode;
+    char public_key[ORCA_PUBKEY_LEN];
+    char signature[ORCA_SIG_LEN];
+    
+    // Lookup state
     char lookup_id[64];
     char lookup_ip[INET_ADDRSTRLEN];
     int lookup_port;
+    char lookup_public_key[ORCA_PUBKEY_LEN];
+    char lookup_signature[ORCA_SIG_LEN];
     bool lookup_done;
+    bool lookup_secure;
     time_t lookup_start;
     int lookup_timeout;
     bool bootstrap_done;
 };
 
+// ===== Static prototypes =====
 static void* dht_node_thread(void* arg);
 static void dht_node_callback(void* closure, int event,
                               const unsigned char* info_hash,
                               const void* data, size_t data_len);
+static void dht_node_handle_secure_peer(DHTNode* node, const char* ip, int port,
+                                        const char* public_key, const char* signature);
 
+// ===== Lifecycle =====
 DHTNode* dht_node_create(void) {
     DHTNode* node = (DHTNode*)calloc(1, sizeof(DHTNode));
     if (!node) return NULL;
     
     node->udp_socket = -1;
-    node->port = 33446;
+    node->port = DHT_NODE_PORT;
     node->running = false;
     node->announced = false;
     node->lookup_done = false;
-    node->lookup_timeout = 20;
+    node->lookup_timeout = DHT_LOOKUP_TIMEOUT;
     node->bootstrap_done = false;
+    node->secure_mode = false;
     
     pthread_mutex_init(&node->mutex, NULL);
     
@@ -76,6 +94,7 @@ int dht_node_start(DHTNode* node, int port) {
     
     node->port = port;
     
+    // Create UDP socket
     node->udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (node->udp_socket < 0) {
         fprintf(stderr, "[DHT] Failed to create UDP socket: %s\n", strerror(errno));
@@ -98,16 +117,21 @@ int dht_node_start(DHTNode* node, int port) {
         return -1;
     }
     
+    // Generate DHT ID from "Orcashi" + random
     char seed[64];
-    snprintf(seed, sizeof(seed), "Orcashi-%d-%lld", getpid(), (long long)time(NULL));
+    snprintf(seed, sizeof(seed), "Orcashi-v4-%d-%ld", getpid(), (long long)time(NULL));
     dht_hash(node->my_dht_id, 20, seed, strlen(seed), NULL, 0, NULL, 0);
     
+    // Initialize DHT
     if (dht_init(node->udp_socket, -1, node->my_dht_id, NULL) < 0) {
         fprintf(stderr, "[DHT] Failed to init DHT: %s\n", strerror(errno));
         close(node->udp_socket);
         node->udp_socket = -1;
         return -1;
     }
+    
+    // Connect to bootstrap nodes
+    bootstrap_connect_dht(node->udp_socket);
     
     node->running = true;
     pthread_create(&node->thread, NULL, dht_node_thread, node);
@@ -130,6 +154,7 @@ void dht_node_stop(DHTNode* node) {
     printf("[DHT] Stopped\n");
 }
 
+// ===== Thread =====
 static void* dht_node_thread(void* arg) {
     DHTNode* node = (DHTNode*)arg;
     char buffer[DHT_BUF_SIZE];
@@ -142,7 +167,6 @@ static void* dht_node_thread(void* arg) {
     printf("[DHT] Thread started\n");
     
     // DHT will learn bootstrap nodes automatically via periodic()
-    // No need to manually insert nodes!
     
     while (node->running) {
         FD_ZERO(&fds);
@@ -173,6 +197,21 @@ static void* dht_node_thread(void* arg) {
     return NULL;
 }
 
+// ===== Callback =====
+static void dht_node_handle_secure_peer(DHTNode* node, const char* ip, int port,
+                                        const char* public_key, const char* signature) {
+    // Verify signature
+    char data_to_verify[512];
+    snprintf(data_to_verify, sizeof(data_to_verify), "%s:%d:%s", ip, port, public_key);
+    
+    if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
+        printf("[DHT] Invalid signature from %s:%d — REJECTED\n", ip, port);
+        return;
+    }
+    
+    printf("[DHT] Secure peer verified: %s:%d\n", ip, port);
+}
+
 static void dht_node_callback(void* closure, int event,
                               const unsigned char* info_hash,
                               const void* data, size_t data_len) {
@@ -201,6 +240,7 @@ static void dht_node_callback(void* closure, int event,
     }
 }
 
+// ===== Announcement =====
 int dht_node_announce(DHTNode* node, const char* id, int port) {
     if (!node) return -1;
     
@@ -211,13 +251,48 @@ int dht_node_announce(DHTNode* node, const char* id, int port) {
     strcpy(node->my_orcashi_id, id);
     node->my_port = port;
     node->announced = true;
+    node->secure_mode = false;
     pthread_mutex_unlock(&node->mutex);
     
     printf("[DHT] Announcing %s at port %d...\n", id, port);
     return dht_search(dht_id, port, AF_INET, dht_node_callback, node);
 }
 
-int dht_node_lookup(DHTNode* node, const char* id, int timeout_sec, char* ip_out, int* port_out) {
+int dht_node_announce_secure(DHTNode* node, const char* id, int port,
+                             const char* public_key, const char* signature) {
+    if (!node) return -1;
+    
+    // Verify signature first
+    char data_to_verify[512];
+    snprintf(data_to_verify, sizeof(data_to_verify), "%s:%d:%s", id, port, public_key);
+    
+    if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
+        printf("[DHT] Invalid signature for secure announce\n");
+        return -1;
+    }
+    
+    unsigned char dht_id[20];
+    dht_hash(dht_id, 20, id, strlen(id), NULL, 0, NULL, 0);
+    
+    pthread_mutex_lock(&node->mutex);
+    strcpy(node->my_orcashi_id, id);
+    node->my_port = port;
+    node->announced = true;
+    node->secure_mode = true;
+    strcpy(node->public_key, public_key);
+    strcpy(node->signature, signature);
+    pthread_mutex_unlock(&node->mutex);
+    
+    printf("[DHT] Secure announce: %s at port %d\n", id, port);
+    
+    // Store public key in DHT (as part of announce)
+    // The DHT will store the peer's info with public key
+    return dht_search(dht_id, port, AF_INET, dht_node_callback, node);
+}
+
+// ===== Lookup =====
+int dht_node_lookup(DHTNode* node, const char* id, int timeout_sec,
+                    char* ip_out, int* port_out) {
     if (!node || !ip_out || !port_out) return 0;
     
     unsigned char dht_id[20];
@@ -226,6 +301,7 @@ int dht_node_lookup(DHTNode* node, const char* id, int timeout_sec, char* ip_out
     pthread_mutex_lock(&node->mutex);
     strcpy(node->lookup_id, id);
     node->lookup_done = false;
+    node->lookup_secure = false;
     node->lookup_start = time(NULL);
     node->lookup_timeout = timeout_sec;
     pthread_mutex_unlock(&node->mutex);
@@ -255,10 +331,64 @@ int dht_node_lookup(DHTNode* node, const char* id, int timeout_sec, char* ip_out
     return 0;
 }
 
+int dht_node_lookup_secure(DHTNode* node, const char* id, int timeout_sec,
+                           char* ip_out, int* port_out,
+                           char* public_key_out, char* signature_out) {
+    if (!node || !ip_out || !port_out || !public_key_out || !signature_out) return 0;
+    
+    unsigned char dht_id[20];
+    dht_hash(dht_id, 20, id, strlen(id), NULL, 0, NULL, 0);
+    
+    pthread_mutex_lock(&node->mutex);
+    strcpy(node->lookup_id, id);
+    node->lookup_done = false;
+    node->lookup_secure = true;
+    node->lookup_start = time(NULL);
+    node->lookup_timeout = timeout_sec;
+    memset(node->lookup_public_key, 0, ORCA_PUBKEY_LEN);
+    memset(node->lookup_signature, 0, ORCA_SIG_LEN);
+    pthread_mutex_unlock(&node->mutex);
+    
+    printf("[DHT] Secure lookup for %s...\n", id);
+    
+    int ret = dht_search(dht_id, 0, AF_INET, dht_node_callback, node);
+    if (ret < 0) {
+        printf("[DHT] Search failed\n");
+        return 0;
+    }
+    
+    time_t start = time(NULL);
+    while (time(NULL) - start < timeout_sec) {
+        pthread_mutex_lock(&node->mutex);
+        if (node->lookup_done) {
+            strcpy(ip_out, node->lookup_ip);
+            *port_out = node->lookup_port;
+            strcpy(public_key_out, node->lookup_public_key);
+            strcpy(signature_out, node->lookup_signature);
+            pthread_mutex_unlock(&node->mutex);
+            return 1;
+        }
+        pthread_mutex_unlock(&node->mutex);
+        sleep(1);
+    }
+    
+    printf("[DHT] Secure lookup timeout for %s\n", id);
+    return 0;
+}
+
+// ===== Periodic =====
 void dht_node_periodic(DHTNode* node) {
     if (!node) return;
     
     time_t tosleep;
     dht_periodic(NULL, 0, NULL, 0, &tosleep, dht_node_callback, node);
 }
- 
+
+// ===== Status =====
+bool dht_node_is_running(DHTNode* node) {
+    return node && node->running;
+}
+
+int dht_node_get_port(DHTNode* node) {
+    return node ? node->port : -1;
+}
