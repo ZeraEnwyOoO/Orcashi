@@ -9,10 +9,6 @@
 extern "C" {
 #endif
 
-/* ============================================================================
- * CONSTANTS
- * ============================================================================ */
-
 #define ORCA_IDENTITY_HOME "/tmp/.orcashi/identity/"
 #define ORCA_IDENTITY_FILE ORCA_IDENTITY_HOME "identity.json"
 #define ORCA_PUBLIC_KEY_FILE ORCA_IDENTITY_HOME "public.pem"
@@ -24,10 +20,6 @@ extern "C" {
 #define ORCA_IDENTITY_VERSION "1.0"
 #define ORCA_PBKDF2_ITERATIONS 100000
 #define ORCA_SALT_LEN 16
-
-/* ============================================================================
- * DATA TYPES
- * ============================================================================ */
 
 typedef enum {
     ORCA_IDENTITY_MODE_NORMAL = 0,
@@ -55,10 +47,6 @@ typedef struct {
     char default_id[ORCA_ID_LEN];
 } OrcaIdentityStore;
 
-/* ============================================================================
- * IDENTITY LIFECYCLE FUNCTIONS
- * ============================================================================ */
-
 int orca_identity_create(const char* name, const char* passcode,
                          const char* role, OrcaIdentity* identity_out);
 int orca_identity_create_normal(const char* id, const char* ip,
@@ -73,10 +61,6 @@ int orca_identity_get_default(char* id_out);
 int orca_identity_set_default(const char* id);
 bool orca_identity_reset(bool force);
 
-/* ============================================================================
- * IDENTITY VERIFICATION FUNCTIONS
- * ============================================================================ */
-
 bool orca_identity_verify(OrcaIdentity* identity);
 bool orca_identity_verify_with_passcode(OrcaIdentity* identity,
                                         const char* passcode);
@@ -85,26 +69,14 @@ int orca_identity_sign_message(OrcaIdentity* identity, const char* message,
 bool orca_identity_verify_message(OrcaIdentity* identity, const char* message,
                                   const char* signature);
 
-/* ============================================================================
- * IDENTITY QUERY FUNCTIONS
- * ============================================================================ */
-
 char* orca_identity_get_id(OrcaIdentity* identity, char* id_out);
 char* orca_identity_get_public_key(OrcaIdentity* identity, char* key_out);
 bool orca_identity_is_secure(OrcaIdentity* identity);
 bool orca_identity_is_normal(OrcaIdentity* identity);
 
-/* ============================================================================
- * IDENTITY CONVERSION FUNCTIONS
- * ============================================================================ */
-
 int orca_identity_from_json(const char* json, OrcaIdentity* identity_out);
 int orca_identity_to_json(OrcaIdentity* identity, char** json_out);
 int orca_identity_to_json_pretty(OrcaIdentity* identity, char** json_out);
-
-/* ============================================================================
- * IDENTITY UTILITY FUNCTIONS
- * ============================================================================ */
 
 char* orca_identity_generate_id(const char* public_key, const char* prefix,
                                 char* id_out);
@@ -113,18 +85,10 @@ bool orca_identity_is_valid_id(const char* id);
 void orca_identity_print(OrcaIdentity* identity);
 void orca_identity_print_short(OrcaIdentity* identity);
 
-/* ============================================================================
- * IDENTITY STORAGE FUNCTIONS
- * ============================================================================ */
-
 int orca_identity_storage_init(void);
 int orca_identity_storage_cleanup(void);
 int orca_identity_list(char*** identities, int* count);
 void orca_identity_free_list(char** identities, int count);
-
-/* ============================================================================
- * IDENTITY PASSCODE FUNCTIONS
- * ============================================================================ */
 
 int orca_identity_change_passcode(const char* id, const char* old_passcode,
                                   const char* new_passcode);
@@ -134,17 +98,9 @@ int orca_identity_derive_key(OrcaIdentity* identity, const char* passcode,
 int orca_identity_derive_key_hex(OrcaIdentity* identity, const char* passcode,
                                  char* key_hex_out);
 
-/* ============================================================================
- * IDENTITY COMPARISON FUNCTIONS
- * ============================================================================ */
-
 int orca_identity_compare(OrcaIdentity* identity1, OrcaIdentity* identity2);
 int orca_identity_compare_by_id(const char* id1, const char* id2);
 bool orca_identity_matches_id(OrcaIdentity* identity, const char* id);
-
-/* ============================================================================
- * IDENTITY DEBUG FUNCTIONS
- * ============================================================================ */
 
 void orca_identity_debug_dump(OrcaIdentity* identity, FILE* fp);
 int orca_identity_debug_verify_storage(void);
@@ -153,4 +109,4 @@ int orca_identity_debug_verify_storage(void);
 }
 #endif
 
-#endif /* ORCA_IDENTITY_H */
+#endif
