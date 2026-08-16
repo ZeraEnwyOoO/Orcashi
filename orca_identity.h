@@ -59,7 +59,7 @@ int orca_identity_delete(const char* id);
 bool orca_identity_exists(const char* id);
 int orca_identity_get_default(char* id_out);
 int orca_identity_set_default(const char* id);
-bool orca_identity_reset(bool force);
+int orca_identity_reset(bool force);
 
 bool orca_identity_verify(OrcaIdentity* identity);
 bool orca_identity_verify_with_passcode(OrcaIdentity* identity,
