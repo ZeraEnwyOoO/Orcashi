@@ -1,4 +1,4 @@
- // orca_identity.c - Full implementation with all fixes
+ // orca_identity.c - Full implementation with all const char* fixes
 #include "orca_identity.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -397,7 +397,7 @@ int orca_identity_get_default(char* id_out) {
         return -1;
     }
     
-    char* pos = strstr(json, "\"default_id\":\"");
+    const char* pos = strstr(json, "\"default_id\":\"");
     if (!pos) {
         free(json);
         set_identity_error("No default_id in metadata");
@@ -405,7 +405,7 @@ int orca_identity_get_default(char* id_out) {
     }
     
     pos += 14;
-    char* end = strchr(pos, '"');
+    const char* end = strchr(pos, '"');
     if (!end) {
         free(json);
         set_identity_error("Malformed metadata");
@@ -567,7 +567,7 @@ bool orca_identity_is_normal(OrcaIdentity* identity) {
 }
 
 /* ============================================================================
- * IDENTITY CONVERSION FUNCTIONS
+ * IDENTITY CONVERSION FUNCTIONS - FIXED with const char*
  * ============================================================================ */
 
 int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
@@ -578,10 +578,10 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
     
     memset(identity_out, 0, sizeof(OrcaIdentity));
     
-    char* pos = strstr(json, "\"id\":\"");
+    const char* pos = strstr(json, "\"id\":\"");
     if (pos) {
         pos += 6;
-        char* end = strchr(pos, '"');
+        const char* end = strchr(pos, '"');
         if (end) {
             int len = end - pos;
             if (len < ORCA_ID_LEN) {
@@ -594,7 +594,7 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
     pos = strstr(json, "\"name\":\"");
     if (pos) {
         pos += 8;
-        char* end = strchr(pos, '"');
+        const char* end = strchr(pos, '"');
         if (end) {
             int len = end - pos;
             if (len < ORCA_NAME_LEN) {
@@ -607,7 +607,7 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
     pos = strstr(json, "\"role\":\"");
     if (pos) {
         pos += 8;
-        char* end = strchr(pos, '"');
+        const char* end = strchr(pos, '"');
         if (end) {
             int len = end - pos;
             if (len < ORCA_ROLE_LEN) {
@@ -626,7 +626,7 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
     pos = strstr(json, "\"version\":\"");
     if (pos) {
         pos += 11;
-        char* end = strchr(pos, '"');
+        const char* end = strchr(pos, '"');
         if (end) {
             int len = end - pos;
             if (len < 16) {
@@ -698,7 +698,7 @@ int orca_identity_to_json(OrcaIdentity* identity, char** json_out) {
         return -1;
     }
     
-    char buffer[4096];
+    char buffer[8192];
     snprintf(buffer, sizeof(buffer),
              "{\n"
              "  \"id\": \"%s\",\n"
@@ -778,7 +778,7 @@ bool orca_identity_is_valid_id(const char* id) {
     }
     
     if (len >= 12 && strncmp(id, "ORCA-", 5) == 0) {
-        for (int i = 5; i < len; i++) {
+        for (int i = 5; i < (int)len; i++) {
             if (!isalnum(id[i])) return false;
         }
         return true;
@@ -815,7 +815,7 @@ void orca_identity_print_short(OrcaIdentity* identity) {
            identity->id,
            identity->name[0] ? identity->name : "anonymous",
            identity->mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL",
-           identity->verified ? "✅" : "❌");
+           identity->verified ? "YES" : "NO");
 }
 
 /* ============================================================================
