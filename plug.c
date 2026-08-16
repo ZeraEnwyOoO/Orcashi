@@ -1,7 +1,9 @@
- // plug.c - Fixed memory leak in receive_loop
+ // plug.c - Full version with secure connection support
 #define _POSIX_C_SOURCE 200809L
 
 #include "plug.h"
+#include "aes_gcm.h"
+#include "orca_crypto.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
@@ -13,11 +15,23 @@
 #include <errno.h>
 
 #define QUEUE_INITIAL_SIZE 100
-#define BUFFER_SIZE 4096
+#define BUFFER_SIZE 8192
+#define HANDSHAKE_TIMEOUT 30
 
 static void* receive_loop(void* arg);
 static void* send_loop(void* arg);
+static void micro_sleep_plug(long microseconds);
+static bool plug_parse_handshake(TCPPlug* plug, const char* msg);
 
+// ===== Utility =====
+static void micro_sleep_plug(long microseconds) {
+    struct timespec ts;
+    ts.tv_sec = microseconds / 1000000;
+    ts.tv_nsec = (microseconds % 1000000) * 1000;
+    nanosleep(&ts, NULL);
+}
+
+// ===== Lifecycle =====
 TCPPlug* plug_create(void) {
     TCPPlug* plug = (TCPPlug*)calloc(1, sizeof(TCPPlug));
     if (!plug) return NULL;
@@ -27,6 +41,8 @@ TCPPlug* plug_create(void) {
     plug->connected = false;
     plug->running = false;
     plug->queue_capacity = QUEUE_INITIAL_SIZE;
+    plug->secure_mode = false;
+    plug->handshake_complete = false;
     
     plug->message_queue = (char**)calloc(QUEUE_INITIAL_SIZE, sizeof(char*));
     plug->send_queue = (char**)calloc(QUEUE_INITIAL_SIZE, sizeof(char*));
@@ -62,6 +78,7 @@ void plug_destroy(TCPPlug* plug) {
     free(plug);
 }
 
+// ===== Server =====
 bool plug_create_server(TCPPlug* plug, int port) {
     if (!plug) return false;
     
@@ -111,6 +128,7 @@ bool plug_create_server(TCPPlug* plug, int port) {
     plug->connected = true;
     plug->running = true;
     
+    // Disable Nagle's algorithm
     int flag = 1;
     setsockopt(plug->client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     
@@ -123,6 +141,7 @@ bool plug_create_server(TCPPlug* plug, int port) {
     return true;
 }
 
+// ===== Client =====
 bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port) {
     if (!plug) return false;
     
@@ -161,114 +180,49 @@ bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port) {
     return true;
 }
 
-// ===== FIXED: receive_loop with proper memory cleanup =====
-static void* receive_loop(void* arg) {
-    TCPPlug* plug = (TCPPlug*)arg;
-    char buffer[BUFFER_SIZE];
-    char* accumulated = (char*)calloc(1, BUFFER_SIZE * 2);
-    if (!accumulated) {
-        return NULL;
-    }
-    int acc_len = 0;
-    fd_set fds;
-    struct timeval tv;
+// ===== Secure Handshake =====
+bool plug_start_handshake(TCPPlug* plug, const char* public_key_hex) {
+    if (!plug || !plug->connected) return false;
     
-    while (plug->running && plug->connected) {
-        FD_ZERO(&fds);
-        FD_SET(plug->client_socket, &fds);
-        tv.tv_sec = 0;
-        tv.tv_usec = 5000;
-        
-        int ret = select(plug->client_socket + 1, &fds, NULL, NULL, &tv);
-        if (ret < 0) break;
-        if (ret == 0) continue;
-        
-        int n = recv(plug->client_socket, buffer, BUFFER_SIZE - 1, 0);
-        if (n <= 0) {
-            plug->connected = false;
-            break;
-        }
-        
-        buffer[n] = '\0';
-        
-        if (acc_len + n < BUFFER_SIZE * 2) {
-            memcpy(accumulated + acc_len, buffer, n);
-            acc_len += n;
-        }
-        
-        char* pos = accumulated;
-        char* newline;
-        while ((newline = strchr(pos, '\n')) != NULL) {
-            *newline = '\0';
-            if (strlen(pos) > 0) {
-                char* msg = (char*)malloc(strlen(pos) + 1);
-                if (msg) {
-                    strcpy(msg, pos);
-                    pthread_mutex_lock(&plug->queue_mutex);
-                    if (plug->message_count < plug->queue_capacity) {
-                        plug->message_queue[plug->message_count++] = msg;
-                    } else {
-                        free(msg);
-                    }
-                    pthread_cond_signal(&plug->queue_cond);
-                    pthread_mutex_unlock(&plug->queue_mutex);
-                }
-            }
-            pos = newline + 1;
-        }
-        
-        if (pos > accumulated) {
-            acc_len = strlen(pos);
-            memmove(accumulated, pos, acc_len + 1);
-        }
-    }
+    char handshake[256];
+    snprintf(handshake, sizeof(handshake), "HANDSHAKE:%s", public_key_hex);
     
-    // ===== FIX: Free accumulated buffer before thread exits =====
-    free(accumulated);
-    return NULL;
+    return plug_send_message(plug, handshake);
 }
 
-static void* send_loop(void* arg) {
-    TCPPlug* plug = (TCPPlug*)arg;
+bool plug_complete_handshake(TCPPlug* plug, const char* peer_public_key_hex) {
+    if (!plug || !plug->connected) return false;
     
-    while (plug->running && plug->connected) {
-        char* msg = NULL;
-        
-        pthread_mutex_lock(&plug->queue_mutex);
-        while (plug->send_count == 0 && plug->running) {
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 1000000;
-            if (ts.tv_nsec >= 1000000000) {
-                ts.tv_sec++;
-                ts.tv_nsec -= 1000000000;
-            }
-            pthread_cond_timedwait(&plug->queue_cond, &plug->queue_mutex, &ts);
-        }
-        
-        if (!plug->running) {
-            pthread_mutex_unlock(&plug->queue_mutex);
-            break;
-        }
-        
-        if (plug->send_count > 0) {
-            msg = plug->send_queue[0];
-            for (int i = 0; i < plug->send_count - 1; i++) {
-                plug->send_queue[i] = plug->send_queue[i + 1];
-            }
-            plug->send_count--;
-        }
-        pthread_mutex_unlock(&plug->queue_mutex);
-        
-        if (msg) {
-            send(plug->client_socket, msg, strlen(msg), MSG_NOSIGNAL);
-            free(msg);
-        }
-    }
+    strcpy(plug->peer_public_key_hex, peer_public_key_hex);
     
-    return NULL;
+    // Derive AES key from shared secret (simplified - in real impl use ECDH)
+    char combined[65];
+    strcpy(combined, peer_public_key_hex);
+    strcat(combined, "shared-secret");
+    
+    unsigned char hash[32];
+    orca_hash_string(combined, hash);
+    orca_bytes_to_hex(hash, 32, plug->aes_key_hex);
+    
+    plug->secure_mode = true;
+    plug->handshake_complete = true;
+    
+    // Send handshake complete
+    plug_send_message(plug, "HANDSHAKE_OK");
+    
+    printf("[PLUG] Secure handshake complete!\n");
+    return true;
 }
 
+bool plug_handshake_complete(TCPPlug* plug) {
+    return plug && plug->handshake_complete && plug->secure_mode;
+}
+
+bool plug_is_secure(TCPPlug* plug) {
+    return plug && plug->secure_mode;
+}
+
+// ===== Messaging =====
 bool plug_send_message(TCPPlug* plug, const char* msg) {
     if (!plug || !plug->connected) return false;
     
@@ -298,6 +252,27 @@ bool plug_send_message(TCPPlug* plug, const char* msg) {
     pthread_mutex_unlock(&plug->queue_mutex);
     
     return true;
+}
+
+bool plug_send_secure_message(TCPPlug* plug, const char* msg, const char* key_hex) {
+    if (!plug || !plug->connected || !key_hex) return false;
+    
+    // Encrypt message using AES-GCM
+    char nonce_hex[25];
+    char tag_hex[33];
+    char* ciphertext_b64 = NULL;
+    
+    if (orca_aes_gcm_encrypt_string(msg, key_hex, nonce_hex, tag_hex, &ciphertext_b64) < 0) {
+        return false;
+    }
+    
+    // Format: SECURE:<nonce>:<tag>:<ciphertext>
+    char secure_msg[BUFFER_SIZE];
+    snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s",
+             nonce_hex, tag_hex, ciphertext_b64);
+    free(ciphertext_b64);
+    
+    return plug_send_message(plug, secure_msg);
 }
 
 bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms) {
@@ -347,6 +322,154 @@ bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms
     return true;
 }
 
+// ===== Receive Loop =====
+static bool plug_parse_handshake(TCPPlug* plug, const char* msg) {
+    // Check for handshake
+    if (strncmp(msg, "HANDSHAKE:", 10) == 0) {
+        const char* pub_key = msg + 10;
+        strcpy(plug->peer_public_key_hex, pub_key);
+        
+        // Send handshake response
+        char response[256];
+        snprintf(response, sizeof(response), "HANDSHAKE_RESPONSE:%s", pub_key);
+        plug_send_message(plug, response);
+        
+        // Complete handshake
+        plug_complete_handshake(plug, pub_key);
+        return true;
+    }
+    
+    if (strncmp(msg, "HANDSHAKE_RESPONSE:", 19) == 0) {
+        const char* pub_key = msg + 19;
+        plug_complete_handshake(plug, pub_key);
+        return true;
+    }
+    
+    if (strcmp(msg, "HANDSHAKE_OK") == 0) {
+        plug->handshake_complete = true;
+        plug->secure_mode = true;
+        return true;
+    }
+    
+    return false;
+}
+
+static void* receive_loop(void* arg) {
+    TCPPlug* plug = (TCPPlug*)arg;
+    char buffer[BUFFER_SIZE];
+    char* accumulated = (char*)calloc(1, BUFFER_SIZE * 2);
+    if (!accumulated) {
+        return NULL;
+    }
+    int acc_len = 0;
+    fd_set fds;
+    struct timeval tv;
+    
+    while (plug->running && plug->connected) {
+        FD_ZERO(&fds);
+        FD_SET(plug->client_socket, &fds);
+        tv.tv_sec = 0;
+        tv.tv_usec = 5000;
+        
+        int ret = select(plug->client_socket + 1, &fds, NULL, NULL, &tv);
+        if (ret < 0) break;
+        if (ret == 0) continue;
+        
+        int n = recv(plug->client_socket, buffer, BUFFER_SIZE - 1, 0);
+        if (n <= 0) {
+            plug->connected = false;
+            break;
+        }
+        
+        buffer[n] = '\0';
+        
+        if (acc_len + n < BUFFER_SIZE * 2) {
+            memcpy(accumulated + acc_len, buffer, n);
+            acc_len += n;
+        }
+        
+        char* pos = accumulated;
+        char* newline;
+        while ((newline = strchr(pos, '\n')) != NULL) {
+            *newline = '\0';
+            if (strlen(pos) > 0) {
+                char* msg = (char*)malloc(strlen(pos) + 1);
+                if (msg) {
+                    strcpy(msg, pos);
+                    
+                    // Check for handshake messages
+                    bool is_handshake = plug_parse_handshake(plug, msg);
+                    
+                    if (!is_handshake) {
+                        pthread_mutex_lock(&plug->queue_mutex);
+                        if (plug->message_count < plug->queue_capacity) {
+                            plug->message_queue[plug->message_count++] = msg;
+                        } else {
+                            free(msg);
+                        }
+                        pthread_cond_signal(&plug->queue_cond);
+                        pthread_mutex_unlock(&plug->queue_mutex);
+                    } else {
+                        free(msg);
+                    }
+                }
+            }
+            pos = newline + 1;
+        }
+        
+        if (pos > accumulated) {
+            acc_len = strlen(pos);
+            memmove(accumulated, pos, acc_len + 1);
+        }
+    }
+    
+    free(accumulated);
+    return NULL;
+}
+
+// ===== Send Loop =====
+static void* send_loop(void* arg) {
+    TCPPlug* plug = (TCPPlug*)arg;
+    
+    while (plug->running && plug->connected) {
+        char* msg = NULL;
+        
+        pthread_mutex_lock(&plug->queue_mutex);
+        while (plug->send_count == 0 && plug->running) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 1000000;
+            if (ts.tv_nsec >= 1000000000) {
+                ts.tv_sec++;
+                ts.tv_nsec -= 1000000000;
+            }
+            pthread_cond_timedwait(&plug->queue_cond, &plug->queue_mutex, &ts);
+        }
+        
+        if (!plug->running) {
+            pthread_mutex_unlock(&plug->queue_mutex);
+            break;
+        }
+        
+        if (plug->send_count > 0) {
+            msg = plug->send_queue[0];
+            for (int i = 0; i < plug->send_count - 1; i++) {
+                plug->send_queue[i] = plug->send_queue[i + 1];
+            }
+            plug->send_count--;
+        }
+        pthread_mutex_unlock(&plug->queue_mutex);
+        
+        if (msg) {
+            send(plug->client_socket, msg, strlen(msg), MSG_NOSIGNAL);
+            free(msg);
+        }
+    }
+    
+    return NULL;
+}
+
+// ===== Connection Management =====
 bool plug_is_connected(TCPPlug* plug) {
     return plug && plug->connected;
 }
@@ -364,6 +487,8 @@ void plug_close_connection(TCPPlug* plug) {
     
     plug->running = false;
     plug->connected = false;
+    plug->handshake_complete = false;
+    plug->secure_mode = false;
     
     if (plug->client_socket >= 0) {
         close(plug->client_socket);
