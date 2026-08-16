@@ -1,10 +1,9 @@
- // aes_gcm.c - Full implementation with OpenSSL 3.0 HKDF fix
+ // aes_gcm.c - Full implementation with OpenSSL 3.0 compatibility
 #include "aes_gcm.h"
 #include "orca_crypto.h"
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
-#include <openssl/kdf.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -454,53 +453,61 @@ int orca_aes_gcm_derive_key_from_shared_secret(const unsigned char* shared_secre
     
     openssl_aes_init();
     
-    // ===== FIX: Use EVP_KDF_CTX for OpenSSL 3.0 =====
-    EVP_KDF_CTX* kctx = EVP_KDF_CTX_new(EVP_KDF_HKDF());
-    if (!kctx) {
+    // ===== FIX: Use EVP_PKEY_HKDF (compatible with OpenSSL 1.1.1 and 3.0) =====
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
+    if (!ctx) {
         set_aes_error("Failed to create HKDF context");
         return -1;
     }
     
-    OSSL_PARAM params[6];
-    int idx = 0;
-    
-    // Set digest
-    params[idx++] = OSSL_PARAM_construct_utf8_string("digest",
-                                                     (char*)"SHA256", 6);
-    
-    // Set salt
-    if (salt && salt_len > 0) {
-        params[idx++] = OSSL_PARAM_construct_octet_string("salt",
-                                                         (void*)salt, salt_len);
-    }
-    
-    // Set key (shared secret)
-    params[idx++] = OSSL_PARAM_construct_octet_string("key",
-                                                     (void*)shared_secret,
-                                                     ORCA_AES_GCM_KEY_LEN);
-    
-    // Set info
-    if (info && info_len > 0) {
-        params[idx++] = OSSL_PARAM_construct_octet_string("info",
-                                                         (void*)info, info_len);
-    }
-    
-    params[idx] = OSSL_PARAM_construct_end();
-    
-    if (EVP_KDF_CTX_set_params(kctx, params) <= 0) {
-        EVP_KDF_CTX_free(kctx);
-        set_aes_error("Failed to set HKDF params");
+    if (EVP_PKEY_derive_init(ctx) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        set_aes_error("Failed to init HKDF");
         return -1;
     }
     
+    if (EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        set_aes_error("Failed to set HKDF digest");
+        return -1;
+    }
+    
+    if (salt && salt_len > 0) {
+        if (EVP_PKEY_CTX_set1_hkdf_salt(ctx, salt, salt_len) <= 0) {
+            EVP_PKEY_CTX_free(ctx);
+            set_aes_error("Failed to set HKDF salt");
+            return -1;
+        }
+    }
+    
+    if (EVP_PKEY_CTX_set1_hkdf_key(ctx, shared_secret, ORCA_AES_GCM_KEY_LEN) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        set_aes_error("Failed to set HKDF key");
+        return -1;
+    }
+    
+    if (info && info_len > 0) {
+        if (EVP_PKEY_CTX_add1_hkdf_info(ctx, info, info_len) <= 0) {
+            EVP_PKEY_CTX_free(ctx);
+            set_aes_error("Failed to set HKDF info");
+            return -1;
+        }
+    }
+    
     size_t key_len = ORCA_AES_GCM_KEY_LEN;
-    if (EVP_KDF_derive(kctx, key_out, key_len, NULL) <= 0) {
-        EVP_KDF_CTX_free(kctx);
+    if (EVP_PKEY_derive(ctx, key_out, &key_len) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
         set_aes_error("Failed to derive AES key");
         return -1;
     }
     
-    EVP_KDF_CTX_free(kctx);
+    EVP_PKEY_CTX_free(ctx);
+    
+    if (key_len != ORCA_AES_GCM_KEY_LEN) {
+        set_aes_error("Unexpected AES key length");
+        return -1;
+    }
+    
     return 0;
 }
 
@@ -579,7 +586,7 @@ void orca_aes_gcm_debug_print_tag(const unsigned char* tag, const char* label) {
 }
 
 /* ============================================================================
- * TEST FUNCTIONS (Simplified)
+ * TEST FUNCTIONS
  * ============================================================================ */
 
 int orca_aes_gcm_test_self(void) {
