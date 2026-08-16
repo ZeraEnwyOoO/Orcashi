@@ -1,4 +1,4 @@
- // orca_identity.c - Full implementation with all const char* fixes
+ // orca_identity.c - Full implementation with 3-digit secure identity support
 #include "orca_identity.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +61,15 @@ static int write_file_content(const char* path, const char* content) {
     fprintf(f, "%s", content);
     fclose(f);
     return 0;
+}
+
+static void zeroize(void* ptr, size_t len) {
+    if (ptr && len > 0) {
+        volatile char* vptr = (volatile char*)ptr;
+        for (size_t i = 0; i < len; i++) {
+            vptr[i] = 0;
+        }
+    }
 }
 
 /* ============================================================================
@@ -161,6 +170,145 @@ int orca_identity_create(const char* name, const char* passcode,
     strcpy(identity_out->signature, signature);
     free(signature);
     
+    if (!orca_identity_verify(identity_out)) {
+        free(public_key);
+        free(private_key);
+        set_identity_error("Identity verification failed after creation");
+        return -1;
+    }
+    identity_out->verified = true;
+    
+    free(public_key);
+    free(private_key);
+    return 0;
+}
+
+/* ============================================================================
+ * NEW: 3-DIGIT SECURE IDENTITY CREATION
+ *
+ * Creates a secure identity with:
+ *   - RSA 2048-bit keypair
+ *   - User-provided 3-digit ID (e.g., "<075>")
+ *   - ID is cryptographically bound to public key via signature
+ *   - Private key encrypted with passcode-derived key (AES-256-CBC)
+ *   - Password is NOT stored anywhere
+ * ============================================================================ */
+
+int orca_identity_create_secure_3digit(const char* id, const char* passcode,
+                                       const char* name, const char* role,
+                                       OrcaIdentity* identity_out) {
+    if (!id || !passcode || !identity_out) {
+        set_identity_error("NULL pointer in orca_identity_create_secure_3digit");
+        return -1;
+    }
+    
+    /* Validate 3-digit ID format: "<075>" */
+    if (strlen(id) != 5 || id[0] != '<' || id[4] != '>' ||
+        !isdigit(id[1]) || !isdigit(id[2]) || !isdigit(id[3])) {
+        set_identity_error("Invalid 3-digit ID format. Use '<XXX>' where X is digit");
+        return -1;
+    }
+    
+    if (strlen(passcode) < 8) {
+        set_identity_error("Passcode must be at least 8 characters");
+        return -1;
+    }
+    
+    memset(identity_out, 0, sizeof(OrcaIdentity));
+    
+    /* 1. Generate RSA keypair */
+    char* public_key = NULL;
+    char* private_key = NULL;
+    if (orca_rsa_generate_keypair(&public_key, &private_key) < 0) {
+        set_identity_error("Failed to generate RSA keypair");
+        return -1;
+    }
+    
+    /* 2. Generate salt for KDF */
+    char salt_hex[33];
+    if (orca_generate_salt_hex(salt_hex) < 0) {
+        free(public_key);
+        free(private_key);
+        set_identity_error("Failed to generate salt");
+        return -1;
+    }
+    strcpy(identity_out->salt_hex, salt_hex);
+    
+    /* 3. Derive encryption key from passcode */
+    unsigned char key[ORCA_AES_KEY_LEN];
+    if (orca_derive_key_from_passcode_hex(passcode, salt_hex,
+                                          ORCA_PBKDF2_ITERATIONS, (char*)key) < 0) {
+        free(public_key);
+        free(private_key);
+        zeroize(key, ORCA_AES_KEY_LEN);
+        set_identity_error("Failed to derive key from passcode");
+        return -1;
+    }
+    
+    /* 4. Encrypt private key with AES-256-CBC */
+    unsigned char iv[ORCA_AES_IV_LEN];
+    unsigned char* ciphertext = NULL;
+    size_t ciphertext_len = 0;
+    if (orca_aes_cbc_encrypt((const unsigned char*)private_key, strlen(private_key),
+                             key, iv, &ciphertext, &ciphertext_len) < 0) {
+        free(public_key);
+        free(private_key);
+        zeroize(key, ORCA_AES_KEY_LEN);
+        set_identity_error("Failed to encrypt private key");
+        return -1;
+    }
+    zeroize(key, ORCA_AES_KEY_LEN);
+    
+    char combined[ORCA_ENCRYPTED_LEN];
+    char iv_hex[33];
+    orca_bytes_to_hex(iv, ORCA_AES_IV_LEN, iv_hex);
+    char* ciphertext_b64 = orca_base64_encode(ciphertext, ciphertext_len);
+    snprintf(combined, sizeof(combined), "%s:%s", iv_hex, ciphertext_b64);
+    free(ciphertext);
+    free(ciphertext_b64);
+    
+    /* 5. Set identity fields */
+    strcpy(identity_out->id, id);
+    
+    if (name) {
+        strncpy(identity_out->name, name, ORCA_NAME_LEN - 1);
+        identity_out->name[ORCA_NAME_LEN - 1] = '\0';
+    } else {
+        strcpy(identity_out->name, "orcashi");
+    }
+    
+    if (role) {
+        strncpy(identity_out->role, role, ORCA_ROLE_LEN - 1);
+        identity_out->role[ORCA_ROLE_LEN - 1] = '\0';
+    } else {
+        strcpy(identity_out->role, "user");
+    }
+    
+    strcpy(identity_out->public_key, public_key);
+    strcpy(identity_out->private_key_encrypted, combined);
+    identity_out->mode = ORCA_IDENTITY_MODE_SECURE;
+    identity_out->created_at = time(NULL);
+    identity_out->last_used = identity_out->created_at;
+    identity_out->verified = false;
+    strcpy(identity_out->version, ORCA_IDENTITY_VERSION);
+    
+    /* 6. Sign identity data (ID is included in signature!) */
+    char data_to_sign[1024];
+    snprintf(data_to_sign, sizeof(data_to_sign), "%s|%s|%s|%ld",
+             identity_out->id, identity_out->name, identity_out->role,
+             (long)identity_out->created_at);
+    
+    char* signature = NULL;
+    if (orca_rsa_sign_string(data_to_sign, private_key, &signature) < 0) {
+        free(public_key);
+        free(private_key);
+        set_identity_error("Failed to sign identity");
+        return -1;
+    }
+    strcpy(identity_out->signature, signature);
+    free(signature);
+    
+    /* 7. Verify identity */
     if (!orca_identity_verify(identity_out)) {
         free(public_key);
         free(private_key);
@@ -476,17 +624,25 @@ bool orca_identity_verify_with_passcode(OrcaIdentity* identity,
     char ciphertext_b64[ORCA_ENCRYPTED_LEN];
     
     char* colon = strchr(identity->private_key_encrypted, ':');
-    if (!colon) return false;
+    if (!colon) {
+        zeroize(key, ORCA_AES_KEY_LEN);
+        return false;
+    }
     
     int iv_len = colon - identity->private_key_encrypted;
-    if (iv_len >= 33) return false;
+    if (iv_len >= 33) {
+        zeroize(key, ORCA_AES_KEY_LEN);
+        return false;
+    }
     strncpy(iv_hex, identity->private_key_encrypted, iv_len);
     iv_hex[iv_len] = '\0';
     strcpy(ciphertext_b64, colon + 1);
     
     if (orca_aes_cbc_decrypt_string(ciphertext_b64, iv_hex, (char*)key, &private_key) < 0) {
+        zeroize(key, ORCA_AES_KEY_LEN);
         return false;
     }
+    zeroize(key, ORCA_AES_KEY_LEN);
     
     char test_data[] = "test";
     char* signature = NULL;
@@ -567,7 +723,7 @@ bool orca_identity_is_normal(OrcaIdentity* identity) {
 }
 
 /* ============================================================================
- * IDENTITY CONVERSION FUNCTIONS - FIXED with const char*
+ * IDENTITY CONVERSION FUNCTIONS
  * ============================================================================ */
 
 int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
@@ -791,22 +947,22 @@ void orca_identity_print(OrcaIdentity* identity) {
     if (!identity) return;
     
     printf("\n");
-    printf("╔═══════════════════════════════════════════════════════════════════╗\n");
-    printf("║                    ORCA IDENTITY                                 ║\n");
-    printf("╠═══════════════════════════════════════════════════════════════════╣\n");
-    printf("║  ID        : %s\n", identity->id);
-    printf("║  Name      : %s\n", identity->name[0] ? identity->name : "(none)");
-    printf("║  Role      : %s\n", identity->role);
-    printf("║  Mode      : %s\n", identity->mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL");
-    printf("║  Version   : %s\n", identity->version);
-    printf("║  Created   : %s", ctime(&identity->created_at));
-    printf("║  Last Used : %s", ctime(&identity->last_used));
-    printf("║  Verified  : %s\n", identity->verified ? "YES" : "NO");
-    printf("║  Public Key: %.50s...\n", identity->public_key);
+    printf("+-----------------------------------------------------------+\n");
+    printf("|                    ORCA IDENTITY                           |\n");
+    printf("+-----------------------------------------------------------+\n");
+    printf("|  ID        : %s\n", identity->id);
+    printf("|  Name      : %s\n", identity->name[0] ? identity->name : "(none)");
+    printf("|  Role      : %s\n", identity->role);
+    printf("|  Mode      : %s\n", identity->mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL");
+    printf("|  Version   : %s\n", identity->version);
+    printf("|  Created   : %s", ctime(&identity->created_at));
+    printf("|  Last Used : %s", ctime(&identity->last_used));
+    printf("|  Verified  : %s\n", identity->verified ? "YES" : "NO");
+    printf("|  Public Key: %.50s...\n", identity->public_key);
     if (identity->mode == ORCA_IDENTITY_MODE_SECURE) {
-        printf("║  Signature  : %.20s...\n", identity->signature);
+        printf("|  Signature  : %.20s...\n", identity->signature);
     }
-    printf("╚═══════════════════════════════════════════════════════════════════╝\n");
+    printf("+-----------------------------------------------------------+\n");
 }
 
 void orca_identity_print_short(OrcaIdentity* identity) {
@@ -922,6 +1078,7 @@ int orca_identity_change_passcode(const char* id, const char* old_passcode,
     char old_cipher_b64[ORCA_ENCRYPTED_LEN];
     char* colon = strchr(identity.private_key_encrypted, ':');
     if (!colon) {
+        zeroize(new_key, ORCA_AES_KEY_LEN);
         set_identity_error("Malformed encrypted private key");
         return -1;
     }
@@ -934,6 +1091,7 @@ int orca_identity_change_passcode(const char* id, const char* old_passcode,
     char* private_key = NULL;
     if (orca_aes_cbc_decrypt_string(old_cipher_b64, old_iv_hex,
                                     (char*)old_passcode, &private_key) < 0) {
+        zeroize(new_key, ORCA_AES_KEY_LEN);
         set_identity_error("Failed to decrypt private key");
         return -1;
     }
@@ -944,9 +1102,11 @@ int orca_identity_change_passcode(const char* id, const char* old_passcode,
     if (orca_aes_cbc_encrypt((const unsigned char*)private_key, strlen(private_key),
                              new_key, new_iv, &new_ciphertext, &new_ciphertext_len) < 0) {
         free(private_key);
+        zeroize(new_key, ORCA_AES_KEY_LEN);
         set_identity_error("Failed to re-encrypt private key");
         return -1;
     }
+    zeroize(new_key, ORCA_AES_KEY_LEN);
     
     char new_iv_hex[33];
     orca_bytes_to_hex(new_iv, ORCA_AES_IV_LEN, new_iv_hex);
