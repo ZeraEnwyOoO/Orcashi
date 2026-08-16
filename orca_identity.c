@@ -1,4 +1,4 @@
-// orca_identity.c - Full implementation of ORCA Identity Management
+ // orca_identity.c - Full implementation of ORCA Identity Management
 #include "orca_identity.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,16 +9,14 @@
 #include <dirent.h>
 #include <errno.h>
 #include <time.h>
-#include <ctype.h>
+#include <ctype.h>   // ← FIX: Added for isdigit, isalnum
 
 /* ============================================================================
  * STATIC HELPERS
  * ============================================================================ */
 
 static void set_identity_error(const char* msg) {
-    // Use orca_crypto's error system
     orca_clear_error();
-    // Simple fallback - just log
     fprintf(stderr, "[ORCA IDENTITY ERROR] %s\n", msg);
 }
 
@@ -30,7 +28,6 @@ static int ensure_directory(const char* path) {
         return -1;
     }
     
-    // Create directory with 0700 permissions
     if (mkdir(path, 0700) != 0) {
         set_identity_error("Failed to create identity directory");
         return -1;
@@ -84,7 +81,6 @@ int orca_identity_create(const char* name, const char* passcode,
     
     memset(identity_out, 0, sizeof(OrcaIdentity));
     
-    // Generate RSA keypair
     char* public_key = NULL;
     char* private_key = NULL;
     if (orca_rsa_generate_keypair(&public_key, &private_key) < 0) {
@@ -92,7 +88,6 @@ int orca_identity_create(const char* name, const char* passcode,
         return -1;
     }
     
-    // Generate salt
     char salt_hex[33];
     if (orca_generate_salt_hex(salt_hex) < 0) {
         free(public_key);
@@ -102,7 +97,6 @@ int orca_identity_create(const char* name, const char* passcode,
     }
     strcpy(identity_out->salt_hex, salt_hex);
     
-    // Derive key from passcode
     unsigned char key[ORCA_AES_KEY_LEN];
     if (orca_derive_key_from_passcode_hex(passcode, salt_hex,
                                           ORCA_PBKDF2_ITERATIONS, (char*)key) < 0) {
@@ -112,7 +106,6 @@ int orca_identity_create(const char* name, const char* passcode,
         return -1;
     }
     
-    // Encrypt private key with AES
     unsigned char iv[ORCA_AES_IV_LEN];
     unsigned char* ciphertext;
     size_t ciphertext_len;
@@ -124,7 +117,6 @@ int orca_identity_create(const char* name, const char* passcode,
         return -1;
     }
     
-    // Store encrypted private key with IV prepended
     char combined[ORCA_ENCRYPTED_LEN];
     char iv_hex[33];
     orca_bytes_to_hex(iv, ORCA_AES_IV_LEN, iv_hex);
@@ -133,7 +125,6 @@ int orca_identity_create(const char* name, const char* passcode,
     free(ciphertext);
     free(ciphertext_b64);
     
-    // Build identity
     if (name) {
         strncpy(identity_out->name, name, ORCA_NAME_LEN - 1);
         identity_out->name[ORCA_NAME_LEN - 1] = '\0';
@@ -153,10 +144,8 @@ int orca_identity_create(const char* name, const char* passcode,
     identity_out->verified = false;
     strcpy(identity_out->version, ORCA_IDENTITY_VERSION);
     
-    // Generate ID from public key
     orca_identity_generate_id(public_key, "ORCA-", identity_out->id);
     
-    // Self-sign the identity
     char data_to_sign[1024];
     snprintf(data_to_sign, sizeof(data_to_sign), "%s|%s|%s|%ld",
              identity_out->id, identity_out->name, identity_out->role,
@@ -172,7 +161,6 @@ int orca_identity_create(const char* name, const char* passcode,
     strcpy(identity_out->signature, signature);
     free(signature);
     
-    // Verify the identity we just created
     if (!orca_identity_verify(identity_out)) {
         free(public_key);
         free(private_key);
@@ -212,7 +200,6 @@ int orca_identity_load(OrcaIdentity* identity_out, const char* passcode) {
         return -1;
     }
     
-    // Load from default location
     char* json = read_file_content(ORCA_IDENTITY_FILE);
     if (!json) {
         set_identity_error("No identity file found");
@@ -226,7 +213,6 @@ int orca_identity_load(OrcaIdentity* identity_out, const char* passcode) {
     }
     free(json);
     
-    // If secure mode, decrypt private key with passcode
     if (identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         if (!passcode) {
             set_identity_error("Passcode required for secure identity");
@@ -253,14 +239,12 @@ int orca_identity_load_by_id(const char* id, OrcaIdentity* identity_out,
         return -1;
     }
     
-    // List all identities
     char** identities = NULL;
     int count = 0;
     if (orca_identity_list(&identities, &count) < 0) {
         return -1;
     }
     
-    // Find matching ID
     int found = -1;
     for (int i = 0; i < count; i++) {
         if (strcmp(identities[i], id) == 0) {
@@ -275,7 +259,6 @@ int orca_identity_load_by_id(const char* id, OrcaIdentity* identity_out,
         return -1;
     }
     
-    // Load the identity
     char path[512];
     snprintf(path, sizeof(path), "%s%s/identity.json", ORCA_IDENTITY_HOME, id);
     char* json = read_file_content(path);
@@ -293,7 +276,6 @@ int orca_identity_load_by_id(const char* id, OrcaIdentity* identity_out,
     }
     free(json);
     
-    // Verify with passcode if secure
     if (identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         if (!passcode) {
             set_identity_error("Passcode required for secure identity");
@@ -335,7 +317,6 @@ int orca_identity_save(OrcaIdentity* identity) {
     }
     free(json);
     
-    // Save individual files
     if (write_file_content(ORCA_PUBLIC_KEY_FILE, identity->public_key) < 0) {
         set_identity_error("Failed to write public key file");
         return -1;
@@ -374,7 +355,6 @@ int orca_identity_delete(const char* id) {
         return -1;
     }
     
-    // Remove all files in the directory
     DIR* dir = opendir(path);
     if (dir) {
         struct dirent* entry;
@@ -400,7 +380,6 @@ bool orca_identity_exists(const char* id) {
         struct stat st;
         return (stat(path, &st) == 0);
     } else {
-        // Check default location
         struct stat st;
         return (stat(ORCA_IDENTITY_FILE, &st) == 0);
     }
@@ -418,7 +397,6 @@ int orca_identity_get_default(char* id_out) {
         return -1;
     }
     
-    // Parse JSON to get default ID
     char* pos = strstr(json, "\"default_id\":\"");
     if (!pos) {
         free(json);
@@ -487,19 +465,16 @@ bool orca_identity_verify_with_passcode(OrcaIdentity* identity,
                                         const char* passcode) {
     if (!identity || !passcode) return false;
     
-    // Derive key from passcode
     unsigned char key[ORCA_AES_KEY_LEN];
     if (orca_derive_key_from_passcode_hex(passcode, identity->salt_hex,
                                           ORCA_PBKDF2_ITERATIONS, (char*)key) < 0) {
         return false;
     }
     
-    // Decrypt private key
     char* private_key = NULL;
     char iv_hex[33];
     char ciphertext_b64[ORCA_ENCRYPTED_LEN];
     
-    // Parse combined format: iv_hex:ciphertext_b64
     char* colon = strchr(identity->private_key_encrypted, ':');
     if (!colon) return false;
     
@@ -509,13 +484,10 @@ bool orca_identity_verify_with_passcode(OrcaIdentity* identity,
     iv_hex[iv_len] = '\0';
     strcpy(ciphertext_b64, colon + 1);
     
-    // Decrypt
     if (orca_aes_cbc_decrypt_string(ciphertext_b64, iv_hex, (char*)key, &private_key) < 0) {
         return false;
     }
     
-    // Verify the decrypted private key matches the public key
-    // Simple check: try to sign and verify
     char test_data[] = "test";
     char* signature = NULL;
     if (orca_rsa_sign_string(test_data, private_key, &signature) < 0) {
@@ -542,7 +514,6 @@ int orca_identity_sign_message(OrcaIdentity* identity, const char* message,
         return -1;
     }
     
-    // Parse private key from encrypted storage
     char iv_hex[33];
     char ciphertext_b64[ORCA_ENCRYPTED_LEN];
     char* colon = strchr(identity->private_key_encrypted, ':');
@@ -556,7 +527,6 @@ int orca_identity_sign_message(OrcaIdentity* identity, const char* message,
     iv_hex[iv_len] = '\0';
     strcpy(ciphertext_b64, colon + 1);
     
-    // Decrypt private key (need passcode - stored separately)
     set_identity_error("Private key decryption requires passcode");
     return -1;
 }
@@ -566,7 +536,7 @@ bool orca_identity_verify_message(OrcaIdentity* identity, const char* message,
     if (!identity || !message || !signature) return false;
     
     if (identity->mode == ORCA_IDENTITY_MODE_NORMAL) {
-        return true;  // Normal mode trusts everything (legacy)
+        return true;
     }
     
     return orca_rsa_verify_string(message, signature, identity->public_key);
@@ -684,7 +654,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         identity_out->verified = (strstr(pos, "true") != NULL);
     }
     
-    // Load public key from file if not in JSON
     if (strlen(identity_out->public_key) == 0) {
         char* pubkey = read_file_content(ORCA_PUBLIC_KEY_FILE);
         if (pubkey) {
@@ -693,7 +662,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    // Load encrypted private key from file if not in JSON
     if (strlen(identity_out->private_key_encrypted) == 0 &&
         identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         char* privkey = read_file_content(ORCA_PRIVATE_KEY_FILE);
@@ -703,7 +671,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    // Load signature from file if not in JSON
     if (strlen(identity_out->signature) == 0 &&
         identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         char* sig = read_file_content(ORCA_SIGNATURE_FILE);
@@ -713,7 +680,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    // Load salt from file if not in JSON
     if (strlen(identity_out->salt_hex) == 0 &&
         identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         char* salt = read_file_content(ORCA_SALT_FILE);
@@ -804,18 +770,16 @@ bool orca_identity_is_valid_id(const char* id) {
     if (!id) return false;
     size_t len = strlen(id);
     
-    // Normal mode: <XXX> where X is digit
     if (len == 5 && id[0] == '<' && id[4] == '>') {
         for (int i = 1; i < 4; i++) {
-            if (!isdigit(id[i])) return false;
+            if (!isdigit(id[i])) return false;  // ← isdigit now works with <ctype.h>
         }
         return true;
     }
     
-    // Secure mode: ORCA-XXXXXXXX
     if (len >= 12 && strncmp(id, "ORCA-", 5) == 0) {
         for (int i = 5; i < len; i++) {
-            if (!isalnum(id[i])) return false;
+            if (!isalnum(id[i])) return false;  // ← isalnum now works with <ctype.h>
         }
         return true;
     }
@@ -866,7 +830,6 @@ int orca_identity_storage_init(void) {
 }
 
 int orca_identity_storage_cleanup(void) {
-    // Remove identity directory if empty
     rmdir(ORCA_IDENTITY_HOME);
     return 0;
 }
@@ -882,7 +845,7 @@ int orca_identity_list(char*** identities, int* count) {
     
     DIR* dir = opendir(ORCA_IDENTITY_HOME);
     if (!dir) {
-        return 0;  // No directory yet
+        return 0;
     }
     
     struct dirent* entry;
@@ -942,14 +905,12 @@ int orca_identity_change_passcode(const char* id, const char* old_passcode,
         return -1;
     }
     
-    // Generate new salt
     char new_salt_hex[33];
     if (orca_generate_salt_hex(new_salt_hex) < 0) {
         set_identity_error("Failed to generate new salt");
         return -1;
     }
     
-    // Derive new key
     unsigned char new_key[ORCA_AES_KEY_LEN];
     if (orca_derive_key_from_passcode_hex(new_passcode, new_salt_hex,
                                           ORCA_PBKDF2_ITERATIONS, (char*)new_key) < 0) {
@@ -957,7 +918,6 @@ int orca_identity_change_passcode(const char* id, const char* old_passcode,
         return -1;
     }
     
-    // Decrypt old private key
     char old_iv_hex[33];
     char old_cipher_b64[ORCA_ENCRYPTED_LEN];
     char* colon = strchr(identity.private_key_encrypted, ':');
@@ -978,7 +938,6 @@ int orca_identity_change_passcode(const char* id, const char* old_passcode,
         return -1;
     }
     
-    // Re-encrypt with new key
     unsigned char new_iv[ORCA_AES_IV_LEN];
     unsigned char* new_ciphertext;
     size_t new_ciphertext_len;
@@ -1001,7 +960,6 @@ int orca_identity_change_passcode(const char* id, const char* old_passcode,
     
     free(private_key);
     
-    // Save updated identity
     if (orca_identity_save(&identity) < 0) {
         set_identity_error("Failed to save updated identity");
         return -1;
@@ -1067,6 +1025,44 @@ bool orca_identity_matches_id(OrcaIdentity* identity, const char* id) {
 }
 
 /* ============================================================================
+ * IDENTITY RESET FUNCTION
+ * ============================================================================ */
+
+int orca_identity_reset(bool force) {
+    if (!force) {
+        fprintf(stderr, "ERROR: Use --force to reset identity\n");
+        return -1;
+    }
+    
+    printf("WARNING: This will permanently delete your identity!\n");
+    printf("Type 'yes' to confirm: ");
+    fflush(stdout);
+    
+    char confirm[16];
+    if (!fgets(confirm, sizeof(confirm), stdin)) {
+        printf("Cancelled\n");
+        return -1;
+    }
+    confirm[strcspn(confirm, "\n")] = '\0';
+    
+    if (strcmp(confirm, "yes") != 0) {
+        printf("Cancelled\n");
+        return -1;
+    }
+    
+    unlink(ORCA_IDENTITY_FILE);
+    unlink(ORCA_PUBLIC_KEY_FILE);
+    unlink(ORCA_PRIVATE_KEY_FILE);
+    unlink(ORCA_SIGNATURE_FILE);
+    unlink(ORCA_SALT_FILE);
+    unlink(ORCA_METADATA_FILE);
+    rmdir(ORCA_IDENTITY_HOME);
+    
+    printf("Identity reset successfully\n");
+    return 0;
+}
+
+/* ============================================================================
  * IDENTITY DEBUG FUNCTIONS
  * ============================================================================ */
 
@@ -1091,7 +1087,6 @@ void orca_identity_debug_dump(OrcaIdentity* identity, FILE* fp) {
 }
 
 int orca_identity_debug_verify_storage(void) {
-    // Check if identity file exists and is valid
     if (!orca_identity_exists(NULL)) {
         fprintf(stderr, "No identity found\n");
         return -1;
