@@ -56,7 +56,6 @@ void show_help(void) {
 #define PID_FILE "/tmp/.orcashi/orcashi.pid"
 #define LOG_FILE "/tmp/.orcashi/orcashi.log"
 
-// ===== NORMAL REGISTRATION (Legacy 3-digit ID) =====
 static int register_normal(ORCASHI* orcashi) {
     printf("\n");
     printf("╔═══════════════════════════════════════════════════════════════════════╗\n");
@@ -117,7 +116,6 @@ static int register_normal(ORCASHI* orcashi) {
     return 0;
 }
 
-// ===== SECURE REGISTRATION (RSA + Passcode) =====
 static int register_secure(ORCASHI* orcashi) {
     printf("\n");
     printf("╔═══════════════════════════════════════════════════════════════════════╗\n");
@@ -358,7 +356,6 @@ void chat_loop(void) {
     }
 }
 
-// ===== SIMPLE answer function (works on iSH) =====
 static int get_answer(const char* prompt, char* answer, size_t size) {
     printf("%s", prompt);
     fflush(stdout);
@@ -498,7 +495,6 @@ int main(int argc, char* argv[]) {
         is_daemon = 1;
     }
     
-    // ===== REGISTER COMMAND =====
     if (strcmp(cmd, "register") == 0) {
         printf("\n");
         printf("╔═══════════════════════════════════════════════════════════════════════╗\n");
@@ -537,7 +533,6 @@ int main(int argc, char* argv[]) {
         return reg_result;
     }
     
-    // ===== IDENTITY COMMAND =====
     else if (strcmp(cmd, "identity") == 0) {
         OrcaIdentity identity;
         if (orca_identity_load(&identity, NULL) < 0) {
@@ -550,10 +545,10 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== RESET COMMAND =====
+    // ===== FIXED: reset command with proper comparison =====
     else if (strcmp(cmd, "reset") == 0) {
         bool force = (argc >= 3 && strcmp(argv[2], "--force") == 0);
-        if (orca_identity_reset(force) < 0) {
+        if (orca_identity_reset(force) != 0) {
             orcashi_destroy(g_orcashi);
             return 1;
         }
@@ -561,7 +556,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== MY_IP COMMAND =====
     else if (strcmp(cmd, "my_ip") == 0 && argc >= 3) {
         char* new_ip = argv[2];
         struct sockaddr_in sa;
@@ -576,7 +570,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== CREATE COMMAND =====
     else if (strcmp(cmd, "create") == 0) {
         printf("Creating room on port 9000...\n");
         if (!orcashi_create_room(g_orcashi, 9000)) {
@@ -605,7 +598,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== JOIN COMMAND =====
     else if (strcmp(cmd, "join") == 0 && argc >= 3) {
         char* target = argv[2];
         
@@ -640,7 +632,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== LISTEN COMMAND =====
     else if (strcmp(cmd, "listen") == 0) {
         printf("Listening for connection requests...\n");
         printf("Press Ctrl+C to stop\n");
@@ -694,7 +685,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== ADD COMMAND =====
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         char* id = argv[2];
         
@@ -739,7 +729,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== ACCEPT COMMAND =====
     else if (strcmp(cmd, "accept") == 0 && argc >= 3) {
         char* id = argv[2];
         
@@ -754,7 +743,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== REJECT COMMAND =====
     else if (strcmp(cmd, "reject") == 0 && argc >= 3) {
         char* id = argv[2];
         
@@ -769,14 +757,12 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== PEERS COMMAND =====
     else if (strcmp(cmd, "peers") == 0) {
         show_peers_interactive(g_orcashi);
         orcashi_destroy(g_orcashi);
         return 0;
     }
     
-    // ===== CHAT COMMAND =====
     else if (strcmp(cmd, "chat") == 0 && argc >= 3) {
         char* id = argv[2];
         RegistryPeer reg_peer;
@@ -794,7 +780,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== REMOVE COMMAND =====
     else if (strcmp(cmd, "remove") == 0 && argc >= 3) {
         char* id = argv[2];
         if (registry_remove_peer(g_orcashi->registry, id)) {
@@ -807,7 +792,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    // ===== HELP COMMAND =====
     else if (strcmp(cmd, "help") == 0) {
         show_help();
         orcashi_destroy(g_orcashi);
