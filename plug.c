@@ -1,4 +1,4 @@
- // plug.c - Full version with secure connection support
+ // plug.c - Full version with secure connection support (micro_sleep_plug removed)
 #define _POSIX_C_SOURCE 200809L
 
 #include "plug.h"
@@ -20,16 +20,7 @@
 
 static void* receive_loop(void* arg);
 static void* send_loop(void* arg);
-static void micro_sleep_plug(long microseconds);
 static bool plug_parse_handshake(TCPPlug* plug, const char* msg);
-
-// ===== Utility =====
-static void micro_sleep_plug(long microseconds) {
-    struct timespec ts;
-    ts.tv_sec = microseconds / 1000000;
-    ts.tv_nsec = (microseconds % 1000000) * 1000;
-    nanosleep(&ts, NULL);
-}
 
 // ===== Lifecycle =====
 TCPPlug* plug_create(void) {
@@ -128,7 +119,6 @@ bool plug_create_server(TCPPlug* plug, int port) {
     plug->connected = true;
     plug->running = true;
     
-    // Disable Nagle's algorithm
     int flag = 1;
     setsockopt(plug->client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     
@@ -195,7 +185,6 @@ bool plug_complete_handshake(TCPPlug* plug, const char* peer_public_key_hex) {
     
     strcpy(plug->peer_public_key_hex, peer_public_key_hex);
     
-    // Derive AES key from shared secret (simplified - in real impl use ECDH)
     char combined[65];
     strcpy(combined, peer_public_key_hex);
     strcat(combined, "shared-secret");
@@ -207,7 +196,6 @@ bool plug_complete_handshake(TCPPlug* plug, const char* peer_public_key_hex) {
     plug->secure_mode = true;
     plug->handshake_complete = true;
     
-    // Send handshake complete
     plug_send_message(plug, "HANDSHAKE_OK");
     
     printf("[PLUG] Secure handshake complete!\n");
@@ -257,7 +245,6 @@ bool plug_send_message(TCPPlug* plug, const char* msg) {
 bool plug_send_secure_message(TCPPlug* plug, const char* msg, const char* key_hex) {
     if (!plug || !plug->connected || !key_hex) return false;
     
-    // Encrypt message using AES-GCM
     char nonce_hex[25];
     char tag_hex[33];
     char* ciphertext_b64 = NULL;
@@ -266,7 +253,6 @@ bool plug_send_secure_message(TCPPlug* plug, const char* msg, const char* key_he
         return false;
     }
     
-    // Format: SECURE:<nonce>:<tag>:<ciphertext>
     char secure_msg[BUFFER_SIZE];
     snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s",
              nonce_hex, tag_hex, ciphertext_b64);
@@ -324,17 +310,14 @@ bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms
 
 // ===== Receive Loop =====
 static bool plug_parse_handshake(TCPPlug* plug, const char* msg) {
-    // Check for handshake
     if (strncmp(msg, "HANDSHAKE:", 10) == 0) {
         const char* pub_key = msg + 10;
         strcpy(plug->peer_public_key_hex, pub_key);
         
-        // Send handshake response
         char response[256];
         snprintf(response, sizeof(response), "HANDSHAKE_RESPONSE:%s", pub_key);
         plug_send_message(plug, response);
         
-        // Complete handshake
         plug_complete_handshake(plug, pub_key);
         return true;
     }
@@ -397,7 +380,6 @@ static void* receive_loop(void* arg) {
                 if (msg) {
                     strcpy(msg, pos);
                     
-                    // Check for handshake messages
                     bool is_handshake = plug_parse_handshake(plug, msg);
                     
                     if (!is_handshake) {
