@@ -4,6 +4,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+#include <openssl/kdf.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -438,6 +439,7 @@ int orca_aes_gcm_message_deserialize(const unsigned char* buffer,
 
 /* ============================================================================
  * KEY EXCHANGE INTEGRATION - FIXED for OpenSSL 3.0
+ * Uses EVP_KDF_CTX API which is compatible with both 1.1.1 and 3.0
  * ============================================================================ */
 
 int orca_aes_gcm_derive_key_from_shared_secret(const unsigned char* shared_secret,
@@ -453,7 +455,58 @@ int orca_aes_gcm_derive_key_from_shared_secret(const unsigned char* shared_secre
     
     openssl_aes_init();
     
-    // ===== FIX: Use EVP_PKEY_HKDF (compatible with OpenSSL 1.1.1 and 3.0) =====
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+    /* OpenSSL 3.0 - Use EVP_KDF API */
+    EVP_KDF_CTX* kctx = NULL;
+    EVP_KDF* kdf = NULL;
+    OSSL_PARAM params[5];
+    int param_idx = 0;
+    
+    kdf = EVP_KDF_fetch(NULL, "HKDF", NULL);
+    if (!kdf) {
+        set_aes_error("Failed to fetch HKDF");
+        return -1;
+    }
+    
+    kctx = EVP_KDF_CTX_new(kdf);
+    if (!kctx) {
+        EVP_KDF_free(kdf);
+        set_aes_error("Failed to create KDF context");
+        return -1;
+    }
+    
+    params[param_idx++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY,
+                                                            (void*)shared_secret,
+                                                            ORCA_AES_GCM_KEY_LEN);
+    params[param_idx++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST,
+                                                           "sha256", 0);
+    
+    if (salt && salt_len > 0) {
+        params[param_idx++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT,
+                                                                (void*)salt,
+                                                                salt_len);
+    }
+    
+    if (info && info_len > 0) {
+        params[param_idx++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO,
+                                                                (void*)info,
+                                                                info_len);
+    }
+    
+    params[param_idx] = OSSL_PARAM_construct_end();
+    
+    if (EVP_KDF_derive(kctx, key_out, ORCA_AES_GCM_KEY_LEN, params) <= 0) {
+        EVP_KDF_CTX_free(kctx);
+        EVP_KDF_free(kdf);
+        set_aes_error("Failed to derive AES key");
+        return -1;
+    }
+    
+    EVP_KDF_CTX_free(kctx);
+    EVP_KDF_free(kdf);
+    
+#else
+    /* OpenSSL 1.1.1 - Use EVP_PKEY_CTX HKDF API */
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
     if (!ctx) {
         set_aes_error("Failed to create HKDF context");
@@ -507,6 +560,7 @@ int orca_aes_gcm_derive_key_from_shared_secret(const unsigned char* shared_secre
         set_aes_error("Unexpected AES key length");
         return -1;
     }
+#endif
     
     return 0;
 }
@@ -558,6 +612,92 @@ int orca_aes_gcm_derive_key_from_shared_secret_hex(const char* shared_secret_hex
 }
 
 /* ============================================================================
+ * MESSAGE MANAGEMENT FUNCTIONS
+ * ============================================================================ */
+
+void orca_aes_gcm_message_init(OrcaAESGCMMessage* message) {
+    if (message) {
+        memset(message, 0, sizeof(OrcaAESGCMMessage));
+    }
+}
+
+void orca_aes_gcm_message_free(OrcaAESGCMMessage* message) {
+    if (message) {
+        if (message->ciphertext) {
+            zeroize(message->ciphertext, message->ciphertext_len);
+            free(message->ciphertext);
+            message->ciphertext = NULL;
+        }
+        if (message->plaintext) {
+            zeroize(message->plaintext, message->plaintext_len);
+            free(message->plaintext);
+            message->plaintext = NULL;
+        }
+        message->ciphertext_len = 0;
+        message->plaintext_len = 0;
+        message->encrypted = false;
+        message->decrypted = false;
+    }
+}
+
+void orca_aes_gcm_message_clear(OrcaAESGCMMessage* message) {
+    orca_aes_gcm_message_free(message);
+}
+
+int orca_aes_gcm_encrypt_message(const unsigned char* plaintext, size_t plaintext_len,
+                                 const unsigned char* key,
+                                 OrcaAESGCMMessage* message_out) {
+    if (!plaintext || !key || !message_out) {
+        set_aes_error("NULL pointer in orca_aes_gcm_encrypt_message");
+        return -1;
+    }
+    
+    memset(message_out, 0, sizeof(OrcaAESGCMMessage));
+    
+    memcpy(message_out->key.key, key, ORCA_AES_GCM_KEY_LEN);
+    
+    if (orca_aes_gcm_nonce_generate(message_out->nonce.nonce) < 0) {
+        set_aes_error("Failed to generate nonce");
+        return -1;
+    }
+    
+    unsigned char* ciphertext;
+    size_t ciphertext_len;
+    
+    if (orca_aes_gcm_encrypt(plaintext, plaintext_len, key,
+                             message_out->nonce.nonce,
+                             message_out->tag.tag,
+                             &ciphertext, &ciphertext_len) < 0) {
+        return -1;
+    }
+    
+    message_out->ciphertext = ciphertext;
+    message_out->ciphertext_len = ciphertext_len;
+    message_out->encrypted = true;
+    
+    return 0;
+}
+
+int orca_aes_gcm_decrypt_message(const OrcaAESGCMMessage* message,
+                                 const unsigned char* key,
+                                 unsigned char** plaintext_out,
+                                 size_t* plaintext_len) {
+    if (!message || !key || !plaintext_out || !plaintext_len) {
+        set_aes_error("NULL pointer in orca_aes_gcm_decrypt_message");
+        return -1;
+    }
+    
+    if (!message->encrypted) {
+        set_aes_error("Message is not encrypted");
+        return -1;
+    }
+    
+    return orca_aes_gcm_decrypt(message->ciphertext, message->ciphertext_len,
+                                key, message->nonce.nonce, message->tag.tag,
+                                plaintext_out, plaintext_len);
+}
+
+/* ============================================================================
  * DEBUG FUNCTIONS
  * ============================================================================ */
 
@@ -583,6 +723,19 @@ void orca_aes_gcm_debug_print_tag(const unsigned char* tag, const char* label) {
     char hex[33];
     if (label) printf("[AES-GCM DEBUG] %s\n", label);
     printf("  Tag: %s\n", orca_bytes_to_hex(tag, ORCA_AES_GCM_TAG_LEN, hex));
+}
+
+void orca_aes_gcm_debug_print_message(const OrcaAESGCMMessage* message,
+                                      const char* label) {
+    if (!message) return;
+    
+    if (label) printf("[AES-GCM DEBUG] %s\n", label);
+    printf("  Encrypted: %s\n", message->encrypted ? "true" : "false");
+    printf("  Decrypted: %s\n", message->decrypted ? "true" : "false");
+    printf("  Ciphertext length: %zu\n", message->ciphertext_len);
+    printf("  Plaintext length: %zu\n", message->plaintext_len);
+    orca_aes_gcm_debug_print_nonce(message->nonce.nonce, "Nonce");
+    orca_aes_gcm_debug_print_tag(message->tag.tag, "Tag");
 }
 
 /* ============================================================================
@@ -650,5 +803,53 @@ int orca_aes_gcm_test_self(void) {
     zeroize(key, ORCA_AES_GCM_KEY_LEN);
     zeroize(nonce, ORCA_AES_GCM_NONCE_LEN);
     
+    return 0;
+}
+
+int orca_aes_gcm_test_vectors(void) {
+    printf("[AES-GCM TEST] Running vector test...\n");
+    
+    /* NIST test vector */
+    const unsigned char key[16] = {
+        0xfe, 0xff, 0xe9, 0x92, 0x86, 0x65, 0x73, 0x1c,
+        0x6d, 0x6a, 0x8f, 0x94, 0x67, 0x30, 0x83, 0x08
+    };
+    const unsigned char nonce[12] = {
+        0xca, 0xfe, 0xba, 0xbe, 0xfa, 0xce, 0xdb, 0xad,
+        0xde, 0xca, 0xf8, 0x88
+    };
+    const unsigned char expected_ciphertext[16] = {
+        0x42, 0x83, 0x1e, 0xc2, 0x21, 0x77, 0x74, 0x24,
+        0x4b, 0x72, 0x21, 0xb7, 0x84, 0xd0, 0xd4, 0x9c
+    };
+    const unsigned char expected_tag[16] = {
+        0x4c, 0x4d, 0xfb, 0xc0, 0xd9, 0x2d, 0xe7, 0x4d,
+        0x54, 0xfa, 0x1f, 0x89, 0x4c, 0x04, 0xb1, 0x5c
+    };
+    
+    unsigned char tag[ORCA_AES_GCM_TAG_LEN];
+    unsigned char* ciphertext;
+    size_t ciphertext_len;
+    
+    if (orca_aes_gcm_encrypt((const unsigned char*)"", 0,
+                             key, nonce, tag, &ciphertext, &ciphertext_len) < 0) {
+        printf("[AES-GCM TEST] FAIL: Vector encryption\n");
+        return -1;
+    }
+    
+    if (ciphertext_len != 0) {
+        printf("[AES-GCM TEST] FAIL: Ciphertext length mismatch\n");
+        free(ciphertext);
+        return -1;
+    }
+    
+    if (memcmp(tag, expected_tag, ORCA_AES_GCM_TAG_LEN) != 0) {
+        printf("[AES-GCM TEST] FAIL: Tag mismatch\n");
+        free(ciphertext);
+        return -1;
+    }
+    
+    free(ciphertext);
+    printf("[AES-GCM TEST] SUCCESS: Vector test passed!\n");
     return 0;
 }
