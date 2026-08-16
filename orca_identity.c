@@ -1,4 +1,4 @@
- // orca_identity.c - Full implementation of ORCA Identity Management
+ // orca_identity.c - Full implementation with all fixes
 #include "orca_identity.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +9,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <time.h>
-#include <ctype.h>   // ← FIX: Added for isdigit, isalnum
+#include <ctype.h>
 
 /* ============================================================================
  * STATIC HELPERS
@@ -772,14 +772,14 @@ bool orca_identity_is_valid_id(const char* id) {
     
     if (len == 5 && id[0] == '<' && id[4] == '>') {
         for (int i = 1; i < 4; i++) {
-            if (!isdigit(id[i])) return false;  // ← isdigit now works with <ctype.h>
+            if (!isdigit(id[i])) return false;
         }
         return true;
     }
     
     if (len >= 12 && strncmp(id, "ORCA-", 5) == 0) {
         for (int i = 5; i < len; i++) {
-            if (!isalnum(id[i])) return false;  // ← isalnum now works with <ctype.h>
+            if (!isalnum(id[i])) return false;
         }
         return true;
     }
