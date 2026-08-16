@@ -1,4 +1,4 @@
- // orcashi.c - Full with DHT Node
+ // orcashi.c - Full version with ORCA Identity and Crypto
 #define _POSIX_C_SOURCE 200809L
 
 #include "orcashi.h"
@@ -25,12 +25,18 @@ static void* heartbeat_loop(void* arg);
 static void on_peer_found_callback(PeerInfo* peer);
 static void on_peer_offline_callback(PeerInfo* peer);
 
+// ===== Lifecycle =====
 ORCASHI* orcashi_create(void) {
     ORCASHI* orcashi = (ORCASHI*)calloc(1, sizeof(ORCASHI));
     if (!orcashi) return NULL;
     
     mkdir(ORCASHI_HOME, 0700);
     
+    // Initialize crypto
+    orca_init_crypto();
+    orca_identity_storage_init();
+    
+    // Create components
     orcashi->plug = plug_create();
     orcashi->discovery = discovery_create();
     orcashi->registry = registry_create();
@@ -39,6 +45,8 @@ ORCASHI* orcashi_create(void) {
     orcashi->endpoints = endpoint_registry_create();
     orcashi->punch = (PunchState*)calloc(1, sizeof(PunchState));
     orcashi->dht = dht_node_create();
+    orcashi->session = NULL;
+    orcashi->session_established = false;
     
     if (!orcashi->plug || !orcashi->discovery || !orcashi->registry ||
         !orcashi->requests || !orcashi->cache || !orcashi->endpoints ||
@@ -47,9 +55,20 @@ ORCASHI* orcashi_create(void) {
         return NULL;
     }
     
-    char* id = orcashi_generate_id();
-    strcpy(orcashi->my_id, id);
-    free(id);
+    // Try to load existing identity
+    orcashi->has_identity = orca_identity_exists(NULL);
+    if (orcashi->has_identity) {
+        // Load identity without passcode first (just metadata)
+        if (orca_identity_load(&orcashi->identity, NULL) == 0) {
+            strcpy(orcashi->my_id, orcashi->identity.id);
+        }
+    }
+    
+    if (!orcashi->has_identity) {
+        char* id = orcashi_generate_id();
+        strcpy(orcashi->my_id, id);
+        free(id);
+    }
     
     char* local_ip = orcashi_get_local_ip();
     strcpy(orcashi->local_ip, local_ip);
@@ -80,6 +99,7 @@ void orcashi_destroy(ORCASHI* orcashi) {
     if (orcashi->endpoints) { endpoint_registry_destroy(orcashi->endpoints); orcashi->endpoints = NULL; }
     if (orcashi->punch) { punch_close(orcashi->punch); free(orcashi->punch); orcashi->punch = NULL; }
     if (orcashi->dht) { dht_node_destroy(orcashi->dht); orcashi->dht = NULL; }
+    if (orcashi->session) { orca_ecdh_session_destroy(orcashi->session); free(orcashi->session); orcashi->session = NULL; }
     
     pthread_mutex_destroy(&orcashi->mutex);
     free(orcashi);
@@ -88,13 +108,19 @@ void orcashi_destroy(ORCASHI* orcashi) {
 bool orcashi_init(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
+    // Initialize discovery
     if (!discovery_init(orcashi->discovery, DISCOVERY_PORT)) {
         fprintf(stderr, "[ERROR] Failed to init discovery!\n");
         return false;
     }
     discovery_start(orcashi->discovery);
     
-    discovery_set_my_identity(orcashi->discovery, orcashi->my_id, orcashi->local_ip, ORCASHI_PORT);
+    // Set identity
+    if (orcashi->has_identity && orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+        discovery_set_my_secure_identity(orcashi->discovery, &orcashi->identity);
+    } else {
+        discovery_set_my_identity(orcashi->discovery, orcashi->my_id, orcashi->local_ip, ORCASHI_PORT);
+    }
     
     discovery_set_registry(orcashi->registry);
     discovery_set_request_manager(orcashi->requests);
@@ -115,6 +141,9 @@ bool orcashi_init(ORCASHI* orcashi) {
     }
     
     printf("[ORCA] Initialized with ID: %s\n", orcashi->my_id);
+    if (orcashi->has_identity && orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+        printf("[ORCA] Secure mode: %s\n", orcashi->identity.name);
+    }
     
     orcashi->running = true;
     pthread_create(&orcashi->heartbeat_thread, NULL, heartbeat_loop, orcashi);
@@ -122,6 +151,7 @@ bool orcashi_init(ORCASHI* orcashi) {
     return true;
 }
 
+// ===== Room Management =====
 bool orcashi_create_room(ORCASHI* orcashi, int port) {
     if (!orcashi) return false;
     
@@ -134,6 +164,9 @@ bool orcashi_create_room(ORCASHI* orcashi, int port) {
         
         strcpy(orcashi->peer_ip, plug_get_peer_ip(orcashi->plug));
         strcpy(orcashi->peer_id, orcashi->peer_ip);
+        
+        // Try to establish secure session if both peers have secure identity
+        orcashi_init_secure_session(orcashi);
         
         orcashi_broadcast_presence(orcashi);
         orcashi_show_banner(orcashi);
@@ -157,6 +190,9 @@ bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
         strcpy(orcashi->peer_ip, ip);
         strcpy(orcashi->peer_id, ip);
         
+        // Try to establish secure session
+        orcashi_init_secure_session(orcashi);
+        
         CachePeer peer;
         memset(&peer, 0, sizeof(peer));
         strcpy(peer.id, ip);
@@ -173,16 +209,96 @@ bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
     return false;
 }
 
+// ===== Messaging =====
 bool orcashi_send_message(ORCASHI* orcashi, const char* msg) {
     if (!orcashi || !orcashi->connected) return false;
+    
+    // If secure session established, encrypt
+    if (orcashi->session_established) {
+        return orcashi_send_secure_message(orcashi, msg);
+    }
+    
     return plug_send_message(orcashi->plug, msg);
+}
+
+bool orcashi_send_secure_message(ORCASHI* orcashi, const char* msg) {
+    if (!orcashi || !orcashi->connected || !orcashi->session_established) {
+        return false;
+    }
+    
+    // Encrypt message
+    char nonce_hex[25];
+    char tag_hex[33];
+    char* ciphertext_b64 = NULL;
+    
+    if (orca_aes_gcm_encrypt_string(msg, orcashi->peer_public_key_hex,
+                                    nonce_hex, tag_hex, &ciphertext_b64) < 0) {
+        fprintf(stderr, "[ORCA] Failed to encrypt message\n");
+        return false;
+    }
+    
+    // Format: SECURE:<nonce>:<tag>:<ciphertext>
+    char secure_msg[4096];
+    snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s",
+             nonce_hex, tag_hex, ciphertext_b64);
+    free(ciphertext_b64);
+    
+    return plug_send_message(orcashi->plug, secure_msg);
 }
 
 bool orcashi_receive_message(ORCASHI* orcashi, char* msg, int msg_size, int timeout_ms) {
     if (!orcashi || !orcashi->connected) return false;
-    return plug_receive_message(orcashi->plug, msg, msg_size, timeout_ms);
+    
+    char raw_msg[MAX_MSG_LEN];
+    if (!plug_receive_message(orcashi->plug, raw_msg, sizeof(raw_msg), timeout_ms)) {
+        return false;
+    }
+    
+    // Check if encrypted message
+    if (strncmp(raw_msg, "SECURE:", 7) == 0 && orcashi->session_established) {
+        // Parse: SECURE:<nonce>:<tag>:<ciphertext>
+        char* nonce_start = raw_msg + 7;
+        char* tag_start = strchr(nonce_start, ':');
+        if (!tag_start) {
+            strncpy(msg, raw_msg, msg_size - 1);
+            msg[msg_size - 1] = '\0';
+            return true;
+        }
+        tag_start++;
+        char* cipher_start = strchr(tag_start, ':');
+        if (!cipher_start) {
+            strncpy(msg, raw_msg, msg_size - 1);
+            msg[msg_size - 1] = '\0';
+            return true;
+        }
+        cipher_start++;
+        
+        char nonce_hex[25];
+        char tag_hex[33];
+        strncpy(nonce_hex, nonce_start, tag_start - nonce_start - 1);
+        nonce_hex[tag_start - nonce_start - 1] = '\0';
+        strncpy(tag_hex, tag_start, cipher_start - tag_start - 1);
+        tag_hex[cipher_start - tag_start - 1] = '\0';
+        
+        char* plaintext = NULL;
+        if (orca_aes_gcm_decrypt_string(cipher_start, nonce_hex, tag_hex,
+                                        orcashi->peer_public_key_hex, &plaintext) < 0) {
+            fprintf(stderr, "[ORCA] Failed to decrypt message\n");
+            return false;
+        }
+        
+        strncpy(msg, plaintext, msg_size - 1);
+        msg[msg_size - 1] = '\0';
+        free(plaintext);
+        return true;
+    }
+    
+    strncpy(msg, raw_msg, msg_size - 1);
+    msg[msg_size - 1] = '\0';
+    return true;
 }
 
+// ===== Connection =====
 bool orcashi_is_connected(ORCASHI* orcashi) {
     return orcashi && orcashi->connected && plug_is_connected(orcashi->plug);
 }
@@ -191,6 +307,8 @@ void orcashi_disconnect(ORCASHI* orcashi) {
     if (!orcashi) return;
     orcashi->connected = false;
     orcashi->running = false;
+    orcashi->session_established = false;
+    
     if (orcashi->plug) { plug_close_connection(orcashi->plug); }
     if (orcashi->heartbeat_thread) {
         pthread_join(orcashi->heartbeat_thread, NULL);
@@ -198,8 +316,14 @@ void orcashi_disconnect(ORCASHI* orcashi) {
     }
     discovery_stop(orcashi->discovery);
     dht_node_stop(orcashi->dht);
+    if (orcashi->session) {
+        orca_ecdh_session_destroy(orcashi->session);
+        free(orcashi->session);
+        orcashi->session = NULL;
+    }
 }
 
+// ===== Identity =====
 const char* orcashi_get_my_id(ORCASHI* orcashi) {
     return orcashi ? orcashi->my_id : NULL;
 }
@@ -212,6 +336,117 @@ const char* orcashi_get_peer_ip(ORCASHI* orcashi) {
     return orcashi ? orcashi->peer_ip : NULL;
 }
 
+bool orcashi_load_identity(ORCASHI* orcashi, const char* passcode) {
+    if (!orcashi) return false;
+    
+    if (orca_identity_load(&orcashi->identity, passcode) < 0) {
+        return false;
+    }
+    
+    strcpy(orcashi->my_id, orcashi->identity.id);
+    orcashi->has_identity = true;
+    return true;
+}
+
+bool orcashi_has_identity(ORCASHI* orcashi) {
+    return orcashi && orcashi->has_identity;
+}
+
+// ===== Secure Session =====
+bool orcashi_init_secure_session(ORCASHI* orcashi) {
+    if (!orcashi) return false;
+    
+    // Check if both peers have secure identity
+    if (!orcashi->has_identity || orcashi->identity.mode != ORCA_IDENTITY_MODE_SECURE) {
+        return false;
+    }
+    
+    // Check if peer is secure
+    RegistryPeer peer;
+    if (!registry_get_peer(orcashi->registry, orcashi->peer_id, &peer)) {
+        return false;
+    }
+    if (peer.mode != REG_MODE_SECURE) {
+        return false;
+    }
+    
+    // Create session
+    orcashi->session = (OrcaECDSession*)calloc(1, sizeof(OrcaECDSession));
+    if (!orcashi->session) return false;
+    
+    // Initialize session
+    unsigned char peer_pub_key[32];
+    if (orca_hex_to_bytes(peer.public_key, peer_pub_key, 32) < 0) {
+        free(orcashi->session);
+        orcashi->session = NULL;
+        return false;
+    }
+    
+    if (orca_ecdh_session_init(orcashi->session, true, peer_pub_key) < 0) {
+        free(orcashi->session);
+        orcashi->session = NULL;
+        return false;
+    }
+    
+    // Get public key to send to peer
+    unsigned char pub_key[32];
+    if (orca_ecdh_session_initiate(orcashi->session, pub_key) < 0) {
+        orca_ecdh_session_destroy(orcashi->session);
+        free(orcashi->session);
+        orcashi->session = NULL;
+        return false;
+    }
+    
+    // Store peer public key hex for encryption
+    orca_bytes_to_hex(pub_key, 32, orcashi->peer_public_key_hex);
+    
+    // Send secure handshake message
+    char handshake[128];
+    snprintf(handshake, sizeof(handshake), "ECDH:%s", orcashi->peer_public_key_hex);
+    plug_send_message(orcashi->plug, handshake);
+    
+    return true;
+}
+
+bool orcashi_complete_secure_session(ORCASHI* orcashi, const char* peer_public_key_hex) {
+    if (!orcashi || !orcashi->session) return false;
+    
+    unsigned char peer_pub_key[32];
+    if (orca_hex_to_bytes(peer_public_key_hex, peer_pub_key, 32) < 0) {
+        return false;
+    }
+    
+    if (orca_ecdh_session_complete(orcashi->session, peer_pub_key) < 0) {
+        return false;
+    }
+    
+    // Get shared secret and derive AES key
+    unsigned char shared_secret[32];
+    if (orca_ecdh_session_get_shared_secret(orcashi->session, shared_secret) < 0) {
+        return false;
+    }
+    
+    // Derive AES key from shared secret
+    unsigned char aes_key[32];
+    if (orca_aes_gcm_derive_key_from_shared_secret(shared_secret, NULL, 0,
+                                                   (const unsigned char*)"orcashi-chat", 12,
+                                                   aes_key) < 0) {
+        return false;
+    }
+    
+    // Store key as hex for encryption
+    orca_bytes_to_hex(aes_key, 32, orcashi->peer_public_key_hex);
+    orcashi->session_established = true;
+    
+    printf("[ORCA] Secure session established!\n");
+    return true;
+}
+
+bool orcashi_session_established(ORCASHI* orcashi) {
+    return orcashi && orcashi->session_established;
+}
+
+// ===== Peer Management =====
 bool orcashi_register_identity(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
@@ -221,7 +456,20 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     printf("  +------------------------------------------+\n");
     printf("\n");
     
-    printf("  Your ID: %s\n", orcashi->my_id);
+    if (orcashi->has_identity) {
+        printf("  You are already registered!\n");
+        printf("  ID: %s\n", orcashi->identity.id);
+        if (orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+            printf("  Name: %s\n", orcashi->identity.name);
+            printf("  Mode: SECURE\n");
+        } else {
+            printf("  Mode: NORMAL\n");
+        }
+        printf("  Use './orcashi identity' to view details\n");
+        return false;
+    }
+    
+    printf("  Your ID will be: %s\n", orcashi->my_id);
     printf("  Enter your IP address (e.g., 192.168.1.5): ");
     fflush(stdout);
     
@@ -242,9 +490,13 @@ bool orcashi_register_identity(ORCASHI* orcashi) {
     printf("  Using IP: %s\n", input_ip);
     
     strcpy(orcashi->local_ip, input_ip);
+    orcashi_save_ip(input_ip);
     
-    discovery_set_my_identity(orcashi->discovery, orcashi->my_id, input_ip, ORCASHI_PORT);
-    printf("[DEBUG] discovery_set_my_identity: ID=%s, IP=%s\n", orcashi->my_id, input_ip);
+    if (orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+        discovery_set_my_secure_identity(orcashi->discovery, &orcashi->identity);
+    } else {
+        discovery_set_my_identity(orcashi->discovery, orcashi->my_id, input_ip, ORCASHI_PORT);
+    }
     
     if (registry_register_peer(orcashi->registry, orcashi->my_id, input_ip, "9000")) {
         orcashi->registered = true;
@@ -289,12 +541,20 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     // Step 1: Try Registry
     RegistryPeer reg_peer;
     if (registry_get_peer(orcashi->registry, norm_id, &reg_peer)) {
-        printf("  [ORCA] Found in registry: %s:%s (status: %s)\n", 
-               reg_peer.ip, reg_peer.port, reg_peer.status);
+        printf("  [ORCA] Found in registry: %s:%s (status: %s, mode: %s)\n", 
+               reg_peer.ip, reg_peer.port, reg_peer.status,
+               registry_get_mode_string(&reg_peer));
         
         if (strlen(reg_peer.ip) > 0 && 
             strcmp(reg_peer.ip, "0.0.0.0") != 0 &&
             strcmp(reg_peer.status, "accepted") == 0) {
+            
+            // Check if secure connection needed
+            if (reg_peer.mode == REG_MODE_SECURE && orcashi->has_identity) {
+                // Store peer public key for secure session
+                strcpy(orcashi->peer_public_key_hex, reg_peer.public_key);
+            }
+            
             return orcashi_join_room(orcashi, reg_peer.ip, atoi(reg_peer.port));
         } else {
             printf("  [ORCA] Peer %s registered but IP unknown or not accepted, trying cache...\n", id);
@@ -321,6 +581,11 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
             printf("  [ORCA] Found peer via discovery: %s at %s:%d\n", id, p.ip, p.port);
             char port_str[16];
             snprintf(port_str, sizeof(port_str), "%d", p.port);
+            
+            if (p.is_secure && orcashi->has_identity) {
+                strcpy(orcashi->peer_public_key_hex, p.public_key);
+            }
+            
             registry_update_peer(orcashi->registry, norm_id, p.ip, port_str);
             
             CachePeer cache_peer;
@@ -351,7 +616,6 @@ bool orcashi_connect_peer(ORCASHI* orcashi, const char* id) {
     if (dht_node_lookup(orcashi->dht, norm_id, 20, dht_ip, &dht_port)) {
         printf("  [ORCA] Found via DHT: %s:%d\n", dht_ip, dht_port);
         
-        // Save to registry and cache for future
         char port_str[16];
         snprintf(port_str, sizeof(port_str), "%d", dht_port);
         registry_update_peer(orcashi->registry, norm_id, dht_ip, port_str);
@@ -390,6 +654,7 @@ void orcashi_show_peers(ORCASHI* orcashi) {
     printf("\n");
 }
 
+// ===== Callbacks =====
 void orcashi_set_callbacks(ORCASHI* orcashi,
                           void (*on_peer_found)(const char*, const char*),
                           void (*on_message_received)(const char*, const char*),
@@ -400,6 +665,7 @@ void orcashi_set_callbacks(ORCASHI* orcashi,
     orcashi->on_status_change = on_status_change;
 }
 
+// ===== Internal Functions =====
 static void orcashi_broadcast_presence(ORCASHI* orcashi) {
     if (!orcashi) return;
     char endpoint[128];
@@ -411,10 +677,16 @@ static void orcashi_show_banner(ORCASHI* orcashi) {
     if (!orcashi) return;
     printf("\033[36m");
     printf("============================================================\n");
-    printf("  ORCASHI v3.1 - P2P Chat\n");
+    printf("  ORCASHI v4.0 - Secure P2P Chat\n");
     printf("============================================================\n");
     printf("\033[0m");
     printf("Your ID: %s\n", orcashi->my_id);
+    if (orcashi->has_identity && orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+        printf("Secure Mode: %s\n", orcashi->identity.name);
+    }
+    if (orcashi->session_established) {
+        printf("🔒 Secure Session: ENABLED\n");
+    }
     printf("Type /help for commands\n");
     printf("============================================================\n");
     printf("\n");
@@ -451,6 +723,7 @@ static void* heartbeat_loop(void* arg) {
     return NULL;
 }
 
+// ===== Utility =====
 char* orcashi_generate_id(void) {
     static char id[64];
     FILE* f = fopen(ID_FILE, "r");
@@ -516,4 +789,15 @@ char* orcashi_bytes_to_hex(const unsigned char* bytes, int len) {
     }
     hex[len * 2] = '\0';
     return hex;
+}
+
+bool orcashi_save_ip(const char* ip) {
+    if (!ip) return false;
+    char ip_file[512];
+    snprintf(ip_file, sizeof(ip_file), "%s/ip", ORCASHI_HOME);
+    FILE* f = fopen(ip_file, "w");
+    if (!f) return false;
+    fprintf(f, "%s", ip);
+    fclose(f);
+    return true;
 }
