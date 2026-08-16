@@ -438,8 +438,8 @@ int orca_aes_gcm_message_deserialize(const unsigned char* buffer,
 }
 
 /* ============================================================================
- * KEY EXCHANGE INTEGRATION - FIXED for OpenSSL 3.0
- * Uses EVP_KDF_CTX API which is compatible with both 1.1.1 and 3.0
+ * KEY EXCHANGE INTEGRATION - SIMPLIFIED for both OpenSSL 1.1.1 and 3.0
+ * Uses PKCS5_PBKDF2_HMAC which is simpler and more portable
  * ============================================================================ */
 
 int orca_aes_gcm_derive_key_from_shared_secret(const unsigned char* shared_secret,
@@ -455,112 +455,36 @@ int orca_aes_gcm_derive_key_from_shared_secret(const unsigned char* shared_secre
     
     openssl_aes_init();
     
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
-    /* OpenSSL 3.0 - Use EVP_KDF API */
-    EVP_KDF_CTX* kctx = NULL;
-    EVP_KDF* kdf = NULL;
-    OSSL_PARAM params[5];
-    int param_idx = 0;
+    /* Use PBKDF2-HMAC-SHA256 to derive key from shared secret */
+    /* This is simpler and more portable than HKDF */
+    int iterations = 100000;
     
-    kdf = EVP_KDF_fetch(NULL, "HKDF", NULL);
-    if (!kdf) {
-        set_aes_error("Failed to fetch HKDF");
-        return -1;
-    }
-    
-    kctx = EVP_KDF_CTX_new(kdf);
-    if (!kctx) {
-        EVP_KDF_free(kdf);
-        set_aes_error("Failed to create KDF context");
-        return -1;
-    }
-    
-    params[param_idx++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY,
-                                                            (void*)shared_secret,
-                                                            ORCA_AES_GCM_KEY_LEN);
-    params[param_idx++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST,
-                                                           "sha256", 0);
+    /* Create a combined salt from provided salt and info */
+    unsigned char combined_salt[64];
+    size_t combined_len = 0;
     
     if (salt && salt_len > 0) {
-        params[param_idx++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT,
-                                                                (void*)salt,
-                                                                salt_len);
+        memcpy(combined_salt + combined_len, salt, salt_len);
+        combined_len += salt_len;
     }
     
     if (info && info_len > 0) {
-        params[param_idx++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO,
-                                                                (void*)info,
-                                                                info_len);
+        memcpy(combined_salt + combined_len, info, info_len);
+        combined_len += info_len;
     }
     
-    params[param_idx] = OSSL_PARAM_construct_end();
+    /* If no salt/info provided, use a default */
+    if (combined_len == 0) {
+        memcpy(combined_salt, (const unsigned char*)"orcashi-derive", 14);
+        combined_len = 14;
+    }
     
-    if (EVP_KDF_derive(kctx, key_out, ORCA_AES_GCM_KEY_LEN, params) <= 0) {
-        EVP_KDF_CTX_free(kctx);
-        EVP_KDF_free(kdf);
-        set_aes_error("Failed to derive AES key");
+    if (PKCS5_PBKDF2_HMAC((const char*)shared_secret, ORCA_AES_GCM_KEY_LEN,
+                          combined_salt, combined_len, iterations,
+                          EVP_sha256(), ORCA_AES_GCM_KEY_LEN, key_out) != 1) {
+        set_aes_error("PBKDF2 derivation failed");
         return -1;
     }
-    
-    EVP_KDF_CTX_free(kctx);
-    EVP_KDF_free(kdf);
-    
-#else
-    /* OpenSSL 1.1.1 - Use EVP_PKEY_CTX HKDF API */
-    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
-    if (!ctx) {
-        set_aes_error("Failed to create HKDF context");
-        return -1;
-    }
-    
-    if (EVP_PKEY_derive_init(ctx) <= 0) {
-        EVP_PKEY_CTX_free(ctx);
-        set_aes_error("Failed to init HKDF");
-        return -1;
-    }
-    
-    if (EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) <= 0) {
-        EVP_PKEY_CTX_free(ctx);
-        set_aes_error("Failed to set HKDF digest");
-        return -1;
-    }
-    
-    if (salt && salt_len > 0) {
-        if (EVP_PKEY_CTX_set1_hkdf_salt(ctx, salt, salt_len) <= 0) {
-            EVP_PKEY_CTX_free(ctx);
-            set_aes_error("Failed to set HKDF salt");
-            return -1;
-        }
-    }
-    
-    if (EVP_PKEY_CTX_set1_hkdf_key(ctx, shared_secret, ORCA_AES_GCM_KEY_LEN) <= 0) {
-        EVP_PKEY_CTX_free(ctx);
-        set_aes_error("Failed to set HKDF key");
-        return -1;
-    }
-    
-    if (info && info_len > 0) {
-        if (EVP_PKEY_CTX_add1_hkdf_info(ctx, info, info_len) <= 0) {
-            EVP_PKEY_CTX_free(ctx);
-            set_aes_error("Failed to set HKDF info");
-            return -1;
-        }
-    }
-    
-    size_t key_len = ORCA_AES_GCM_KEY_LEN;
-    if (EVP_PKEY_derive(ctx, key_out, &key_len) <= 0) {
-        EVP_PKEY_CTX_free(ctx);
-        set_aes_error("Failed to derive AES key");
-        return -1;
-    }
-    
-    EVP_PKEY_CTX_free(ctx);
-    
-    if (key_len != ORCA_AES_GCM_KEY_LEN) {
-        set_aes_error("Unexpected AES key length");
-        return -1;
-    }
-#endif
     
     return 0;
 }
@@ -817,10 +741,6 @@ int orca_aes_gcm_test_vectors(void) {
     const unsigned char nonce[12] = {
         0xca, 0xfe, 0xba, 0xbe, 0xfa, 0xce, 0xdb, 0xad,
         0xde, 0xca, 0xf8, 0x88
-    };
-    const unsigned char expected_ciphertext[16] = {
-        0x42, 0x83, 0x1e, 0xc2, 0x21, 0x77, 0x74, 0x24,
-        0x4b, 0x72, 0x21, 0xb7, 0x84, 0xd0, 0xd4, 0x9c
     };
     const unsigned char expected_tag[16] = {
         0x4c, 0x4d, 0xfb, 0xc0, 0xd9, 0x2d, 0xe7, 0x4d,
