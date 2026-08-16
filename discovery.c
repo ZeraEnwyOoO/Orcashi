@@ -213,7 +213,7 @@ void discovery_stop(Discovery* disc) {
 void discovery_broadcast_presence(Discovery* disc, const char* id, const char* endpoint) {
     if (!disc) return;
     
-    char msg[512];
+    char msg[1024];
     if (g_my_secure) {
         // Secure presence: include public key and signature
         // Format: ORCA_PRESENCE:SECURE:<id>:<endpoint>:<name>:<public_key>:<signature>
@@ -292,7 +292,7 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
     normalize_id(target_id, norm_target, sizeof(norm_target));
     normalize_id(my_id, norm_my, sizeof(norm_my));
     
-    char msg[1024];
+    char msg[2048];
     if (g_my_secure) {
         // Secure ADD_REQUEST with signature
         // Format: ADD_REQUEST:SECURE:<target>:<from_id>:<from_ip>:<from_port>:<name>:<public_key>:<signature>
@@ -502,11 +502,11 @@ static void handle_presence(Discovery* disc, const char* msg, const char* sender
     
     if (is_secure) {
         // Format: ORCA_PRESENCE:SECURE:<id>:<endpoint>:<name>:<public_key>:<signature>
-        // Parse name
-        char* name_start = strchr(colon + 1, ':');
+        // Parse name - FIXED: use const char*
+        const char* name_start = strchr(colon + 1, ':');
         if (name_start) {
             name_start++;
-            char* name_end = strchr(name_start, ':');
+            const char* name_end = strchr(name_start, ':');
             if (name_end) {
                 int len = name_end - name_start;
                 if (len < (int)sizeof(name)) {
@@ -514,8 +514,8 @@ static void handle_presence(Discovery* disc, const char* msg, const char* sender
                     name[len] = '\0';
                 }
                 // Parse public_key
-                char* pk_start = name_end + 1;
-                char* pk_end = strchr(pk_start, ':');
+                const char* pk_start = name_end + 1;
+                const char* pk_end = strchr(pk_start, ':');
                 if (pk_end) {
                     int pk_len = pk_end - pk_start;
                     if (pk_len < (int)sizeof(public_key)) {
@@ -647,21 +647,21 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     
     port = atoi(colon2 + 1);
     
-    // Parse secure fields
+    // Parse secure fields - FIXED: use const char*
     if (is_secure) {
         const char* secure_rest = colon2 + 1;
-        char* name_start = strchr(secure_rest, ':');
+        const char* name_start = strchr(secure_rest, ':');
         if (name_start) {
             name_start++;
-            char* name_end = strchr(name_start, ':');
+            const char* name_end = strchr(name_start, ':');
             if (name_end) {
                 int len = name_end - name_start;
                 if (len < (int)sizeof(name)) {
                     strncpy(name, name_start, len);
                     name[len] = '\0';
                 }
-                char* pk_start = name_end + 1;
-                char* pk_end = strchr(pk_start, ':');
+                const char* pk_start = name_end + 1;
+                const char* pk_end = strchr(pk_start, ':');
                 if (pk_end) {
                     int pk_len = pk_end - pk_start;
                     if (pk_len < (int)sizeof(public_key)) {
@@ -790,21 +790,21 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
     
     from_port = atoi(colon3 + 1);
     
-    // Parse secure fields
+    // Parse secure fields - FIXED: use const char*
     if (is_secure) {
         const char* secure_rest = colon3 + 1;
-        char* name_start = strchr(secure_rest, ':');
+        const char* name_start = strchr(secure_rest, ':');
         if (name_start) {
             name_start++;
-            char* name_end = strchr(name_start, ':');
+            const char* name_end = strchr(name_start, ':');
             if (name_end) {
                 int name_len = name_end - name_start;
                 if (name_len < (int)sizeof(from_name)) {
                     strncpy(from_name, name_start, name_len);
                     from_name[name_len] = '\0';
                 }
-                char* pk_start = name_end + 1;
-                char* pk_end = strchr(pk_start, ':');
+                const char* pk_start = name_end + 1;
+                const char* pk_end = strchr(pk_start, ':');
                 if (pk_end) {
                     int pk_len = pk_end - pk_start;
                     if (pk_len < (int)sizeof(public_key)) {
