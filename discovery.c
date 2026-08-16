@@ -1,4 +1,4 @@
- // discovery.c - Fixed all unused parameter warnings
+ // discovery.c - Full version with ORCA Identity and Crypto integration
 #define _POSIX_C_SOURCE 200809L
 
 #include "discovery.h"
@@ -36,7 +36,7 @@ static void send_udp(Discovery* disc, const char* msg, const char* ip, int port)
 
 static void handle_presence(Discovery* disc, const char* msg, const char* sender_ip);
 static void handle_who_has(Discovery* disc, const char* msg, const char* sender_ip);
-static void handle_i_am(Discovery* disc, const char* msg);
+static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip);
 static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port);
 static void handle_add_request_ack(Discovery* disc, const char* msg);
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip);
@@ -44,6 +44,10 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
 static char g_my_id[64] = {0};
 static char g_my_ip[64] = {0};
 static int g_my_port = 9000;
+static bool g_my_secure = false;
+static char g_my_public_key[ORCA_PUBKEY_LEN] = {0};
+static char g_my_signature[ORCA_SIG_LEN] = {0};
+static char g_my_name[128] = {0};
 
 static RequestManager* g_request_manager = NULL;
 static Registry* g_registry = NULL;
@@ -81,12 +85,26 @@ static void extract_ip_from_endpoint(const char* endpoint, char* ip_out, size_t 
     }
 }
 
+// ===== Identity =====
 void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, int port) {
     (void)disc;
     if (id) strcpy(g_my_id, id);
     if (ip) strcpy(g_my_ip, ip);
     g_my_port = port;
-    DLOG("Identity set: ID='%s' IP='%s' PORT=%d", g_my_id, g_my_ip, g_my_port);
+    g_my_secure = false;
+    DLOG("Identity set: ID='%s' IP='%s' PORT=%d (NORMAL)", g_my_id, g_my_ip, g_my_port);
+}
+
+void discovery_set_my_secure_identity(Discovery* disc, const OrcaIdentity* identity) {
+    (void)disc;
+    if (!identity) return;
+    
+    strcpy(g_my_id, identity->id);
+    strcpy(g_my_name, identity->name);
+    strcpy(g_my_public_key, identity->public_key);
+    strcpy(g_my_signature, identity->signature);
+    g_my_secure = true;
+    DLOG("Secure identity set: ID='%s' NAME='%s'", g_my_id, g_my_name);
 }
 
 void discovery_set_request_manager(RequestManager* rm) {
@@ -99,6 +117,7 @@ void discovery_set_registry(Registry* reg) {
     DLOG("Registry set");
 }
 
+// ===== Lifecycle =====
 Discovery* discovery_create(void) {
     Discovery* disc = (Discovery*)calloc(1, sizeof(Discovery));
     if (!disc) return NULL;
@@ -190,71 +209,19 @@ void discovery_stop(Discovery* disc) {
     DLOG("Discovery stopped");
 }
 
-static void* listen_loop(void* arg) {
-    Discovery* disc = (Discovery*)arg;
-    char buffer[BUFFER_SIZE];
-    struct sockaddr_in sender_addr;
-    socklen_t addr_len = sizeof(sender_addr);
-    fd_set fds;
-    struct timeval tv;
-    
-    DLOG("Listen loop started");
-    
-    while (disc->running) {
-        FD_ZERO(&fds);
-        FD_SET(disc->udp_socket, &fds);
-        
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-        
-        int ret = select(disc->udp_socket + 1, &fds, NULL, NULL, &tv);
-        if (ret < 0) {
-            DLOG("select() error: %s", strerror(errno));
-            break;
-        }
-        if (ret == 0) {
-            discovery_cleanup_stale(disc);
-            continue;
-        }
-        
-        int n = recvfrom(disc->udp_socket, buffer, sizeof(buffer) - 1, 0,
-                        (struct sockaddr*)&sender_addr, &addr_len);
-        if (n <= 0) continue;
-        
-        buffer[n] = '\0';
-        char ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &sender_addr.sin_addr, ip, sizeof(ip));
-        int port = ntohs(sender_addr.sin_port);
-        
-        DLOG("Received %d bytes from %s:%d", n, ip, port);
-        DLOG("  Raw: '%s'", buffer);
-        
-        parse_message(disc, buffer, ip, port);
-    }
-    
-    DLOG("Listen loop stopped");
-    return NULL;
-}
-
-static void* broadcast_loop(void* arg) {
-    Discovery* disc = (Discovery*)arg;
-    
-    DLOG("Broadcast loop started");
-    
-    while (disc->running) {
-        sleep(BROADCAST_INTERVAL);
-        discovery_cleanup_stale(disc);
-    }
-    
-    DLOG("Broadcast loop stopped");
-    return NULL;
-}
-
+// ===== Broadcasting =====
 void discovery_broadcast_presence(Discovery* disc, const char* id, const char* endpoint) {
     if (!disc) return;
     
     char msg[512];
-    snprintf(msg, sizeof(msg), "ORCA_PRESENCE:%s:%s", id, endpoint);
+    if (g_my_secure) {
+        // Secure presence: include public key and signature
+        // Format: ORCA_PRESENCE:SECURE:<id>:<endpoint>:<name>:<public_key>:<signature>
+        snprintf(msg, sizeof(msg), "ORCA_PRESENCE:SECURE:%s:%s:%s:%s:%s",
+                 id, endpoint, g_my_name, g_my_public_key, g_my_signature);
+    } else {
+        snprintf(msg, sizeof(msg), "ORCA_PRESENCE:%s:%s", id, endpoint);
+    }
     
     struct sockaddr_in broadcast_addr;
     memset(&broadcast_addr, 0, sizeof(broadcast_addr));
@@ -316,6 +283,7 @@ void discovery_query_peer(Discovery* disc, const char* id) {
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
+// ===== Secure Messages =====
 void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id, 
                                          const char* my_id, const char* my_ip, int my_port) {
     if (!disc || !target_id || !my_id) return;
@@ -324,9 +292,17 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
     normalize_id(target_id, norm_target, sizeof(norm_target));
     normalize_id(my_id, norm_my, sizeof(norm_my));
     
-    char msg[512];
-    snprintf(msg, sizeof(msg), "ADD_REQUEST:%s:%s:%s:%d", 
-             norm_target, norm_my, my_ip, my_port);
+    char msg[1024];
+    if (g_my_secure) {
+        // Secure ADD_REQUEST with signature
+        // Format: ADD_REQUEST:SECURE:<target>:<from_id>:<from_ip>:<from_port>:<name>:<public_key>:<signature>
+        snprintf(msg, sizeof(msg), "ADD_REQUEST:SECURE:%s:%s:%s:%d:%s:%s:%s",
+                 norm_target, norm_my, my_ip, my_port,
+                 g_my_name, g_my_public_key, g_my_signature);
+    } else {
+        snprintf(msg, sizeof(msg), "ADD_REQUEST:%s:%s:%s:%d",
+                 norm_target, norm_my, my_ip, my_port);
+    }
     
     PeerInfo peer;
     if (!discovery_find_peer(disc, target_id, &peer)) {
@@ -374,6 +350,7 @@ void discovery_send_add_request_ack(Discovery* disc, const char* target_id, cons
     DLOG("ADD_REQUEST_ACK sent to %s (%s:%d): %s", target_id, peer.ip, peer.port, msg);
 }
 
+// ===== UDP Send =====
 static void send_udp(Discovery* disc, const char* msg, const char* ip, int port) {
     if (!disc || !msg || !ip) return;
     
@@ -389,6 +366,7 @@ static void send_udp(Discovery* disc, const char* msg, const char* ip, int port)
            (struct sockaddr*)&addr, sizeof(addr));
 }
 
+// ===== Pending Requests =====
 void discovery_push_pending(Discovery* disc, const char* from_id, const char* from_ip, int from_port) {
     if (!disc || !from_id) return;
     
@@ -457,6 +435,7 @@ bool discovery_has_pending(Discovery* disc) {
     return has;
 }
 
+// ===== Message Parsing =====
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_port;
     
@@ -474,7 +453,7 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
         handle_who_has(disc, msg, sender_ip);
     }
     else if (strncmp(msg, "I_AM:", 5) == 0) {
-        handle_i_am(disc, msg);
+        handle_i_am(disc, msg, sender_ip);
     }
     else if (strncmp(msg, "ADD_REQUEST:", 12) == 0) {
         handle_add_request(disc, msg, sender_ip, sender_port);
@@ -487,66 +466,119 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
     }
 }
 
+// ===== ORCA_PRESENCE Handler =====
 static void handle_presence(Discovery* disc, const char* msg, const char* sender_ip) {
     (void)sender_ip;
     
     const char* rest = msg + 14;
-    const char* colon = strchr(rest, ':');
-    if (colon) {
-        char id[64];
-        char endpoint[128];
-        int id_len = colon - rest;
-        strncpy(id, rest, id_len);
-        id[id_len] = '\0';
-        strcpy(endpoint, colon + 1);
-        
-        char peer_ip[INET_ADDRSTRLEN];
-        extract_ip_from_endpoint(endpoint, peer_ip, sizeof(peer_ip));
-        
-        DLOG("ORCA_PRESENCE: id='%s', endpoint='%s', peer_ip='%s'", 
-             id, endpoint, peer_ip);
-        
-        pthread_mutex_lock(&disc->mutex);
-        
-        int found = -1;
-        for (int i = 0; i < disc->peer_count; i++) {
-            if (strcmp(disc->peers[i].id, id) == 0) {
-                found = i;
-                break;
-            }
-        }
-        
-        if (found == -1 && disc->peer_count < MAX_PEERS) {
-            found = disc->peer_count++;
-            DLOG("Added new peer slot %d", found);
-        }
-        
-        if (found >= 0) {
-            PeerInfo* peer = &disc->peers[found];
-            strcpy(peer->id, id);
-            strcpy(peer->endpoint, endpoint);
-            strcpy(peer->ip, peer_ip);
-            peer->last_seen = time(NULL);
-            peer->online = true;
-            
-            char* port_colon = strchr(endpoint, ':');
-            if (port_colon) {
-                peer->port = atoi(port_colon + 1);
-            } else {
-                peer->port = 9000;
-            }
-            
-            DLOG("Peer updated: %s at %s:%d", id, peer->ip, peer->port);
-            
-            if (disc->on_peer_found) {
-                disc->on_peer_found(peer);
-            }
-        }
-        
-        pthread_mutex_unlock(&disc->mutex);
+    bool is_secure = false;
+    
+    // Check if secure presence
+    if (strncmp(rest, "SECURE:", 7) == 0) {
+        is_secure = true;
+        rest += 7;
     }
+    
+    const char* colon = strchr(rest, ':');
+    if (!colon) return;
+    
+    char id[64];
+    char endpoint[128];
+    int id_len = colon - rest;
+    strncpy(id, rest, id_len);
+    id[id_len] = '\0';
+    strcpy(endpoint, colon + 1);
+    
+    char peer_ip[INET_ADDRSTRLEN];
+    extract_ip_from_endpoint(endpoint, peer_ip, sizeof(peer_ip));
+    
+    DLOG("ORCA_PRESENCE: id='%s', endpoint='%s', peer_ip='%s', secure=%d", 
+         id, endpoint, peer_ip, is_secure);
+    
+    // For secure presence, parse additional fields
+    char name[128] = {0};
+    char public_key[ORCA_PUBKEY_LEN] = {0};
+    char signature[ORCA_SIG_LEN] = {0};
+    
+    if (is_secure) {
+        // Format: ORCA_PRESENCE:SECURE:<id>:<endpoint>:<name>:<public_key>:<signature>
+        // Parse name
+        char* name_start = strchr(colon + 1, ':');
+        if (name_start) {
+            name_start++;
+            char* name_end = strchr(name_start, ':');
+            if (name_end) {
+                int len = name_end - name_start;
+                if (len < (int)sizeof(name)) {
+                    strncpy(name, name_start, len);
+                    name[len] = '\0';
+                }
+                // Parse public_key
+                char* pk_start = name_end + 1;
+                char* pk_end = strchr(pk_start, ':');
+                if (pk_end) {
+                    int pk_len = pk_end - pk_start;
+                    if (pk_len < (int)sizeof(public_key)) {
+                        strncpy(public_key, pk_start, pk_len);
+                        public_key[pk_len] = '\0';
+                    }
+                    // Parse signature
+                    strcpy(signature, pk_end + 1);
+                }
+            }
+        }
+    }
+    
+    pthread_mutex_lock(&disc->mutex);
+    
+    int found = -1;
+    for (int i = 0; i < disc->peer_count; i++) {
+        if (strcmp(disc->peers[i].id, id) == 0) {
+            found = i;
+            break;
+        }
+    }
+    
+    if (found == -1 && disc->peer_count < MAX_PEERS) {
+        found = disc->peer_count++;
+        DLOG("Added new peer slot %d", found);
+    }
+    
+    if (found >= 0) {
+        PeerInfo* peer = &disc->peers[found];
+        strcpy(peer->id, id);
+        strcpy(peer->endpoint, endpoint);
+        // ===== GROUND TRUTH: Use sender_ip from kernel! =====
+        strcpy(peer->ip, sender_ip);
+        peer->last_seen = time(NULL);
+        peer->online = true;
+        peer->is_secure = is_secure;
+        
+        if (is_secure) {
+            strcpy(peer->name, name);
+            strcpy(peer->public_key, public_key);
+            strcpy(peer->signature, signature);
+            peer->verified = true;
+        }
+        
+        char* port_colon = strchr(endpoint, ':');
+        if (port_colon) {
+            peer->port = atoi(port_colon + 1);
+        } else {
+            peer->port = 9000;
+        }
+        
+        DLOG("Peer updated: %s at %s:%d (secure=%d)", id, peer->ip, peer->port, is_secure);
+        
+        if (disc->on_peer_found) {
+            disc->on_peer_found(peer);
+        }
+    }
+    
+    pthread_mutex_unlock(&disc->mutex);
 }
 
+// ===== WHO_HAS Handler =====
 static void handle_who_has(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* search_id = msg + 8;
     
@@ -558,10 +590,19 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
          search_id, norm_search, g_my_id, norm_my);
     
     if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
-        char response[512];
-        snprintf(response, sizeof(response), 
-                "I_AM:%s:%s:%d", 
-                g_my_id, g_my_ip, g_my_port);
+        char response[1024];
+        if (g_my_secure) {
+            // Secure I_AM with signature
+            // Format: I_AM:SECURE:<id>:<ip>:<port>:<name>:<public_key>:<signature>
+            snprintf(response, sizeof(response), 
+                    "I_AM:SECURE:%s:%s:%d:%s:%s:%s", 
+                    g_my_id, g_my_ip, g_my_port,
+                    g_my_name, g_my_public_key, g_my_signature);
+        } else {
+            snprintf(response, sizeof(response), 
+                    "I_AM:%s:%s:%d", 
+                    g_my_id, g_my_ip, g_my_port);
+        }
         
         DLOG("MATCH! Sending I_AM: %s", response);
         
@@ -573,33 +614,264 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
     }
 }
 
-static void handle_i_am(Discovery* disc, const char* msg) {
+// ===== I_AM Handler =====
+static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* rest = msg + 5;
+    bool is_secure = false;
+    
+    // Check if secure
+    if (strncmp(rest, "SECURE:", 7) == 0) {
+        is_secure = true;
+        rest += 7;
+    }
+    
     const char* colon1 = strchr(rest, ':');
     const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
     
-    if (colon1 && colon2) {
-        char id[64];
-        char ip[INET_ADDRSTRLEN];
-        int port;
+    if (!colon1 || !colon2) return;
+    
+    char id[64];
+    char payload_ip[INET_ADDRSTRLEN];
+    int port;
+    char name[128] = {0};
+    char public_key[ORCA_PUBKEY_LEN] = {0};
+    char signature[ORCA_SIG_LEN] = {0};
+    
+    int id_len = colon1 - rest;
+    strncpy(id, rest, id_len);
+    id[id_len] = '\0';
+    
+    int ip_len = colon2 - colon1 - 1;
+    strncpy(payload_ip, colon1 + 1, ip_len);
+    payload_ip[ip_len] = '\0';
+    
+    port = atoi(colon2 + 1);
+    
+    // Parse secure fields
+    if (is_secure) {
+        const char* secure_rest = colon2 + 1;
+        char* name_start = strchr(secure_rest, ':');
+        if (name_start) {
+            name_start++;
+            char* name_end = strchr(name_start, ':');
+            if (name_end) {
+                int len = name_end - name_start;
+                if (len < (int)sizeof(name)) {
+                    strncpy(name, name_start, len);
+                    name[len] = '\0';
+                }
+                char* pk_start = name_end + 1;
+                char* pk_end = strchr(pk_start, ':');
+                if (pk_end) {
+                    int pk_len = pk_end - pk_start;
+                    if (pk_len < (int)sizeof(public_key)) {
+                        strncpy(public_key, pk_start, pk_len);
+                        public_key[pk_len] = '\0';
+                    }
+                    strcpy(signature, pk_end + 1);
+                }
+            }
+        }
+    }
+    
+    DLOG("I_AM: id='%s', payload_ip='%s', port=%d, secure=%d", id, payload_ip, port, is_secure);
+    
+    // ===== GROUND TRUTH: Verify sender_ip =====
+    struct sockaddr_in sa;
+    if (inet_pton(AF_INET, sender_ip, &sa.sin_addr) != 1) {
+        DLOG("Invalid sender IP: %s — REJECTED", sender_ip);
+        return;
+    }
+    
+    if (strcmp(sender_ip, "127.0.0.1") == 0) {
+        DLOG("Rejected localhost: %s", sender_ip);
+        return;
+    }
+    
+    // ===== VERIFY SIGNATURE if secure =====
+    if (is_secure) {
+        if (strlen(public_key) == 0 || strlen(signature) == 0) {
+            DLOG("Missing public_key or signature — REJECTED");
+            return;
+        }
         
-        int id_len = colon1 - rest;
-        strncpy(id, rest, id_len);
-        id[id_len] = '\0';
+        // Verify signature
+        char data_to_verify[1024];
+        snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%d|%s", 
+                 id, sender_ip, port, name);
         
-        int ip_len = colon2 - colon1 - 1;
-        strncpy(ip, colon1 + 1, ip_len);
-        ip[ip_len] = '\0';
+        if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
+            DLOG("Invalid signature from %s — REJECTED", id);
+            return;
+        }
+        DLOG("Signature verified for %s", id);
+    }
+    
+    // ===== STORE PEER =====
+    pthread_mutex_lock(&disc->mutex);
+    
+    int found = -1;
+    for (int i = 0; i < disc->peer_count; i++) {
+        if (strcmp(disc->peers[i].id, id) == 0) {
+            found = i;
+            break;
+        }
+    }
+    
+    if (found == -1 && disc->peer_count < MAX_PEERS) {
+        found = disc->peer_count++;
+    }
+    
+    if (found >= 0) {
+        PeerInfo* peer = &disc->peers[found];
+        strcpy(peer->id, id);
+        // ===== GROUND TRUTH: Use sender_ip, NOT payload_ip! =====
+        if (strcmp(sender_ip, payload_ip) != 0) {
+            DLOG("WARNING: payload_ip=%s != sender_ip=%s — USING SENDER_IP", 
+                 payload_ip, sender_ip);
+        }
+        strcpy(peer->ip, sender_ip);
+        peer->port = port;
+        peer->online = true;
+        peer->last_seen = time(NULL);
+        peer->is_secure = is_secure;
         
-        port = atoi(colon2 + 1);
+        if (is_secure) {
+            strcpy(peer->name, name);
+            strcpy(peer->public_key, public_key);
+            strcpy(peer->signature, signature);
+            peer->verified = true;
+        }
         
-        DLOG("I_AM: id='%s', ip='%s', port=%d", id, ip, port);
+        snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", sender_ip, port);
         
+        DLOG("I_AM stored: %s at %s:%d (secure=%d)", id, peer->ip, peer->port, is_secure);
+    }
+    
+    pthread_mutex_unlock(&disc->mutex);
+}
+
+// ===== ADD_REQUEST Handler =====
+static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
+    (void)sender_ip;
+    (void)sender_port;
+    
+    const char* rest = msg + 12;
+    bool is_secure = false;
+    
+    if (strncmp(rest, "SECURE:", 7) == 0) {
+        is_secure = true;
+        rest += 7;
+    }
+    
+    const char* colon1 = strchr(rest, ':');
+    const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
+    const char* colon3 = colon2 ? strchr(colon2 + 1, ':') : NULL;
+    
+    if (!colon1 || !colon2 || !colon3) return;
+    
+    char target_id[64], from_id[64], from_ip[INET_ADDRSTRLEN];
+    int from_port;
+    char from_name[128] = {0};
+    char public_key[ORCA_PUBKEY_LEN] = {0};
+    char signature[ORCA_SIG_LEN] = {0};
+    
+    int len = colon1 - rest;
+    strncpy(target_id, rest, len);
+    target_id[len] = '\0';
+    
+    len = colon2 - colon1 - 1;
+    strncpy(from_id, colon1 + 1, len);
+    from_id[len] = '\0';
+    
+    len = colon3 - colon2 - 1;
+    strncpy(from_ip, colon2 + 1, len);
+    from_ip[len] = '\0';
+    
+    from_port = atoi(colon3 + 1);
+    
+    // Parse secure fields
+    if (is_secure) {
+        const char* secure_rest = colon3 + 1;
+        char* name_start = strchr(secure_rest, ':');
+        if (name_start) {
+            name_start++;
+            char* name_end = strchr(name_start, ':');
+            if (name_end) {
+                int name_len = name_end - name_start;
+                if (name_len < (int)sizeof(from_name)) {
+                    strncpy(from_name, name_start, name_len);
+                    from_name[name_len] = '\0';
+                }
+                char* pk_start = name_end + 1;
+                char* pk_end = strchr(pk_start, ':');
+                if (pk_end) {
+                    int pk_len = pk_end - pk_start;
+                    if (pk_len < (int)sizeof(public_key)) {
+                        strncpy(public_key, pk_start, pk_len);
+                        public_key[pk_len] = '\0';
+                    }
+                    strcpy(signature, pk_end + 1);
+                }
+            }
+        }
+    }
+    
+    DLOG("ADD_REQUEST: target=%s, from=%s at %s:%d, secure=%d", 
+         target_id, from_id, from_ip, from_port, is_secure);
+    
+    // ===== VERIFY SIGNATURE if secure =====
+    if (is_secure) {
+        if (strlen(public_key) == 0 || strlen(signature) == 0) {
+            DLOG("Missing public_key or signature — REJECTED");
+            return;
+        }
+        
+        char data_to_verify[1024];
+        snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%d", 
+                 target_id, from_id, from_ip, from_port);
+        
+        if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
+            DLOG("Invalid signature in ADD_REQUEST from %s — REJECTED", from_id);
+            return;
+        }
+        DLOG("Signature verified for ADD_REQUEST from %s", from_id);
+    }
+    
+    char norm_target[64], norm_my[64];
+    normalize_id(target_id, norm_target, sizeof(norm_target));
+    normalize_id(g_my_id, norm_my, sizeof(norm_my));
+    
+    if (strcmp(norm_target, norm_my) == 0) {
+        discovery_send_add_request_ack(disc, from_id, g_my_id);
+        
+        // Store in request manager
+        if (g_request_manager) {
+            request_send(g_request_manager, from_id, g_my_id);
+            DLOG("ADD_REQUEST saved to request.json from %s", from_id);
+        }
+        
+        // Register in registry
+        if (g_registry) {
+            char port_str[16];
+            snprintf(port_str, sizeof(port_str), "%d", from_port);
+            
+            if (is_secure) {
+                registry_register_secure(g_registry, from_id, sender_ip, port_str,
+                                        from_name, public_key, signature, "");
+            } else {
+                registry_register_peer(g_registry, from_id, sender_ip, port_str);
+            }
+            DLOG("ADD_REQUEST: registered peer %s in registry with IP %s:%s", 
+                 from_id, sender_ip, port_str);
+        }
+        
+        // Store in discovery
         pthread_mutex_lock(&disc->mutex);
         
         int found = -1;
         for (int i = 0; i < disc->peer_count; i++) {
-            if (strcmp(disc->peers[i].id, id) == 0) {
+            if (strcmp(disc->peers[i].id, from_id) == 0) {
                 found = i;
                 break;
             }
@@ -611,153 +883,88 @@ static void handle_i_am(Discovery* disc, const char* msg) {
         
         if (found >= 0) {
             PeerInfo* peer = &disc->peers[found];
-            strcpy(peer->id, id);
-            strcpy(peer->ip, ip);
-            peer->port = port;
+            strcpy(peer->id, from_id);
+            // ===== GROUND TRUTH: Use sender_ip from kernel =====
+            strcpy(peer->ip, sender_ip);
+            peer->port = from_port;
             peer->online = true;
             peer->last_seen = time(NULL);
-            snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", ip, port);
+            peer->is_secure = is_secure;
             
-            DLOG("I_AM stored: %s at %s:%d", id, ip, port);
+            if (is_secure) {
+                strcpy(peer->name, from_name);
+                strcpy(peer->public_key, public_key);
+                strcpy(peer->signature, signature);
+                peer->verified = true;
+            }
+            
+            snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", sender_ip, from_port);
+            
+            DLOG("ADD_REQUEST: stored peer %s at %s:%d", from_id, sender_ip, from_port);
+        }
+        
+        pthread_mutex_unlock(&disc->mutex);
+        
+        // Push to pending
+        discovery_push_pending(disc, from_id, sender_ip, from_port);
+        DLOG("ADD_REQUEST: pushed to pending queue, pending_count=%d", disc->pending_count);
+        
+        printf("\n[ORCA] ========================================\n");
+        printf("[ORCA] Friend request from %s (%s:%d)\n", from_id, sender_ip, from_port);
+        if (is_secure) {
+            printf("[ORCA] Secure identity: %s\n", from_name);
+        }
+        printf("[ORCA] Use './orcashi accept %s' to accept\n", from_id);
+        printf("[ORCA] Use './orcashi reject %s' to reject\n", from_id);
+        printf("[ORCA] ========================================\n");
+        fflush(stdout);
+        
+    } else {
+        DLOG("ADD_REQUEST not for us: target=%s, my=%s", target_id, g_my_id);
+    }
+}
+
+// ===== ADD_REQUEST_ACK Handler =====
+static void handle_add_request_ack(Discovery* disc, const char* msg) {
+    const char* rest = msg + 16;
+    const char* colon1 = strchr(rest, ':');
+    
+    if (!colon1) return;
+    
+    char target_id[64], from_id[64];
+    
+    int len = colon1 - rest;
+    strncpy(target_id, rest, len);
+    target_id[len] = '\0';
+    
+    strcpy(from_id, colon1 + 1);
+    
+    DLOG("ADD_REQUEST_ACK: target=%s, from=%s", target_id, from_id);
+    
+    char norm_target[64], norm_my[64];
+    normalize_id(target_id, norm_target, sizeof(norm_target));
+    normalize_id(g_my_id, norm_my, sizeof(norm_my));
+    
+    if (strcmp(norm_target, norm_my) == 0) {
+        DLOG("ADD_REQUEST_ACK: request delivered to %s", target_id);
+        printf("[ORCA] Friend request delivered to %s\n", target_id);
+        
+        pthread_mutex_lock(&disc->mutex);
+        
+        for (int i = 0; i < disc->peer_count; i++) {
+            if (strcmp(disc->peers[i].id, from_id) == 0) {
+                disc->peers[i].online = true;
+                disc->peers[i].last_seen = time(NULL);
+                DLOG("Peer %s marked online (ACK received)", from_id);
+                break;
+            }
         }
         
         pthread_mutex_unlock(&disc->mutex);
     }
 }
 
-// ===== FIXED: handle_add_request with unused parameters =====
-static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
-    (void)sender_ip;
-    (void)sender_port;
-    
-    const char* rest = msg + 12;
-    const char* colon1 = strchr(rest, ':');
-    const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
-    const char* colon3 = colon2 ? strchr(colon2 + 1, ':') : NULL;
-    
-    if (colon1 && colon2 && colon3) {
-        char target_id[64], from_id[64], from_ip[INET_ADDRSTRLEN];
-        int from_port;
-        
-        int len = colon1 - rest;
-        strncpy(target_id, rest, len);
-        target_id[len] = '\0';
-        
-        len = colon2 - colon1 - 1;
-        strncpy(from_id, colon1 + 1, len);
-        from_id[len] = '\0';
-        
-        len = colon3 - colon2 - 1;
-        strncpy(from_ip, colon2 + 1, len);
-        from_ip[len] = '\0';
-        
-        from_port = atoi(colon3 + 1);
-        
-        DLOG("ADD_REQUEST: target=%s, from=%s at %s:%d", target_id, from_id, from_ip, from_port);
-        
-        char norm_target[64], norm_my[64];
-        normalize_id(target_id, norm_target, sizeof(norm_target));
-        normalize_id(g_my_id, norm_my, sizeof(norm_my));
-        
-        if (strcmp(norm_target, norm_my) == 0) {
-            discovery_send_add_request_ack(disc, from_id, g_my_id);
-            
-            if (g_request_manager) {
-                request_send(g_request_manager, from_id, g_my_id);
-                DLOG("ADD_REQUEST saved to request.json from %s", from_id);
-            }
-            
-            if (g_registry) {
-                char port_str[16];
-                snprintf(port_str, sizeof(port_str), "%d", from_port);
-                registry_register_peer(g_registry, from_id, from_ip, port_str);
-                DLOG("ADD_REQUEST: registered peer %s in registry with IP %s:%s", 
-                     from_id, from_ip, port_str);
-            }
-            
-            pthread_mutex_lock(&disc->mutex);
-            
-            int found = -1;
-            for (int i = 0; i < disc->peer_count; i++) {
-                if (strcmp(disc->peers[i].id, from_id) == 0) {
-                    found = i;
-                    break;
-                }
-            }
-            
-            if (found == -1 && disc->peer_count < MAX_PEERS) {
-                found = disc->peer_count++;
-            }
-            
-            if (found >= 0) {
-                PeerInfo* peer = &disc->peers[found];
-                strcpy(peer->id, from_id);
-                strcpy(peer->ip, from_ip);
-                peer->port = from_port;
-                peer->online = true;
-                peer->last_seen = time(NULL);
-                snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", from_ip, from_port);
-                
-                DLOG("ADD_REQUEST: stored peer %s at %s:%d", from_id, from_ip, from_port);
-            }
-            
-            pthread_mutex_unlock(&disc->mutex);
-            
-            discovery_push_pending(disc, from_id, from_ip, from_port);
-            DLOG("ADD_REQUEST: pushed to pending queue, pending_count=%d", disc->pending_count);
-            
-            printf("\n[ORCA] ========================================\n");
-            printf("[ORCA] Friend request from %s (%s:%d)\n", from_id, from_ip, from_port);
-            printf("[ORCA] Use './orcashi accept %s' to accept\n", from_id);
-            printf("[ORCA] Use './orcashi reject %s' to reject\n", from_id);
-            printf("[ORCA] ========================================\n");
-            fflush(stdout);
-            
-        } else {
-            DLOG("ADD_REQUEST not for us: target=%s, my=%s", target_id, g_my_id);
-        }
-    }
-}
-
-static void handle_add_request_ack(Discovery* disc, const char* msg) {
-    const char* rest = msg + 16;
-    const char* colon1 = strchr(rest, ':');
-    
-    if (colon1) {
-        char target_id[64], from_id[64];
-        
-        int len = colon1 - rest;
-        strncpy(target_id, rest, len);
-        target_id[len] = '\0';
-        
-        strcpy(from_id, colon1 + 1);
-        
-        DLOG("ADD_REQUEST_ACK: target=%s, from=%s", target_id, from_id);
-        
-        char norm_target[64], norm_my[64];
-        normalize_id(target_id, norm_target, sizeof(norm_target));
-        normalize_id(g_my_id, norm_my, sizeof(norm_my));
-        
-        if (strcmp(norm_target, norm_my) == 0) {
-            DLOG("ADD_REQUEST_ACK: request delivered to %s", target_id);
-            printf("[ORCA] Friend request delivered to %s\n", target_id);
-            
-            pthread_mutex_lock(&disc->mutex);
-            
-            for (int i = 0; i < disc->peer_count; i++) {
-                if (strcmp(disc->peers[i].id, from_id) == 0) {
-                    disc->peers[i].online = true;
-                    disc->peers[i].last_seen = time(NULL);
-                    DLOG("Peer %s marked online (ACK received)", from_id);
-                    break;
-                }
-            }
-            
-            pthread_mutex_unlock(&disc->mutex);
-        }
-    }
-}
-
+// ===== ORCA_SEARCH Handler =====
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* search_id = msg + 12;
     
@@ -768,10 +975,17 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
     DLOG("ORCA_SEARCH: '%s' (normalized='%s')", search_id, norm_search);
     
     if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
-        char response[512];
-        snprintf(response, sizeof(response), 
-                "ORCA_PRESENCE:%s:%s:%d", 
-                g_my_id, g_my_ip, g_my_port);
+        char response[1024];
+        if (g_my_secure) {
+            snprintf(response, sizeof(response), 
+                    "ORCA_PRESENCE:SECURE:%s:%s:%d:%s:%s:%s", 
+                    g_my_id, g_my_ip, g_my_port,
+                    g_my_name, g_my_public_key, g_my_signature);
+        } else {
+            snprintf(response, sizeof(response), 
+                    "ORCA_PRESENCE:%s:%s:%d", 
+                    g_my_id, g_my_ip, g_my_port);
+        }
         
         DLOG("MATCH! Sending ORCA_PRESENCE response: %s", response);
         
@@ -781,6 +995,7 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
     }
 }
 
+// ===== Peer Discovery =====
 bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
     if (!disc || !out_peer) return false;
     
@@ -795,8 +1010,8 @@ bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
         char norm_peer_id[64];
         normalize_id(disc->peers[i].id, norm_peer_id, sizeof(norm_peer_id));
         
-        DLOG("  peer[%d]: '%s' (normalized '%s') online=%d", 
-             i, disc->peers[i].id, norm_peer_id, disc->peers[i].online);
+        DLOG("  peer[%d]: '%s' (normalized '%s') online=%d secure=%d", 
+             i, disc->peers[i].id, norm_peer_id, disc->peers[i].online, disc->peers[i].is_secure);
         
         if (strcmp(norm_peer_id, norm_id) == 0 && disc->peers[i].online) {
             *out_peer = disc->peers[i];
@@ -829,6 +1044,7 @@ int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers) {
     return count;
 }
 
+// ===== Cleanup =====
 static time_t last_cleanup = 0;
 
 void discovery_cleanup_stale(Discovery* disc) {
@@ -860,6 +1076,83 @@ void discovery_cleanup_stale(Discovery* disc) {
     pthread_mutex_unlock(&disc->mutex);
 }
 
+// ===== Threads =====
+static void* listen_loop(void* arg) {
+    Discovery* disc = (Discovery*)arg;
+    char buffer[BUFFER_SIZE];
+    struct sockaddr_in sender_addr;
+    socklen_t addr_len = sizeof(sender_addr);
+    fd_set fds;
+    struct timeval tv;
+    
+    DLOG("Listen loop started");
+    
+    while (disc->running) {
+        FD_ZERO(&fds);
+        FD_SET(disc->udp_socket, &fds);
+        
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        
+        int ret = select(disc->udp_socket + 1, &fds, NULL, NULL, &tv);
+        if (ret < 0) {
+            DLOG("select() error: %s", strerror(errno));
+            break;
+        }
+        if (ret == 0) {
+            discovery_cleanup_stale(disc);
+            continue;
+        }
+        
+        int n = recvfrom(disc->udp_socket, buffer, sizeof(buffer) - 1, 0,
+                        (struct sockaddr*)&sender_addr, &addr_len);
+        if (n <= 0) continue;
+        
+        buffer[n] = '\0';
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &sender_addr.sin_addr, ip, sizeof(ip));
+        int port = ntohs(sender_addr.sin_port);
+        
+        DLOG("Received %d bytes from %s:%d", n, ip, port);
+        DLOG("  Raw: '%s'", buffer);
+        
+        parse_message(disc, buffer, ip, port);
+    }
+    
+    DLOG("Listen loop stopped");
+    return NULL;
+}
+
+static void* broadcast_loop(void* arg) {
+    Discovery* disc = (Discovery*)arg;
+    
+    DLOG("Broadcast loop started");
+    
+    while (disc->running) {
+        sleep(BROADCAST_INTERVAL);
+        discovery_cleanup_stale(disc);
+    }
+    
+    DLOG("Broadcast loop stopped");
+    return NULL;
+}
+
+// ===== Callbacks =====
+void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*)) {
+    if (disc) {
+        disc->on_peer_found = callback;
+        DLOG("on_peer_found callback set");
+    }
+}
+
+void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*)) {
+    if (disc) {
+        disc->on_peer_offline = callback;
+        DLOG("on_peer_offline callback set");
+    }
+}
+
+// ===== Utility =====
 char* discovery_get_local_ip(void) {
     static char ip[INET_ADDRSTRLEN];
     struct ifaddrs* ifaddr;
@@ -885,18 +1178,4 @@ char* discovery_get_local_ip(void) {
     strcpy(ip, "127.0.0.1");
     DLOG("get_local_ip: no interface found, using 127.0.0.1");
     return ip;
-}
-
-void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*)) {
-    if (disc) {
-        disc->on_peer_found = callback;
-        DLOG("on_peer_found callback set");
-    }
-}
-
-void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*)) {
-    if (disc) {
-        disc->on_peer_offline = callback;
-        DLOG("on_peer_offline callback set");
-    }
 }
