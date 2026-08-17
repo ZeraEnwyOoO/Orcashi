@@ -185,6 +185,16 @@ bool orca_identity_matches_id(OrcaIdentity* identity, const char* id);
 void orca_identity_debug_dump(OrcaIdentity* identity, FILE* fp);
 int orca_identity_debug_verify_storage(void);
 
+/* ============================================================================
+ * INTERNAL HELPERS (exported for use by main.c)
+ * ============================================================================ */
+
+/* Zeroize memory (secure erase) - for passcode cleanup */
+void zeroize(void* ptr, size_t len);
+
+/* Read entire file content into memory (caller must free) */
+char* read_file_content(const char* path);
+
 #ifdef __cplusplus
 }
 #endif
