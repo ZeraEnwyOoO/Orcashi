@@ -12,7 +12,7 @@
 #include <ctype.h>
 
 /* ============================================================================
- * STATIC HELPERS
+ * STATIC HELPERS (internal to this file)
  * ============================================================================ */
 
 static void set_identity_error(const char* msg) {
@@ -35,7 +35,28 @@ static int ensure_directory(const char* path) {
     return 0;
 }
 
-static char* read_file_content(const char* path) {
+static int write_file_content(const char* path, const char* content) {
+    FILE* f = fopen(path, "w");
+    if (!f) return -1;
+    fprintf(f, "%s", content);
+    fclose(f);
+    return 0;
+}
+
+/* ============================================================================
+ * EXPORTED HELPERS (used by main.c)
+ * ============================================================================ */
+
+void zeroize(void* ptr, size_t len) {
+    if (ptr && len > 0) {
+        volatile char* vptr = (volatile char*)ptr;
+        for (size_t i = 0; i < len; i++) {
+            vptr[i] = 0;
+        }
+    }
+}
+
+char* read_file_content(const char* path) {
     FILE* f = fopen(path, "r");
     if (!f) return NULL;
     
@@ -53,23 +74,6 @@ static char* read_file_content(const char* path) {
     content[len] = '\0';
     fclose(f);
     return content;
-}
-
-static int write_file_content(const char* path, const char* content) {
-    FILE* f = fopen(path, "w");
-    if (!f) return -1;
-    fprintf(f, "%s", content);
-    fclose(f);
-    return 0;
-}
-
-static void zeroize(void* ptr, size_t len) {
-    if (ptr && len > 0) {
-        volatile char* vptr = (volatile char*)ptr;
-        for (size_t i = 0; i < len; i++) {
-            vptr[i] = 0;
-        }
-    }
 }
 
 /* ============================================================================
