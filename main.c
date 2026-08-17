@@ -386,7 +386,11 @@ static int listen_command(ORCASHI* orcashi) {
         if (orcashi_is_connected(g_orcashi)) {
             char msg[4096];
             if (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
-                printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
+                if (plug_ecdh_complete(g_orcashi->plug)) {
+                    printf("[%s] (secure) %s\n", orcashi_get_peer_id(g_orcashi), msg);
+                } else {
+                    printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
+                }
                 fflush(stdout);
             }
         }
@@ -605,7 +609,11 @@ void daemonize(void) {
             if (orcashi_is_connected(g_orcashi)) {
                 char msg[4096];
                 if (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
-                    fprintf(stderr, "[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
+                    if (plug_ecdh_complete(g_orcashi->plug)) {
+                        fprintf(stderr, "[%s] (secure) %s\n", orcashi_get_peer_id(g_orcashi), msg);
+                    } else {
+                        fprintf(stderr, "[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
+                    }
                     fflush(stderr);
                 }
             }
@@ -648,11 +656,21 @@ void stop_daemon(void) {
 }
 
 /* ============================================================================
- * CHAT LOOP
+ * CHAT LOOP - PHASE 4: SECURE CHAT WITH ECDH + AES-GCM
  * ============================================================================ */
 
 void chat_loop(void) {
     printf("Type /exit to quit\n");
+    printf("---\n");
+    
+    /* Show secure status */
+    if (plug_ecdh_complete(g_orcashi->plug)) {
+        printf("[ORCA] Secure channel: ENABLED (ECDH + AES-256-GCM)\n");
+    } else if (orcashi_session_established(g_orcashi)) {
+        printf("[ORCA] Secure channel: ENABLED (Legacy)\n");
+    } else {
+        printf("[ORCA] Secure channel: DISABLED (Plaintext)\n");
+    }
     printf("---\n");
     
     char input[4096];
@@ -661,11 +679,17 @@ void chat_loop(void) {
     struct timeval tv;
     
     while (running && orcashi_is_connected(g_orcashi)) {
+        /* Receive messages */
         while (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
-            printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
+            if (plug_ecdh_complete(g_orcashi->plug)) {
+                printf("[%s] (secure) %s\n", orcashi_get_peer_id(g_orcashi), msg);
+            } else {
+                printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
+            }
             fflush(stdout);
         }
         
+        /* Check for user input */
         FD_ZERO(&fds);
         FD_SET(STDIN_FILENO, &fds);
         tv.tv_sec = 0;
@@ -677,6 +701,17 @@ void chat_loop(void) {
             input[strcspn(input, "\n")] = '\0';
             
             if (strcmp(input, "/exit") == 0) break;
+            
+            if (strcmp(input, "/secure") == 0) {
+                if (plug_ecdh_complete(g_orcashi->plug)) {
+                    printf("[ORCA] Secure channel: ENABLED (ECDH + AES-256-GCM)\n");
+                } else if (orcashi_session_established(g_orcashi)) {
+                    printf("[ORCA] Secure channel: ENABLED (Legacy)\n");
+                } else {
+                    printf("[ORCA] Secure channel: DISABLED\n");
+                }
+                continue;
+            }
             
             if (strlen(input) > 0) {
                 orcashi_send_message(g_orcashi, input);
