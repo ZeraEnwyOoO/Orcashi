@@ -1045,16 +1045,62 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* ACCEPT COMMAND */
+    /* ========================================================================
+     * ACCEPT COMMAND - WITH IDENTITY VERIFICATION (PHASE 3)
+     * ======================================================================== */
     else if (strcmp(cmd, "accept") == 0 && argc >= 3) {
         char* id = argv[2];
+        char norm_id[64];
+        strip_brackets(id, norm_id, sizeof(norm_id));
         
-        char norm_from[64], norm_my[64];
-        strip_brackets(id, norm_from, sizeof(norm_from));
-        strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
+        /* Step 1: Get peer from registry */
+        RegistryPeer reg_peer;
+        if (!registry_get_peer(g_orcashi->registry, norm_id, &reg_peer)) {
+            printf("[ERROR] Peer %s not found in registry!\n", id);
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
         
-        registry_update_status(g_orcashi->registry, norm_from, "accepted");
-        printf("Accepted friend request from %s\n", id);
+        printf("[ORCA] Accepting friend request from %s...\n", id);
+        
+        /* Step 2: If SECURE mode, verify identity */
+        if (reg_peer.mode == REG_MODE_SECURE) {
+            printf("[ORCA] Verifying peer identity...\n");
+            
+            /* Build identity data to verify */
+            char data_to_verify[1024];
+            snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%ld",
+                     reg_peer.id, reg_peer.name, "user", (long)reg_peer.created_at);
+            
+            /* Verify signature with peer's public key */
+            if (!orca_rsa_verify_string(data_to_verify, reg_peer.signature, 
+                                        reg_peer.public_key)) {
+                printf("[ERROR] Identity verification failed!\n");
+                printf("[ERROR] Peer %s failed cryptographic verification.\n", id);
+                printf("[ORCA] Rejecting request.\n");
+                registry_update_status(g_orcashi->registry, norm_id, "rejected");
+                orcashi_destroy(g_orcashi);
+                return 1;
+            }
+            
+            printf("[ORCA] Identity verified: %s\n", reg_peer.id);
+            printf("[ORCA]   Name: %s\n", reg_peer.name);
+            printf("[ORCA]   Created: %s", ctime(&reg_peer.created_at));
+            printf("[ORCA]   Mode: SECURE\n");
+            
+        } else if (reg_peer.mode == REG_MODE_NORMAL) {
+            printf("[ORCA] WARNING: Normal mode has NO cryptographic verification.\n");
+            printf("[ORCA] Accepting without verification.\n");
+        } else {
+            printf("[ERROR] Unknown mode for peer %s\n", id);
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
+        
+        /* Step 3: Accept request */
+        registry_update_status(g_orcashi->registry, norm_id, "accepted");
+        printf("[ORCA] Friend request accepted from %s\n", id);
+        printf("[ORCA] Use './orcashi peers' to see your peers\n");
         
         orcashi_destroy(g_orcashi);
         return 0;
