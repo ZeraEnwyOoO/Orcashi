@@ -685,17 +685,6 @@ void chat_loop(void) {
     }
 }
 
-static int get_answer(const char* prompt, char* answer, size_t size) {
-    printf("%s", prompt);
-    fflush(stdout);
-    
-    if (fgets(answer, size, stdin)) {
-        answer[strcspn(answer, "\n")] = '\0';
-        return 1;
-    }
-    return 0;
-}
-
 /* ============================================================================
  * PEERS INTERACTIVE
  * ============================================================================ */
@@ -954,9 +943,13 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* ADD COMMAND */
+    /* ========================================================================
+     * ADD COMMAND - WITH DHT FALLBACK (PHASE 2)
+     * ======================================================================== */
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         char* id = argv[2];
+        char norm_id[64];
+        strip_brackets(id, norm_id, sizeof(norm_id));
         
         char* local_ip = orcashi_get_local_ip();
         if (local_ip && strlen(local_ip) > 0) {
@@ -966,35 +959,88 @@ int main(int argc, char* argv[]) {
         free(local_ip);
         
         printf("Sending friend request to %s...\n", id);
+        printf("[ORCA] Searching for peer...\n");
         
+        /* Step 1: Try Discovery (LAN Broadcast) */
+        printf("[ORCA] Searching LAN...\n");
         discovery_query_peer(g_orcashi->discovery, id);
         
         int waited = 0;
         PeerInfo p;
-        while (waited < 30) {
+        int found = 0;
+        
+        while (waited < 10) {
             if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
+                found = 1;
                 break;
             }
             sleep(1);
             waited++;
             if (waited % 5 == 0) {
-                printf("  Still searching... (%d seconds)\n", waited);
+                printf("[ORCA] Still searching LAN... (%d seconds)\n", waited);
             }
         }
         
-        if (discovery_find_peer(g_orcashi->discovery, id, &p)) {
-            registry_register_peer(g_orcashi->registry, id, p.ip, "9000");
+        /* Step 2: If not found on LAN, try DHT */
+        if (!found) {
+            printf("[ORCA] Not found on LAN, trying DHT...\n");
             
-            discovery_send_add_request_with_ack(g_orcashi->discovery, id,
+            char dht_ip[INET_ADDRSTRLEN];
+            int dht_port;
+            
+            if (dht_node_lookup(g_orcashi->dht, norm_id, 15, dht_ip, &dht_port)) {
+                printf("[ORCA] Found via DHT: %s:%d\n", dht_ip, dht_port);
+                
+                /* Build peer info from DHT result */
+                strcpy(p.id, norm_id);
+                strcpy(p.ip, dht_ip);
+                p.port = dht_port;
+                p.online = true;
+                p.is_secure = false;
+                p.last_seen = time(NULL);
+                
+                /* Store in registry */
+                char port_str[16];
+                snprintf(port_str, sizeof(port_str), "%d", dht_port);
+                registry_register_peer(g_orcashi->registry, norm_id, dht_ip, port_str);
+                
+                /* Store in cache */
+                CachePeer cache_peer;
+                memset(&cache_peer, 0, sizeof(cache_peer));
+                strcpy(cache_peer.id, norm_id);
+                strcpy(cache_peer.ip, dht_ip);
+                cache_peer.port = dht_port;
+                cache_peer.online = true;
+                cache_peer.last_seen = time(NULL);
+                peer_cache_save_peer(g_orcashi->cache, &cache_peer);
+                
+                found = 1;
+            } else {
+                printf("[ORCA] Peer %s not found via DHT.\n", id);
+            }
+        }
+        
+        /* Step 3: Send friend request if peer found */
+        if (found) {
+            /* Ensure peer is in registry with correct IP */
+            char port_str[16];
+            snprintf(port_str, sizeof(port_str), "%d", p.port);
+            registry_register_peer(g_orcashi->registry, norm_id, p.ip, port_str);
+            
+            printf("[ORCA] Sending friend request to %s at %s:%d...\n", id, p.ip, p.port);
+            
+            discovery_send_add_request_with_ack(g_orcashi->discovery, norm_id,
                                                g_orcashi->my_id,
                                                g_orcashi->local_ip,
                                                ORCASHI_PORT);
             
-            printf("Friend request sent to %s\n", id);
-            printf("Use './orcashi peers' to check status\n");
+            printf("[ORCA] Friend request sent to %s\n", id);
+            printf("[ORCA] Use './orcashi peers' to check status\n");
         } else {
-            printf("Peer %s not found after 30 seconds.\n", id);
+            printf("[ORCA] Peer %s not found.\n", id);
+            printf("[ORCA] Make sure the peer is online and listening.\n");
         }
+        
         orcashi_destroy(g_orcashi);
         return 0;
     }
