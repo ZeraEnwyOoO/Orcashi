@@ -315,7 +315,7 @@ static int register_secure_3digit(ORCASHI* orcashi) {
 }
 
 /* ============================================================================
- * LISTEN COMMAND - FIXED: Start TCP server on port 9000 + Discovery on 9001
+ * LISTEN COMMAND - Start TCP server on port 9000 + Discovery on 9001
  * ============================================================================ */
 
 static int listen_command(ORCASHI* orcashi) {
@@ -385,7 +385,7 @@ static int listen_command(ORCASHI* orcashi) {
     orcashi->has_identity = true;
     strcpy(orcashi->my_id, identity.id);
     
-    /* ===== FIX: Start TCP server on port 9000 for incoming chat connections ===== */
+    /* ===== Start TCP server on port 9000 for incoming chat connections ===== */
     printf("[ORCA] Starting TCP server on port %d...\n", ORCASHI_PORT);
     if (!plug_create_server(orcashi->plug, ORCASHI_PORT)) {
         printf("[WARNING] Failed to start TCP server on port %d\n", ORCASHI_PORT);
@@ -949,7 +949,7 @@ int main(int argc, char* argv[]) {
         return reg_result;
     }
     
-    /* LISTEN COMMAND - FIXED */
+    /* LISTEN COMMAND */
     else if (strcmp(cmd, "listen") == 0) {
         int result = listen_command(g_orcashi);
         orcashi_destroy(g_orcashi);
@@ -1070,7 +1070,10 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* ADD COMMAND - Discovery only, no TCP connection */
+    /* ==========================================================================
+     * ADD COMMAND - FIXED: Use Discovery on UDP 9001 ONLY to find peer
+     * Do NOT connect TCP 9000 here!
+     * ========================================================================== */
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         if (load_identity_with_passcode(g_orcashi, "add") < 0) {
             orcashi_destroy(g_orcashi);
@@ -1084,13 +1087,24 @@ int main(int argc, char* argv[]) {
         char* local_ip = orcashi_get_local_ip();
         if (local_ip && strlen(local_ip) > 0) {
             strcpy(g_orcashi->local_ip, local_ip);
-            discovery_set_my_identity(g_orcashi->discovery, g_orcashi->my_id, local_ip, ORCASHI_PORT);
+            /* ===== Set identity with chat port (9000) for I_AM response ===== */
+            discovery_set_my_identity(g_orcashi->discovery, 
+                                      g_orcashi->my_id, 
+                                      local_ip, 
+                                      ORCASHI_PORT);
         }
         free(local_ip);
         
+        /* ===== FIX: Init Discovery on UDP 9001 ===== */
+        if (!discovery_init(g_orcashi->discovery, DISCOVERY_PORT)) {
+            printf("[ERROR] Failed to init discovery!\n");
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
+        discovery_start(g_orcashi->discovery);
+        
         printf("Sending friend request to %s...\n", id);
         printf("[ORCA] Searching for peer...\n");
-        
         printf("[ORCA] Searching LAN...\n");
         discovery_query_peer(g_orcashi->discovery, id);
         
@@ -1125,33 +1139,24 @@ int main(int argc, char* argv[]) {
                 p.online = true;
                 p.is_secure = false;
                 p.last_seen = time(NULL);
-                
-                char port_str[16];
-                snprintf(port_str, sizeof(port_str), "%d", dht_port);
-                registry_register_peer(g_orcashi->registry, norm_id, dht_ip, port_str);
-                
-                CachePeer cache_peer;
-                memset(&cache_peer, 0, sizeof(cache_peer));
-                strcpy(cache_peer.id, norm_id);
-                strcpy(cache_peer.ip, dht_ip);
-                cache_peer.port = dht_port;
-                cache_peer.online = true;
-                cache_peer.last_seen = time(NULL);
-                peer_cache_save_peer(g_orcashi->cache, &cache_peer);
-                
                 found = 1;
             } else {
                 printf("[ORCA] Peer %s not found via DHT.\n", id);
             }
         }
         
+        /* ===== FIX: Stop Discovery after search ===== */
+        discovery_stop(g_orcashi->discovery);
+        
         if (found) {
+            /* ===== Save peer info (IP + port 9000 for chat) ===== */
             char port_str[16];
             snprintf(port_str, sizeof(port_str), "%d", p.port);
             registry_register_peer(g_orcashi->registry, norm_id, p.ip, port_str);
             
-            printf("[ORCA] Sending friend request to %s at %s:%d...\n", id, p.ip, p.port);
+            printf("[ORCA] Sending friend request to %s at %s:%s...\n", id, p.ip, port_str);
             
+            /* ===== Send ADD_REQUEST via UDP 9001 ===== */
             discovery_send_add_request_with_ack(g_orcashi->discovery, norm_id,
                                                g_orcashi->my_id,
                                                g_orcashi->local_ip,
