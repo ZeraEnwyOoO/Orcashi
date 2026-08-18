@@ -613,6 +613,12 @@ bool orca_identity_verify(OrcaIdentity* identity) {
                                   identity->public_key);
 }
 
+/* ============================================================================
+ * FIXED: orca_identity_verify_with_passcode()
+ *
+ * Fix: Convert raw key to hex before passing to decrypt function.
+ * ============================================================================ */
+
 bool orca_identity_verify_with_passcode(OrcaIdentity* identity,
                                         const char* passcode) {
     if (!identity || !passcode) return false;
@@ -642,10 +648,16 @@ bool orca_identity_verify_with_passcode(OrcaIdentity* identity,
     iv_hex[iv_len] = '\0';
     strcpy(ciphertext_b64, colon + 1);
     
-    if (orca_aes_cbc_decrypt_string(ciphertext_b64, iv_hex, (char*)key, &private_key) < 0) {
+    /* ===== FIX: Convert raw key to hex before passing ===== */
+    char key_hex[65];
+    orca_bytes_to_hex(key, ORCA_AES_KEY_LEN, key_hex);
+    
+    if (orca_aes_cbc_decrypt_string(ciphertext_b64, iv_hex, key_hex, &private_key) < 0) {
+        zeroize(key_hex, sizeof(key_hex));
         zeroize(key, ORCA_AES_KEY_LEN);
         return false;
     }
+    zeroize(key_hex, sizeof(key_hex));
     zeroize(key, ORCA_AES_KEY_LEN);
     
     char test_data[] = "test";
