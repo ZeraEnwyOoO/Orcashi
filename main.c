@@ -121,6 +121,85 @@ static int read_input(const char* prompt, char* output, size_t size) {
 }
 
 /* ============================================================================
+ * LOAD IDENTITY WITH PASSCODE - For commands that need identity
+ * ============================================================================ */
+
+static int load_identity_with_passcode(ORCASHI* orcashi, const char* cmd_name) {
+    (void)cmd_name;
+    
+    if (!orcashi) return -1;
+    
+    /* Check if identity exists */
+    if (!orca_identity_exists(NULL)) {
+        printf("[ERROR] No identity found!\n");
+        printf("[ORCA] Use './orcashi register' first\n");
+        return -1;
+    }
+    
+    /* If already loaded, return success */
+    if (orcashi_has_identity(orcashi)) {
+        return 0;
+    }
+    
+    /* Load identity metadata to show ID */
+    OrcaIdentity identity;
+    memset(&identity, 0, sizeof(identity));
+    
+    char* json = read_file_content(ORCA_IDENTITY_FILE);
+    if (!json) {
+        printf("[ERROR] Failed to read identity file!\n");
+        return -1;
+    }
+    if (orca_identity_from_json(json, &identity) < 0) {
+        free(json);
+        printf("[ERROR] Failed to parse identity!\n");
+        return -1;
+    }
+    free(json);
+    
+    printf("[ORCA] Identity found: %s\n", identity.id);
+    printf("[ORCA] Mode: %s\n", identity.mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL");
+    
+    /* Get passcode - only needed for secure identity */
+    char passcode[128];
+    if (identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+        if (read_password("Enter passcode: ", passcode, sizeof(passcode)) < 0) {
+            printf("[ERROR] No input!\n");
+            return -1;
+        }
+        printf("[ORCA] Unlocking identity...\n");
+    } else {
+        passcode[0] = '\0';
+        printf("[ORCA] Normal mode - no passcode required\n");
+    }
+    
+    /* Load full identity with passcode */
+    if (orca_identity_load(&identity, passcode[0] ? passcode : NULL) < 0) {
+        printf("[ERROR] Wrong passcode or corrupted identity!\n");
+        zeroize(passcode, sizeof(passcode));
+        return -1;
+    }
+    zeroize(passcode, sizeof(passcode));
+    
+    /* Verify identity */
+    if (!orca_identity_verify(&identity)) {
+        printf("[ERROR] Identity verification failed!\n");
+        return -1;
+    }
+    
+    /* Store in orcashi */
+    orcashi->identity = identity;
+    orcashi->has_identity = true;
+    strcpy(orcashi->my_id, identity.id);
+    
+    printf("[ORCA] Identity unlocked: %s\n", identity.id);
+    printf("[ORCA] Mode: %s\n", identity.mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL");
+    printf("\n");
+    
+    return 0;
+}
+
+/* ============================================================================
  * REGISTER COMMAND - SECURE 3-DIGIT IDENTITY
  * ============================================================================ */
 
@@ -252,7 +331,7 @@ static int register_secure_3digit(ORCASHI* orcashi) {
 }
 
 /* ============================================================================
- * LISTEN COMMAND - UNLOCK IDENTITY WITH PASSCODE
+ * LISTEN COMMAND - UNLOCK IDENTITY WITH PASSCODE AND RUN CONTINUOUSLY
  * ============================================================================ */
 
 static int listen_command(ORCASHI* orcashi) {
@@ -297,7 +376,6 @@ static int listen_command(ORCASHI* orcashi) {
         }
         printf("[ORCA] Unlocking identity...\n");
     } else {
-        /* Normal mode - no passcode needed */
         passcode[0] = '\0';
         printf("[ORCA] Normal mode - no passcode required\n");
     }
@@ -869,7 +947,7 @@ int main(int argc, char* argv[]) {
     if (my_id) {
         printf("ID: %s\n", my_id);
     } else if (orca_identity_exists(NULL)) {
-        printf("Identity found (locked) - use './orcashi listen' to unlock\n");
+        printf("Identity found (locked)\n");
     } else {
         printf("No identity - use './orcashi register'\n");
     }
@@ -939,12 +1017,9 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* CREATE COMMAND */
+    /* CREATE COMMAND - Load identity */
     else if (strcmp(cmd, "create") == 0) {
-        /* Check identity is loaded */
-        if (!orcashi_has_identity(g_orcashi)) {
-            printf("[ERROR] Identity not loaded!\n");
-            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+        if (load_identity_with_passcode(g_orcashi, "create") < 0) {
             orcashi_destroy(g_orcashi);
             return 1;
         }
@@ -976,12 +1051,9 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* JOIN COMMAND */
+    /* JOIN COMMAND - Load identity */
     else if (strcmp(cmd, "join") == 0 && argc >= 3) {
-        /* Check identity is loaded */
-        if (!orcashi_has_identity(g_orcashi)) {
-            printf("[ERROR] Identity not loaded!\n");
-            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+        if (load_identity_with_passcode(g_orcashi, "join") < 0) {
             orcashi_destroy(g_orcashi);
             return 1;
         }
@@ -1020,13 +1092,11 @@ int main(int argc, char* argv[]) {
     }
     
     /* ========================================================================
-     * ADD COMMAND - WITH DHT FALLBACK (PHASE 2)
+     * ADD COMMAND - WITH IDENTITY LOADING + DHT FALLBACK
      * ======================================================================== */
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
-        /* Check identity is loaded */
-        if (!orcashi_has_identity(g_orcashi)) {
-            printf("[ERROR] Identity not loaded!\n");
-            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+        /* Load identity with passcode */
+        if (load_identity_with_passcode(g_orcashi, "add") < 0) {
             orcashi_destroy(g_orcashi);
             return 1;
         }
@@ -1130,13 +1200,11 @@ int main(int argc, char* argv[]) {
     }
     
     /* ========================================================================
-     * ACCEPT COMMAND - WITH IDENTITY VERIFICATION (PHASE 3)
+     * ACCEPT COMMAND - WITH IDENTITY LOADING + VERIFICATION
      * ======================================================================== */
     else if (strcmp(cmd, "accept") == 0 && argc >= 3) {
-        /* Check identity is loaded */
-        if (!orcashi_has_identity(g_orcashi)) {
-            printf("[ERROR] Identity not loaded!\n");
-            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+        /* Load identity with passcode */
+        if (load_identity_with_passcode(g_orcashi, "accept") < 0) {
             orcashi_destroy(g_orcashi);
             return 1;
         }
@@ -1198,10 +1266,14 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* REJECT COMMAND */
+    /* REJECT COMMAND - Load identity */
     else if (strcmp(cmd, "reject") == 0 && argc >= 3) {
-        char* id = argv[2];
+        if (load_identity_with_passcode(g_orcashi, "reject") < 0) {
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
         
+        char* id = argv[2];
         char norm_from[64], norm_my[64];
         strip_brackets(id, norm_from, sizeof(norm_from));
         strip_brackets(g_orcashi->my_id, norm_my, sizeof(norm_my));
@@ -1213,12 +1285,9 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* PEERS COMMAND */
+    /* PEERS COMMAND - Load identity */
     else if (strcmp(cmd, "peers") == 0) {
-        /* Check identity is loaded */
-        if (!orcashi_has_identity(g_orcashi)) {
-            printf("[ERROR] Identity not loaded!\n");
-            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+        if (load_identity_with_passcode(g_orcashi, "peers") < 0) {
             orcashi_destroy(g_orcashi);
             return 1;
         }
@@ -1228,12 +1297,9 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* CHAT COMMAND */
+    /* CHAT COMMAND - Load identity */
     else if (strcmp(cmd, "chat") == 0 && argc >= 3) {
-        /* Check identity is loaded */
-        if (!orcashi_has_identity(g_orcashi)) {
-            printf("[ERROR] Identity not loaded!\n");
-            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+        if (load_identity_with_passcode(g_orcashi, "chat") < 0) {
             orcashi_destroy(g_orcashi);
             return 1;
         }
@@ -1254,12 +1320,9 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* REMOVE COMMAND */
+    /* REMOVE COMMAND - Load identity */
     else if (strcmp(cmd, "remove") == 0 && argc >= 3) {
-        /* Check identity is loaded */
-        if (!orcashi_has_identity(g_orcashi)) {
-            printf("[ERROR] Identity not loaded!\n");
-            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+        if (load_identity_with_passcode(g_orcashi, "remove") < 0) {
             orcashi_destroy(g_orcashi);
             return 1;
         }
