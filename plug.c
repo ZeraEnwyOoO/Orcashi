@@ -22,7 +22,6 @@
 static void* receive_loop(void* arg);
 static void* send_loop(void* arg);
 static bool plug_parse_handshake(TCPPlug* plug, const char* msg);
-static void plug_parse_secure_message(TCPPlug* plug, const char* msg);
 
 /* ============================================================================
  * LIFECYCLE
@@ -352,6 +351,66 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
     
     /* Send with proper newline delimiter */
     return plug_send_message(plug, secure_msg);
+}
+
+/* ============================================================================
+ * RECEIVE SECURE MESSAGE - FIXED: Added missing function
+ * ============================================================================ */
+
+bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
+    if (!plug || !plug->ecdh_complete) {
+        return false;
+    }
+    
+    char raw_msg[8192];
+    if (!plug_receive_message(plug, raw_msg, sizeof(raw_msg), 0)) {
+        return false;
+    }
+    
+    /* Check if message is in SECURE format */
+    if (strncmp(raw_msg, "SECURE:", 7) != 0) {
+        strncpy(msg, raw_msg, msg_size - 1);
+        msg[msg_size - 1] = '\0';
+        return true;
+    }
+    
+    /* Parse SECURE message */
+    char* nonce_start = raw_msg + 7;
+    char* tag_start = strchr(nonce_start, ':');
+    if (!tag_start) {
+        strncpy(msg, raw_msg, msg_size - 1);
+        msg[msg_size - 1] = '\0';
+        return true;
+    }
+    tag_start++;
+    char* cipher_start = strchr(tag_start, ':');
+    if (!cipher_start) {
+        strncpy(msg, raw_msg, msg_size - 1);
+        msg[msg_size - 1] = '\0';
+        return true;
+    }
+    cipher_start++;
+    
+    char nonce_hex[25];
+    char tag_hex[33];
+    strncpy(nonce_hex, nonce_start, tag_start - nonce_start - 1);
+    nonce_hex[tag_start - nonce_start - 1] = '\0';
+    strncpy(tag_hex, tag_start, cipher_start - tag_start - 1);
+    tag_hex[cipher_start - tag_start - 1] = '\0';
+    
+    /* Decrypt using AES key */
+    char* plaintext = NULL;
+    if (orca_aes_gcm_decrypt_string(cipher_start, nonce_hex, tag_hex,
+                                    (char*)plug->aes_key, &plaintext) < 0) {
+        fprintf(stderr, "[PLUG] Failed to decrypt secure message\n");
+        return false;
+    }
+    
+    strncpy(msg, plaintext, msg_size - 1);
+    msg[msg_size - 1] = '\0';
+    free(plaintext);
+    
+    return true;
 }
 
 /* ============================================================================
