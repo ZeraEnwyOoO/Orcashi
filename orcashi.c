@@ -58,16 +58,14 @@ ORCASHI* orcashi_create(void) {
         return NULL;
     }
     
-    /* Try to load existing identity */
+    /* ===== FIXED: Check identity exists but DON'T load without passcode ===== */
     orcashi->has_identity = orca_identity_exists(NULL);
     if (orcashi->has_identity) {
-        /* Load identity without passcode first (just metadata) */
-        if (orca_identity_load(&orcashi->identity, NULL) == 0) {
-            strcpy(orcashi->my_id, orcashi->identity.id);
-        }
-    }
-    
-    if (!orcashi->has_identity) {
+        /* Identity exists but needs passcode to unlock */
+        /* Don't load it here - commands will load when needed */
+        orcashi->my_id[0] = '\0';  /* Empty until unlocked */
+    } else {
+        /* No identity - generate temporary ID for display */
         char* id = orcashi_generate_id();
         strcpy(orcashi->my_id, id);
         free(id);
@@ -108,6 +106,7 @@ void orcashi_destroy(ORCASHI* orcashi) {
     free(orcashi);
 }
 
+/* ===== FIXED: Don't load secure identity without passcode ===== */
 bool orcashi_init(ORCASHI* orcashi) {
     if (!orcashi) return false;
     
@@ -118,10 +117,36 @@ bool orcashi_init(ORCASHI* orcashi) {
     }
     discovery_start(orcashi->discovery);
     
-    /* Set identity */
-    if (orcashi->has_identity && orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
-        discovery_set_my_secure_identity(orcashi->discovery, &orcashi->identity);
+    /* ===== FIXED: Set identity in discovery ONLY if already loaded ===== */
+    if (orcashi->has_identity && strlen(orcashi->my_id) > 0) {
+        /* Identity is already loaded (e.g., from listen command) */
+        if (orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+            discovery_set_my_secure_identity(orcashi->discovery, &orcashi->identity);
+        } else {
+            discovery_set_my_identity(orcashi->discovery, orcashi->my_id, orcashi->local_ip, ORCASHI_PORT);
+        }
+    } else if (orcashi->has_identity) {
+        /* Identity exists but not loaded - set as normal mode temporarily */
+        /* This allows discovery to work before identity is unlocked */
+        char temp_id[64];
+        if (orca_identity_exists(NULL)) {
+            /* Try to read just the ID from identity.json without passcode */
+            char* json = read_file_content(ORCA_IDENTITY_FILE);
+            if (json) {
+                OrcaIdentity temp_identity;
+                memset(&temp_identity, 0, sizeof(temp_identity));
+                if (orca_identity_from_json(json, &temp_identity) == 0) {
+                    strcpy(temp_id, temp_identity.id);
+                }
+                free(json);
+            }
+        }
+        if (strlen(temp_id) == 0) {
+            strcpy(temp_id, "unknown");
+        }
+        discovery_set_my_identity(orcashi->discovery, temp_id, orcashi->local_ip, ORCASHI_PORT);
     } else {
+        /* No identity - use generated ID */
         discovery_set_my_identity(orcashi->discovery, orcashi->my_id, orcashi->local_ip, ORCASHI_PORT);
     }
     
@@ -143,9 +168,16 @@ bool orcashi_init(ORCASHI* orcashi) {
         fprintf(stderr, "[WARNING] Failed to start DHT node!\n");
     }
     
-    printf("[ORCA] Initialized with ID: %s\n", orcashi->my_id);
-    if (orcashi->has_identity && orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
-        printf("[ORCA] Secure mode: %s\n", orcashi->identity.name);
+    printf("[ORCA] Initialized\n");
+    if (orcashi->has_identity && strlen(orcashi->my_id) > 0) {
+        printf("[ORCA] ID: %s\n", orcashi->my_id);
+        if (orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+            printf("[ORCA] Mode: SECURE\n");
+        }
+    } else if (orcashi->has_identity) {
+        printf("[ORCA] Identity found (locked) - use './orcashi listen' to unlock\n");
+    } else {
+        printf("[ORCA] ID: %s (temporary - register to create identity)\n", orcashi->my_id);
     }
     
     orcashi->running = true;
@@ -372,7 +404,11 @@ void orcashi_disconnect(ORCASHI* orcashi) {
  * ============================================================================ */
 
 const char* orcashi_get_my_id(ORCASHI* orcashi) {
-    return orcashi ? orcashi->my_id : NULL;
+    if (!orcashi) return NULL;
+    if (strlen(orcashi->my_id) == 0) {
+        return NULL;
+    }
+    return orcashi->my_id;
 }
 
 const char* orcashi_get_peer_id(ORCASHI* orcashi) {
@@ -396,7 +432,7 @@ bool orcashi_load_identity(ORCASHI* orcashi, const char* passcode) {
 }
 
 bool orcashi_has_identity(ORCASHI* orcashi) {
-    return orcashi && orcashi->has_identity;
+    return orcashi && orcashi->has_identity && strlen(orcashi->my_id) > 0;
 }
 
 /* ============================================================================
@@ -739,7 +775,15 @@ static void orcashi_show_banner(ORCASHI* orcashi) {
     printf("  ORCASHI v4.0 - Secure P2P Chat\n");
     printf("============================================================\n");
     printf("\033[0m");
-    printf("Your ID: %s\n", orcashi->my_id);
+    
+    if (strlen(orcashi->my_id) > 0) {
+        printf("Your ID: %s\n", orcashi->my_id);
+    } else if (orcashi->has_identity) {
+        printf("Your ID: (locked - use './orcashi listen' to unlock)\n");
+    } else {
+        printf("Your ID: (none - use './orcashi register')\n");
+    }
+    
     if (orcashi->has_identity && orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
         printf("Secure Mode: %s\n", orcashi->identity.name);
     }
