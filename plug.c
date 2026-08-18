@@ -306,7 +306,7 @@ bool plug_ecdh_complete(TCPPlug* plug) {
 }
 
 /* ============================================================================
- * SECURE MESSAGING - FIXED: Send newline directly
+ * SECURE MESSAGING
  * ============================================================================ */
 
 bool plug_send_secure(TCPPlug* plug, const char* msg) {
@@ -340,7 +340,6 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
     orca_bytes_to_hex(nonce, 12, nonce_hex);
     orca_bytes_to_hex(tag, 16, tag_hex);
     
-    /* ===== FIX: Build message with explicit newline ===== */
     char secure_msg[8192];
     snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s\n",
              nonce_hex, tag_hex, ciphertext_b64);
@@ -348,7 +347,6 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
     free(ciphertext);
     free(ciphertext_b64);
     
-    /* Send directly to queue */
     if (!plug->connected) return false;
     
     pthread_mutex_lock(&plug->queue_mutex);
@@ -371,7 +369,7 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
 }
 
 /* ============================================================================
- * RECEIVE SECURE MESSAGE - FIXED: Find SECURE: in buffer
+ * RECEIVE SECURE MESSAGE - FIXED: Skip handshake messages
  * ============================================================================ */
 
 bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
@@ -384,22 +382,27 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
         return false;
     }
     
-    /* ===== FIX: Find SECURE: in the raw message ===== */
+    /* ===== FIX: Skip handshake messages ===== */
+    if (strncmp(raw_msg, "ECDH_INIT:", 10) == 0 ||
+        strncmp(raw_msg, "ECDH_RESPONSE:", 14) == 0 ||
+        strncmp(raw_msg, "HANDSHAKE:", 10) == 0 ||
+        strncmp(raw_msg, "HANDSHAKE_RESPONSE:", 19) == 0 ||
+        strcmp(raw_msg, "HANDSHAKE_OK") == 0) {
+        return false;  /* Don't return handshake messages to chat */
+    }
+    
     char* secure_start = strstr(raw_msg, "SECURE:");
     if (!secure_start) {
-        /* Not a SECURE message - return as plaintext */
         strncpy(msg, raw_msg, msg_size - 1);
         msg[msg_size - 1] = '\0';
         return true;
     }
     
-    /* Extract just the SECURE message (up to newline) */
     char* newline = strchr(secure_start, '\n');
     if (newline) {
         *newline = '\0';
     }
     
-    /* Parse SECURE message */
     char* nonce_start = secure_start + 7;
     char* tag_start = strchr(nonce_start, ':');
     if (!tag_start) {
@@ -423,7 +426,6 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
     strncpy(tag_hex, tag_start, cipher_start - tag_start - 1);
     tag_hex[cipher_start - tag_start - 1] = '\0';
     
-    /* Decrypt using AES key */
     char* plaintext = NULL;
     if (orca_aes_gcm_decrypt_string(cipher_start, nonce_hex, tag_hex,
                                     (char*)plug->aes_key, &plaintext) < 0) {
