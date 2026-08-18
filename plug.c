@@ -369,7 +369,7 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
 }
 
 /* ============================================================================
- * RECEIVE SECURE MESSAGE - FIXED: Skip handshake messages
+ * RECEIVE SECURE MESSAGE - FIXED: Convert raw key to hex before decrypt
  * ============================================================================ */
 
 bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
@@ -382,13 +382,11 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
         return false;
     }
     
-    /* ===== FIX: Skip handshake messages ===== */
-    if (strncmp(raw_msg, "ECDH_INIT:", 10) == 0 ||
-        strncmp(raw_msg, "ECDH_RESPONSE:", 14) == 0 ||
-        strncmp(raw_msg, "HANDSHAKE:", 10) == 0 ||
-        strncmp(raw_msg, "HANDSHAKE_RESPONSE:", 19) == 0 ||
-        strcmp(raw_msg, "HANDSHAKE_OK") == 0) {
-        return false;  /* Don't return handshake messages to chat */
+    /* Skip handshake messages */
+    if (strstr(raw_msg, "ECDH_INIT") != NULL ||
+        strstr(raw_msg, "ECDH_RESPONSE") != NULL ||
+        strstr(raw_msg, "HANDSHAKE") != NULL) {
+        return false;
     }
     
     char* secure_start = strstr(raw_msg, "SECURE:");
@@ -426,9 +424,14 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
     strncpy(tag_hex, tag_start, cipher_start - tag_start - 1);
     tag_hex[cipher_start - tag_start - 1] = '\0';
     
+    /* ===== FIX: Convert raw 32-byte AES key to 64-char hex ===== */
+    char key_hex[65];
+    orca_bytes_to_hex(plug->aes_key, ORCA_AES_GCM_KEY_LEN, key_hex);
+    
+    /* Decrypt using hex key */
     char* plaintext = NULL;
     if (orca_aes_gcm_decrypt_string(cipher_start, nonce_hex, tag_hex,
-                                    (char*)plug->aes_key, &plaintext) < 0) {
+                                    key_hex, &plaintext) < 0) {
         fprintf(stderr, "[PLUG] Failed to decrypt secure message\n");
         return false;
     }
