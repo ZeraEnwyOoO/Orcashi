@@ -1,3 +1,4 @@
+ 
  // main.c - Full version with ORCA Identity + Crypto integration
 #include "orcashi.h"
 #include "orca_identity.h"
@@ -33,15 +34,15 @@ void show_help(void) {
     printf("  ./orcashi identity          - Show your identity\n");
     printf("  ./orcashi reset --force     - Reset identity (with confirmation)\n");
     printf("  ./orcashi my_ip <ip>        - Change your IP address\n");
-    printf("  ./orcashi create            - Create room (server)\n");
-    printf("  ./orcashi join <ip>         - Join room by IP\n");
+    printf("  ./orcashi create            - Create room (server) on TCP 9000\n");
+    printf("  ./orcashi join <ip>         - Join room by IP on TCP 9000\n");
     printf("  ./orcashi join <id>         - Join room by peer ID (uses discovery)\n");
-    printf("  ./orcashi listen            - Start listening for connection requests\n");
-    printf("  ./orcashi add <id>          - Send friend request\n");
+    printf("  ./orcashi listen            - Start listening for friend requests (UDP 9001)\n");
+    printf("  ./orcashi add <id>          - Send friend request (UDP 9001)\n");
     printf("  ./orcashi accept <id>       - Accept friend request\n");
     printf("  ./orcashi reject <id>       - Reject friend request\n");
     printf("  ./orcashi peers             - Show interactive peer list\n");
-    printf("  ./orcashi chat <id>         - Start chat with peer\n");
+    printf("  ./orcashi chat <id>         - Start chat with peer (TCP 9000)\n");
     printf("  ./orcashi remove <id>       - Remove peer\n");
     printf("  ./orcashi stop              - Stop background daemon\n");
     printf("  ./orcashi status            - Check if daemon is running\n");
@@ -315,7 +316,8 @@ static int register_secure_3digit(ORCASHI* orcashi) {
 }
 
 /* ============================================================================
- * LISTEN COMMAND - Start TCP server on port 9000 + Discovery on 9001
+ * LISTEN COMMAND - ONLY Discovery on UDP 9001
+ * No TCP server! TCP server is for 'create', 'join', or 'chat' only.
  * ============================================================================ */
 
 static int listen_command(ORCASHI* orcashi) {
@@ -385,17 +387,9 @@ static int listen_command(ORCASHI* orcashi) {
     orcashi->has_identity = true;
     strcpy(orcashi->my_id, identity.id);
     
-    /* ===== Start TCP server on port 9000 for incoming chat connections ===== */
-    printf("[ORCA] Starting TCP server on port %d...\n", ORCASHI_PORT);
-    if (!plug_create_server(orcashi->plug, ORCASHI_PORT)) {
-        printf("[WARNING] Failed to start TCP server on port %d\n", ORCASHI_PORT);
-        printf("[ORCA] Other peers cannot connect to you via TCP.\n");
-    } else {
-        printf("[ORCA] TCP server started on port %d\n", ORCASHI_PORT);
-    }
-    
-    /* ===== Start Discovery on port 9001 ===== */
-    printf("[ORCA] Starting discovery...\n");
+    /* ===== ONLY Start Discovery on UDP 9001 ===== */
+    /* NO TCP server! TCP server is started by 'create', 'join', or 'chat' only. */
+    printf("[ORCA] Starting discovery on port %d...\n", DISCOVERY_PORT);
     if (!discovery_init(orcashi->discovery, DISCOVERY_PORT)) {
         printf("[ERROR] Failed to init discovery!\n");
         return 1;
@@ -430,9 +424,9 @@ static int listen_command(ORCASHI* orcashi) {
     printf("+-----------------------------------------------------------+\n");
     printf("|  ID           : %s\n", identity.id);
     printf("|  IP           : %s\n", orcashi->local_ip);
-    printf("|  TCP Server   : port %d\n", ORCASHI_PORT);
     printf("|  Discovery    : port %d\n", DISCOVERY_PORT);
     printf("|  DHT          : port %d\n", DHT_NODE_PORT);
+    printf("|  Status       : Waiting for friend requests...\n");
     printf("+-----------------------------------------------------------+\n");
     printf("\n");
     printf("[ORCA] Press Ctrl+C to stop\n");
@@ -459,19 +453,6 @@ static int listen_command(ORCASHI* orcashi) {
                 printf("\n");
             }
         }
-        
-        if (orcashi_is_connected(g_orcashi)) {
-            char msg[4096];
-            if (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
-                if (plug_ecdh_complete(g_orcashi->plug)) {
-                    printf("[%s] (secure) %s\n", orcashi_get_peer_id(g_orcashi), msg);
-                } else {
-                    printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
-                }
-                fflush(stdout);
-            }
-        }
-        
         sleep(1);
     }
     
@@ -949,7 +930,7 @@ int main(int argc, char* argv[]) {
         return reg_result;
     }
     
-    /* LISTEN COMMAND */
+    /* LISTEN COMMAND - Discovery ONLY on UDP 9001 */
     else if (strcmp(cmd, "listen") == 0) {
         int result = listen_command(g_orcashi);
         orcashi_destroy(g_orcashi);
@@ -996,7 +977,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* CREATE COMMAND */
+    /* CREATE COMMAND - Start TCP server on port 9000 */
     else if (strcmp(cmd, "create") == 0) {
         if (load_identity_with_passcode(g_orcashi, "create") < 0) {
             orcashi_destroy(g_orcashi);
@@ -1030,7 +1011,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* JOIN COMMAND */
+    /* JOIN COMMAND - Connect TCP on port 9000 */
     else if (strcmp(cmd, "join") == 0 && argc >= 3) {
         if (load_identity_with_passcode(g_orcashi, "join") < 0) {
             orcashi_destroy(g_orcashi);
@@ -1071,7 +1052,7 @@ int main(int argc, char* argv[]) {
     }
     
     /* ==========================================================================
-     * ADD COMMAND - FIXED: Use Discovery on UDP 9001 ONLY to find peer
+     * ADD COMMAND - Discovery ONLY on UDP 9001, then exit
      * Do NOT connect TCP 9000 here!
      * ========================================================================== */
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
@@ -1087,7 +1068,6 @@ int main(int argc, char* argv[]) {
         char* local_ip = orcashi_get_local_ip();
         if (local_ip && strlen(local_ip) > 0) {
             strcpy(g_orcashi->local_ip, local_ip);
-            /* ===== Set identity with chat port (9000) for I_AM response ===== */
             discovery_set_my_identity(g_orcashi->discovery, 
                                       g_orcashi->my_id, 
                                       local_ip, 
@@ -1095,7 +1075,8 @@ int main(int argc, char* argv[]) {
         }
         free(local_ip);
         
-        /* ===== FIX: Init Discovery on UDP 9001 ===== */
+        /* ===== Start Discovery on UDP 9001 ===== */
+        printf("[ORCA] Starting discovery...\n");
         if (!discovery_init(g_orcashi->discovery, DISCOVERY_PORT)) {
             printf("[ERROR] Failed to init discovery!\n");
             orcashi_destroy(g_orcashi);
@@ -1104,7 +1085,6 @@ int main(int argc, char* argv[]) {
         discovery_start(g_orcashi->discovery);
         
         printf("Sending friend request to %s...\n", id);
-        printf("[ORCA] Searching for peer...\n");
         printf("[ORCA] Searching LAN...\n");
         discovery_query_peer(g_orcashi->discovery, id);
         
@@ -1145,18 +1125,16 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        /* ===== FIX: Stop Discovery after search ===== */
+        /* ===== Stop Discovery after search ===== */
         discovery_stop(g_orcashi->discovery);
         
         if (found) {
-            /* ===== Save peer info (IP + port 9000 for chat) ===== */
             char port_str[16];
             snprintf(port_str, sizeof(port_str), "%d", p.port);
             registry_register_peer(g_orcashi->registry, norm_id, p.ip, port_str);
             
             printf("[ORCA] Sending friend request to %s at %s:%s...\n", id, p.ip, port_str);
             
-            /* ===== Send ADD_REQUEST via UDP 9001 ===== */
             discovery_send_add_request_with_ack(g_orcashi->discovery, norm_id,
                                                g_orcashi->my_id,
                                                g_orcashi->local_ip,
@@ -1170,7 +1148,7 @@ int main(int argc, char* argv[]) {
         }
         
         orcashi_destroy(g_orcashi);
-        return 0;
+        return 0;  /* ===== EXIT back to shell ===== */
     }
     
     /* ACCEPT COMMAND */
@@ -1263,7 +1241,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* CHAT COMMAND */
+    /* CHAT COMMAND - Start TCP on port 9000 */
     else if (strcmp(cmd, "chat") == 0 && argc >= 3) {
         if (load_identity_with_passcode(g_orcashi, "chat") < 0) {
             orcashi_destroy(g_orcashi);
