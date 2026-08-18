@@ -12,7 +12,7 @@
 #include <ctype.h>
 
 /* ============================================================================
- * STATIC HELPERS (internal to this file)
+ * STATIC HELPERS
  * ============================================================================ */
 
 static void set_identity_error(const char* msg) {
@@ -727,7 +727,7 @@ bool orca_identity_is_normal(OrcaIdentity* identity) {
 }
 
 /* ============================================================================
- * IDENTITY CONVERSION FUNCTIONS
+ * IDENTITY CONVERSION FUNCTIONS - FIXED JSON PARSER
  * ============================================================================ */
 
 int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
@@ -738,82 +738,136 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
     
     memset(identity_out, 0, sizeof(OrcaIdentity));
     
-    const char* pos = strstr(json, "\"id\":\"");
+    /* ===== FIXED: Parse "id" with flexible whitespace handling ===== */
+    const char* pos = strstr(json, "\"id\"");
     if (pos) {
-        pos += 6;
-        const char* end = strchr(pos, '"');
-        if (end) {
-            int len = end - pos;
-            if (len < ORCA_ID_LEN) {
-                strncpy(identity_out->id, pos, len);
-                identity_out->id[len] = '\0';
+        pos = strchr(pos, ':');
+        if (pos) {
+            pos++;
+            /* Skip whitespace */
+            while (*pos == ' ' || *pos == '\t') pos++;
+            if (*pos == '"') {
+                pos++;
+                const char* end = strchr(pos, '"');
+                if (end) {
+                    int len = end - pos;
+                    if (len < ORCA_ID_LEN) {
+                        strncpy(identity_out->id, pos, len);
+                        identity_out->id[len] = '\0';
+                    }
+                }
             }
         }
     }
     
-    pos = strstr(json, "\"name\":\"");
+    /* ===== FIXED: Parse "name" with flexible whitespace handling ===== */
+    pos = strstr(json, "\"name\"");
     if (pos) {
-        pos += 8;
-        const char* end = strchr(pos, '"');
-        if (end) {
-            int len = end - pos;
-            if (len < ORCA_NAME_LEN) {
-                strncpy(identity_out->name, pos, len);
-                identity_out->name[len] = '\0';
+        pos = strchr(pos, ':');
+        if (pos) {
+            pos++;
+            while (*pos == ' ' || *pos == '\t') pos++;
+            if (*pos == '"') {
+                pos++;
+                const char* end = strchr(pos, '"');
+                if (end) {
+                    int len = end - pos;
+                    if (len < ORCA_NAME_LEN) {
+                        strncpy(identity_out->name, pos, len);
+                        identity_out->name[len] = '\0';
+                    }
+                }
             }
         }
     }
     
-    pos = strstr(json, "\"role\":\"");
+    /* ===== FIXED: Parse "role" with flexible whitespace handling ===== */
+    pos = strstr(json, "\"role\"");
     if (pos) {
-        pos += 8;
-        const char* end = strchr(pos, '"');
-        if (end) {
-            int len = end - pos;
-            if (len < ORCA_ROLE_LEN) {
-                strncpy(identity_out->role, pos, len);
-                identity_out->role[len] = '\0';
+        pos = strchr(pos, ':');
+        if (pos) {
+            pos++;
+            while (*pos == ' ' || *pos == '\t') pos++;
+            if (*pos == '"') {
+                pos++;
+                const char* end = strchr(pos, '"');
+                if (end) {
+                    int len = end - pos;
+                    if (len < ORCA_ROLE_LEN) {
+                        strncpy(identity_out->role, pos, len);
+                        identity_out->role[len] = '\0';
+                    }
+                }
             }
         }
     }
     
-    pos = strstr(json, "\"mode\":");
+    /* Parse mode (number, no quotes) */
+    pos = strstr(json, "\"mode\"");
     if (pos) {
-        pos += 7;
-        identity_out->mode = atoi(pos);
+        pos = strchr(pos, ':');
+        if (pos) {
+            pos++;
+            while (*pos == ' ' || *pos == '\t') pos++;
+            identity_out->mode = atoi(pos);
+        }
     }
     
-    pos = strstr(json, "\"version\":\"");
+    /* ===== FIXED: Parse "version" with flexible whitespace handling ===== */
+    pos = strstr(json, "\"version\"");
     if (pos) {
-        pos += 11;
-        const char* end = strchr(pos, '"');
-        if (end) {
-            int len = end - pos;
-            if (len < 16) {
-                strncpy(identity_out->version, pos, len);
-                identity_out->version[len] = '\0';
+        pos = strchr(pos, ':');
+        if (pos) {
+            pos++;
+            while (*pos == ' ' || *pos == '\t') pos++;
+            if (*pos == '"') {
+                pos++;
+                const char* end = strchr(pos, '"');
+                if (end) {
+                    int len = end - pos;
+                    if (len < 16) {
+                        strncpy(identity_out->version, pos, len);
+                        identity_out->version[len] = '\0';
+                    }
+                }
             }
         }
     }
     
-    pos = strstr(json, "\"created_at\":");
+    /* Parse created_at (number) */
+    pos = strstr(json, "\"created_at\"");
     if (pos) {
-        pos += 13;
-        identity_out->created_at = atol(pos);
+        pos = strchr(pos, ':');
+        if (pos) {
+            pos++;
+            while (*pos == ' ' || *pos == '\t') pos++;
+            identity_out->created_at = atol(pos);
+        }
     }
     
-    pos = strstr(json, "\"last_used\":");
+    /* Parse last_used (number) */
+    pos = strstr(json, "\"last_used\"");
     if (pos) {
-        pos += 12;
-        identity_out->last_used = atol(pos);
+        pos = strchr(pos, ':');
+        if (pos) {
+            pos++;
+            while (*pos == ' ' || *pos == '\t') pos++;
+            identity_out->last_used = atol(pos);
+        }
     }
     
-    pos = strstr(json, "\"verified\":");
+    /* Parse verified (boolean) */
+    pos = strstr(json, "\"verified\"");
     if (pos) {
-        pos += 11;
-        identity_out->verified = (strstr(pos, "true") != NULL);
+        pos = strchr(pos, ':');
+        if (pos) {
+            pos++;
+            while (*pos == ' ' || *pos == '\t') pos++;
+            identity_out->verified = (strstr(pos, "true") != NULL);
+        }
     }
     
+    /* Load public key from file if not in JSON */
     if (strlen(identity_out->public_key) == 0) {
         char* pubkey = read_file_content(ORCA_PUBLIC_KEY_FILE);
         if (pubkey) {
@@ -822,6 +876,7 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
+    /* Load private key from file if not in JSON */
     if (strlen(identity_out->private_key_encrypted) == 0 &&
         identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         char* privkey = read_file_content(ORCA_PRIVATE_KEY_FILE);
@@ -831,6 +886,7 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
+    /* Load signature from file if not in JSON */
     if (strlen(identity_out->signature) == 0 &&
         identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         char* sig = read_file_content(ORCA_SIGNATURE_FILE);
@@ -840,6 +896,7 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
+    /* Load salt from file if not in JSON */
     if (strlen(identity_out->salt_hex) == 0 &&
         identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         char* salt = read_file_content(ORCA_SALT_FILE);
