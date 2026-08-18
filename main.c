@@ -129,19 +129,16 @@ static int load_identity_with_passcode(ORCASHI* orcashi, const char* cmd_name) {
     
     if (!orcashi) return -1;
     
-    /* Check if identity exists */
     if (!orca_identity_exists(NULL)) {
         printf("[ERROR] No identity found!\n");
         printf("[ORCA] Use './orcashi register' first\n");
         return -1;
     }
     
-    /* If already loaded, return success */
     if (orcashi_has_identity(orcashi)) {
         return 0;
     }
     
-    /* Load identity metadata to show ID */
     OrcaIdentity identity;
     memset(&identity, 0, sizeof(identity));
     
@@ -160,7 +157,6 @@ static int load_identity_with_passcode(ORCASHI* orcashi, const char* cmd_name) {
     printf("[ORCA] Identity found: %s\n", identity.id);
     printf("[ORCA] Mode: %s\n", identity.mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL");
     
-    /* Get passcode - only needed for secure identity */
     char passcode[128];
     if (identity.mode == ORCA_IDENTITY_MODE_SECURE) {
         if (read_password("Enter passcode: ", passcode, sizeof(passcode)) < 0) {
@@ -173,7 +169,6 @@ static int load_identity_with_passcode(ORCASHI* orcashi, const char* cmd_name) {
         printf("[ORCA] Normal mode - no passcode required\n");
     }
     
-    /* Load full identity with passcode */
     if (orca_identity_load(&identity, passcode[0] ? passcode : NULL) < 0) {
         printf("[ERROR] Wrong passcode or corrupted identity!\n");
         zeroize(passcode, sizeof(passcode));
@@ -181,13 +176,11 @@ static int load_identity_with_passcode(ORCASHI* orcashi, const char* cmd_name) {
     }
     zeroize(passcode, sizeof(passcode));
     
-    /* Verify identity */
     if (!orca_identity_verify(&identity)) {
         printf("[ERROR] Identity verification failed!\n");
         return -1;
     }
     
-    /* Store in orcashi */
     orcashi->identity = identity;
     orcashi->has_identity = true;
     strcpy(orcashi->my_id, identity.id);
@@ -217,18 +210,15 @@ static int register_secure_3digit(ORCASHI* orcashi) {
         return 1;
     }
     
-    /* iSH detection - UX hint only */
     if (is_ish_environment()) {
         printf("[ORCA] iSH environment detected.\n");
         printf("[ORCA] 3-digit identity mode.\n\n");
     }
     
-    /* Generate 3-digit ID */
     char id[64];
     orca_identity_generate_normal_id(id);
     printf("Your ID: %s\n\n", id);
     
-    /* Get IP address */
     char ip[INET_ADDRSTRLEN];
     char* local_ip = orcashi_get_local_ip();
     
@@ -253,14 +243,12 @@ static int register_secure_3digit(ORCASHI* orcashi) {
     }
     free(local_ip);
     
-    /* Validate IP */
     struct sockaddr_in sa;
     if (inet_pton(AF_INET, ip, &sa.sin_addr) != 1) {
         printf("[ERROR] Invalid IP address: %s\n", ip);
         return 1;
     }
     
-    /* Get passcode */
     char passcode[128];
     if (read_password("Enter passcode (min 8 chars): ", passcode, sizeof(passcode)) < 0) {
         printf("[ERROR] No input!\n");
@@ -271,7 +259,6 @@ static int register_secure_3digit(ORCASHI* orcashi) {
         return 1;
     }
     
-    /* Confirm passcode */
     char confirm[128];
     if (read_password("Confirm passcode: ", confirm, sizeof(confirm)) < 0) {
         printf("[ERROR] No input!\n");
@@ -289,7 +276,6 @@ static int register_secure_3digit(ORCASHI* orcashi) {
     printf("\n[ORCA] Creating identity...\n");
     printf("[ORCA] Generating RSA 2048-bit keypair...\n");
     
-    /* Create secure 3-digit identity */
     OrcaIdentity identity;
     if (orca_identity_create_secure_3digit(id, passcode, "orcashi", "user", &identity) < 0) {
         printf("[ERROR] Failed to create identity: %s\n", orca_get_last_error());
@@ -300,13 +286,11 @@ static int register_secure_3digit(ORCASHI* orcashi) {
     
     printf("[ORCA] Encrypting private key...\n");
     
-    /* Save identity */
     if (orca_identity_save(&identity) < 0) {
         printf("[ERROR] Failed to save identity: %s\n", orca_get_last_error());
         return 1;
     }
     
-    /* Register in registry */
     registry_register_peer(orcashi->registry, identity.id, ip, "9000");
     orcashi->registered = true;
     strcpy(orcashi->my_id, identity.id);
@@ -331,7 +315,7 @@ static int register_secure_3digit(ORCASHI* orcashi) {
 }
 
 /* ============================================================================
- * LISTEN COMMAND - FIXED: Discovery starts AFTER identity unlock
+ * LISTEN COMMAND - FIXED: Start TCP server on port 9000 + Discovery on 9001
  * ============================================================================ */
 
 static int listen_command(ORCASHI* orcashi) {
@@ -341,14 +325,12 @@ static int listen_command(ORCASHI* orcashi) {
     printf("+-----------------------------------------------------------+\n");
     printf("\n");
     
-    /* Check if identity exists */
     if (!orca_identity_exists(NULL)) {
         printf("[ERROR] No identity found!\n");
         printf("[ORCA] Use './orcashi register' first\n");
         return 1;
     }
     
-    /* Load identity metadata first (to show ID) */
     OrcaIdentity identity;
     memset(&identity, 0, sizeof(identity));
     
@@ -367,7 +349,6 @@ static int listen_command(ORCASHI* orcashi) {
     printf("[ORCA] Identity found: %s\n", identity.id);
     printf("[ORCA] Mode: %s\n", identity.mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL");
     
-    /* Get passcode - only needed for secure identity */
     char passcode[128];
     if (identity.mode == ORCA_IDENTITY_MODE_SECURE) {
         if (read_password("Enter passcode: ", passcode, sizeof(passcode)) < 0) {
@@ -380,7 +361,6 @@ static int listen_command(ORCASHI* orcashi) {
         printf("[ORCA] Normal mode - no passcode required\n");
     }
     
-    /* Load full identity with passcode */
     if (orca_identity_load(&identity, passcode[0] ? passcode : NULL) < 0) {
         printf("[ERROR] Wrong passcode or corrupted identity!\n");
         zeroize(passcode, sizeof(passcode));
@@ -388,7 +368,6 @@ static int listen_command(ORCASHI* orcashi) {
     }
     zeroize(passcode, sizeof(passcode));
     
-    /* Verify identity */
     if (!orca_identity_verify(&identity)) {
         printf("[ERROR] Identity verification failed!\n");
         return 1;
@@ -402,13 +381,20 @@ static int listen_command(ORCASHI* orcashi) {
     }
     printf("\n");
     
-    /* Copy identity to orcashi */
     orcashi->identity = identity;
     orcashi->has_identity = true;
     strcpy(orcashi->my_id, identity.id);
     
-    /* ===== FIX: Start discovery HERE after identity is loaded ===== */
-    /* Do NOT stop and restart - start once with correct identity */
+    /* ===== FIX: Start TCP server on port 9000 for incoming chat connections ===== */
+    printf("[ORCA] Starting TCP server on port %d...\n", ORCASHI_PORT);
+    if (!plug_create_server(orcashi->plug, ORCASHI_PORT)) {
+        printf("[WARNING] Failed to start TCP server on port %d\n", ORCASHI_PORT);
+        printf("[ORCA] Other peers cannot connect to you via TCP.\n");
+    } else {
+        printf("[ORCA] TCP server started on port %d\n", ORCASHI_PORT);
+    }
+    
+    /* ===== Start Discovery on port 9001 ===== */
     printf("[ORCA] Starting discovery...\n");
     if (!discovery_init(orcashi->discovery, DISCOVERY_PORT)) {
         printf("[ERROR] Failed to init discovery!\n");
@@ -422,7 +408,7 @@ static int listen_command(ORCASHI* orcashi) {
     discovery_start(orcashi->discovery);
     printf("[ORCA] Discovery started on port %d\n", DISCOVERY_PORT);
     
-    /* Start DHT (if not already started) */
+    /* Start DHT */
     if (!dht_node_is_running(orcashi->dht)) {
         printf("[ORCA] Starting DHT...\n");
         if (dht_node_start(orcashi->dht, DHT_NODE_PORT) < 0) {
@@ -434,7 +420,7 @@ static int listen_command(ORCASHI* orcashi) {
     
     /* Announce presence */
     char endpoint[128];
-    snprintf(endpoint, sizeof(endpoint), "%s:9000", orcashi->local_ip);
+    snprintf(endpoint, sizeof(endpoint), "%s:%d", orcashi->local_ip, ORCASHI_PORT);
     discovery_broadcast_presence(orcashi->discovery, identity.id, endpoint);
     dht_node_announce(orcashi->dht, identity.id, ORCASHI_PORT);
     
@@ -444,6 +430,7 @@ static int listen_command(ORCASHI* orcashi) {
     printf("+-----------------------------------------------------------+\n");
     printf("|  ID           : %s\n", identity.id);
     printf("|  IP           : %s\n", orcashi->local_ip);
+    printf("|  TCP Server   : port %d\n", ORCASHI_PORT);
     printf("|  Discovery    : port %d\n", DISCOVERY_PORT);
     printf("|  DHT          : port %d\n", DHT_NODE_PORT);
     printf("+-----------------------------------------------------------+\n");
@@ -451,9 +438,7 @@ static int listen_command(ORCASHI* orcashi) {
     printf("[ORCA] Press Ctrl+C to stop\n");
     printf("[ORCA] Waiting for friend requests...\n\n");
     
-    /* Main listen loop */
     while (running) {
-        /* Check for pending friend requests */
         if (discovery_pending_count(orcashi->discovery) > 0) {
             PendingRequest req;
             if (discovery_pop_pending(orcashi->discovery, &req)) {
@@ -475,7 +460,6 @@ static int listen_command(ORCASHI* orcashi) {
             }
         }
         
-        /* Check for incoming connections */
         if (orcashi_is_connected(g_orcashi)) {
             char msg[4096];
             if (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
@@ -965,7 +949,7 @@ int main(int argc, char* argv[]) {
         return reg_result;
     }
     
-    /* LISTEN COMMAND - FIXED: Discovery starts here */
+    /* LISTEN COMMAND - FIXED */
     else if (strcmp(cmd, "listen") == 0) {
         int result = listen_command(g_orcashi);
         orcashi_destroy(g_orcashi);
@@ -1086,7 +1070,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* ADD COMMAND */
+    /* ADD COMMAND - Discovery only, no TCP connection */
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         if (load_identity_with_passcode(g_orcashi, "add") < 0) {
             orcashi_destroy(g_orcashi);
