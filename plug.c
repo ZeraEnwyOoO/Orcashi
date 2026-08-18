@@ -16,7 +16,7 @@
 #include <errno.h>
 
 #define QUEUE_INITIAL_SIZE 100
-#define BUFFER_SIZE 16384  /* Increased from 8192 to prevent truncation */
+#define BUFFER_SIZE 16384
 #define HANDSHAKE_TIMEOUT 30
 
 static void* receive_loop(void* arg);
@@ -70,7 +70,6 @@ void plug_destroy(TCPPlug* plug) {
         free(plug->send_queue);
     }
     
-    /* Zeroize sensitive data */
     memset(plug->ecdh_shared_secret, 0, 32);
     memset(plug->aes_key, 0, 32);
     memset(plug->ecdh_private_key, 0, 32);
@@ -307,7 +306,7 @@ bool plug_ecdh_complete(TCPPlug* plug) {
 }
 
 /* ============================================================================
- * SECURE MESSAGING - FIXED: Proper message framing
+ * SECURE MESSAGING - FIXED: Send newline directly
  * ============================================================================ */
 
 bool plug_send_secure(TCPPlug* plug, const char* msg) {
@@ -341,20 +340,38 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
     orca_bytes_to_hex(nonce, 12, nonce_hex);
     orca_bytes_to_hex(tag, 16, tag_hex);
     
-    /* Build secure message */
+    /* ===== FIX: Build message with explicit newline ===== */
     char secure_msg[8192];
-    snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s",
+    snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s\n",
              nonce_hex, tag_hex, ciphertext_b64);
     
     free(ciphertext);
     free(ciphertext_b64);
     
-    /* Send with proper newline delimiter */
-    return plug_send_message(plug, secure_msg);
+    /* Send directly to queue */
+    if (!plug->connected) return false;
+    
+    pthread_mutex_lock(&plug->queue_mutex);
+    if (plug->send_count >= plug->queue_capacity) {
+        pthread_mutex_unlock(&plug->queue_mutex);
+        return false;
+    }
+    
+    char* msg_copy = strdup(secure_msg);
+    if (!msg_copy) {
+        pthread_mutex_unlock(&plug->queue_mutex);
+        return false;
+    }
+    
+    plug->send_queue[plug->send_count++] = msg_copy;
+    pthread_cond_signal(&plug->queue_cond);
+    pthread_mutex_unlock(&plug->queue_mutex);
+    
+    return true;
 }
 
 /* ============================================================================
- * RECEIVE SECURE MESSAGE - FIXED: Added missing function
+ * RECEIVE SECURE MESSAGE - FIXED: Find SECURE: in buffer
  * ============================================================================ */
 
 bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
@@ -367,15 +384,23 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
         return false;
     }
     
-    /* Check if message is in SECURE format */
-    if (strncmp(raw_msg, "SECURE:", 7) != 0) {
+    /* ===== FIX: Find SECURE: in the raw message ===== */
+    char* secure_start = strstr(raw_msg, "SECURE:");
+    if (!secure_start) {
+        /* Not a SECURE message - return as plaintext */
         strncpy(msg, raw_msg, msg_size - 1);
         msg[msg_size - 1] = '\0';
         return true;
     }
     
+    /* Extract just the SECURE message (up to newline) */
+    char* newline = strchr(secure_start, '\n');
+    if (newline) {
+        *newline = '\0';
+    }
+    
     /* Parse SECURE message */
-    char* nonce_start = raw_msg + 7;
+    char* nonce_start = secure_start + 7;
     char* tag_start = strchr(nonce_start, ':');
     if (!tag_start) {
         strncpy(msg, raw_msg, msg_size - 1);
@@ -414,14 +439,14 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
 }
 
 /* ============================================================================
- * MESSAGING - FIXED: Dynamic allocation for proper newline
+ * MESSAGING
  * ============================================================================ */
 
 bool plug_send_message(TCPPlug* plug, const char* msg) {
     if (!plug || !plug->connected) return false;
     
     size_t len = strlen(msg);
-    size_t total_len = len + 2;  /* + newline + null */
+    size_t total_len = len + 2;
     char* msg_with_newline = (char*)malloc(total_len);
     if (!msg_with_newline) {
         return false;
@@ -455,7 +480,7 @@ bool plug_send_secure_message(TCPPlug* plug, const char* msg, const char* key_he
     }
     
     char secure_msg[BUFFER_SIZE];
-    snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s",
+    snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s\n",
              nonce_hex, tag_hex, ciphertext_b64);
     free(ciphertext_b64);
     
@@ -510,13 +535,13 @@ bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms
 }
 
 /* ============================================================================
- * RECEIVE LOOP - FIXED: Buffer management
+ * RECEIVE LOOP
  * ============================================================================ */
 
 static void* receive_loop(void* arg) {
     TCPPlug* plug = (TCPPlug*)arg;
     char buffer[BUFFER_SIZE];
-    char* accumulated = (char*)calloc(1, BUFFER_SIZE * 4);  /* Increased buffer */
+    char* accumulated = (char*)calloc(1, BUFFER_SIZE * 4);
     if (!accumulated) {
         return NULL;
     }
