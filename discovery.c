@@ -1,4 +1,4 @@
- // discovery.c - Debug version with socket lifecycle logging
+ // discovery.c - Full version with ORCA Identity and Crypto integration
 #define _POSIX_C_SOURCE 200809L
 
 #include "discovery.h"
@@ -29,13 +29,6 @@
 #define DLOG(fmt, ...) ((void)0)
 #endif
 
-/* ===== DEBUG: Socket logging ===== */
-#define SOCKET_LOG(fmt, ...) \
-    do { \
-        fprintf(stderr, "[SOCKET DEBUG] " fmt "\n", ##__VA_ARGS__); \
-        fflush(stderr); \
-    } while(0)
-
 static void* listen_loop(void* arg);
 static void* broadcast_loop(void* arg);
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port);
@@ -48,6 +41,7 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
 static void handle_add_request_ack(Discovery* disc, const char* msg);
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip);
 
+/* ===== Global identity state ===== */
 static char g_my_id[64] = {0};
 static char g_my_ip[64] = {0};
 static int g_my_port = 9000;
@@ -55,6 +49,8 @@ static bool g_my_secure = false;
 static char g_my_public_key[ORCA_PUBKEY_LEN] = {0};
 static char g_my_signature[ORCA_SIG_LEN] = {0};
 static char g_my_name[128] = {0};
+static char g_my_role[32] = {0};              /* NEW: role for identity verification */
+static time_t g_my_created_at = 0;            /* NEW: created_at for identity verification */
 
 static RequestManager* g_request_manager = NULL;
 static Registry* g_registry = NULL;
@@ -92,25 +88,33 @@ static void extract_ip_from_endpoint(const char* endpoint, char* ip_out, size_t 
     }
 }
 
+/* ===== Identity ===== */
 void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, int port) {
     (void)disc;
     if (id) strcpy(g_my_id, id);
     if (ip) strcpy(g_my_ip, ip);
     g_my_port = port;
     g_my_secure = false;
+    /* Clear secure fields */
+    memset(g_my_role, 0, sizeof(g_my_role));
+    g_my_created_at = 0;
     DLOG("Identity set: ID='%s' IP='%s' PORT=%d (NORMAL)", g_my_id, g_my_ip, g_my_port);
 }
 
+/* ===== FIXED: Store complete identity data ===== */
 void discovery_set_my_secure_identity(Discovery* disc, const OrcaIdentity* identity) {
     (void)disc;
     if (!identity) return;
     
     strcpy(g_my_id, identity->id);
     strcpy(g_my_name, identity->name);
+    strcpy(g_my_role, identity->role);           /* NEW: Store role */
     strcpy(g_my_public_key, identity->public_key);
     strcpy(g_my_signature, identity->signature);
+    g_my_created_at = identity->created_at;      /* NEW: Store created_at */
     g_my_secure = true;
-    DLOG("Secure identity set: ID='%s' NAME='%s'", g_my_id, g_my_name);
+    DLOG("Secure identity set: ID='%s' NAME='%s' ROLE='%s' CREATED=%ld", 
+         g_my_id, g_my_name, g_my_role, (long)g_my_created_at);
 }
 
 void discovery_set_request_manager(RequestManager* rm) {
@@ -123,6 +127,7 @@ void discovery_set_registry(Registry* reg) {
     DLOG("Registry set");
 }
 
+/* ===== Lifecycle ===== */
 Discovery* discovery_create(void) {
     Discovery* disc = (Discovery*)calloc(1, sizeof(Discovery));
     if (!disc) return NULL;
@@ -142,19 +147,11 @@ Discovery* discovery_create(void) {
 void discovery_destroy(Discovery* disc) {
     if (!disc) return;
     
-    SOCKET_LOG("discovery_destroy() called - socket=%d, running=%d", 
-               disc->udp_socket, disc->running);
-    
     discovery_stop(disc);
     
     if (disc->udp_socket >= 0) {
-        SOCKET_LOG("Closing UDP socket %d", disc->udp_socket);
-        int ret = close(disc->udp_socket);
-        SOCKET_LOG("close(%d) returned %d, errno=%d (%s)", 
-                   disc->udp_socket, ret, errno, strerror(errno));
+        close(disc->udp_socket);
         disc->udp_socket = -1;
-    } else {
-        SOCKET_LOG("UDP socket already -1, skipping close");
     }
     
     pthread_mutex_destroy(&disc->mutex);
@@ -166,40 +163,16 @@ void discovery_destroy(Discovery* disc) {
 bool discovery_init(Discovery* disc, int port) {
     if (!disc) return false;
     
-    SOCKET_LOG("========== discovery_init() START ==========");
-    SOCKET_LOG("port=%d, current socket=%d, running=%d", 
-               port, disc->udp_socket, disc->running);
-    
     disc->port = port;
-    
-    /* Close existing socket if any */
-    if (disc->udp_socket >= 0) {
-        SOCKET_LOG("WARNING: Socket %d already exists! Closing it.", disc->udp_socket);
-        int ret = close(disc->udp_socket);
-        SOCKET_LOG("close(%d) returned %d, errno=%d (%s)", 
-                   disc->udp_socket, ret, errno, strerror(errno));
-        disc->udp_socket = -1;
-        SOCKET_LOG("Socket closed, set to -1");
-    }
     
     disc->udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (disc->udp_socket < 0) {
-        SOCKET_LOG("socket() FAILED: errno=%d (%s)", errno, strerror(errno));
         fprintf(stderr, "[ERROR] Failed to create UDP socket!\n");
         return false;
     }
-    SOCKET_LOG("socket() SUCCESS: fd=%d", disc->udp_socket);
     
     int opt = 1;
-    int ret = setsockopt(disc->udp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    SOCKET_LOG("setsockopt(SO_REUSEADDR) returned %d, errno=%d (%s)", 
-               ret, errno, strerror(errno));
-    
-#ifdef SO_REUSEPORT
-    ret = setsockopt(disc->udp_socket, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
-    SOCKET_LOG("setsockopt(SO_REUSEPORT) returned %d, errno=%d (%s)", 
-               ret, errno, strerror(errno));
-#endif
+    setsockopt(disc->udp_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -207,20 +180,12 @@ bool discovery_init(Discovery* disc, int port) {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(port);
     
-    SOCKET_LOG("Binding to 0.0.0.0:%d (socket fd=%d)", port, disc->udp_socket);
-    
-    ret = bind(disc->udp_socket, (struct sockaddr*)&addr, sizeof(addr));
-    if (ret < 0) {
-        SOCKET_LOG("bind() FAILED: ret=%d, errno=%d (%s)", ret, errno, strerror(errno));
-        fprintf(stderr, "[ERROR] Failed to bind UDP socket to port %d! errno=%d (%s)\n", 
-                port, errno, strerror(errno));
+    if (bind(disc->udp_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "[ERROR] Failed to bind UDP socket to port %d!\n", port);
         close(disc->udp_socket);
         disc->udp_socket = -1;
         return false;
     }
-    SOCKET_LOG("bind() SUCCESS: fd=%d, port=%d", disc->udp_socket, port);
-    
-    SOCKET_LOG("========== discovery_init() SUCCESS ==========");
     
     DLOG("Discovery initialized on port %d, socket=%d", port, disc->udp_socket);
     return true;
@@ -229,16 +194,9 @@ bool discovery_init(Discovery* disc, int port) {
 void discovery_start(Discovery* disc) {
     if (!disc || disc->running) return;
     
-    SOCKET_LOG("discovery_start() called - socket=%d, running=%d", 
-               disc->udp_socket, disc->running);
-    
     disc->running = true;
     pthread_create(&disc->listen_thread, NULL, listen_loop, disc);
     pthread_create(&disc->broadcast_thread, NULL, broadcast_loop, disc);
-    
-    SOCKET_LOG("discovery_start() threads created: listen=%lu, broadcast=%lu", 
-               (unsigned long)disc->listen_thread, 
-               (unsigned long)disc->broadcast_thread);
     
     DLOG("Discovery started! listen_thread=%lu, broadcast_thread=%lu", 
          (unsigned long)disc->listen_thread, (unsigned long)disc->broadcast_thread);
@@ -247,41 +205,21 @@ void discovery_start(Discovery* disc) {
 void discovery_stop(Discovery* disc) {
     if (!disc || !disc->running) return;
     
-    SOCKET_LOG("discovery_stop() called - socket=%d, running=%d", 
-               disc->udp_socket, disc->running);
-    
     disc->running = false;
-    SOCKET_LOG("disc->running set to false");
     
     if (disc->listen_thread) {
-        SOCKET_LOG("Joining listen_thread %lu", (unsigned long)disc->listen_thread);
         pthread_join(disc->listen_thread, NULL);
         disc->listen_thread = 0;
-        SOCKET_LOG("listen_thread joined");
-    } else {
-        SOCKET_LOG("listen_thread is 0 (already joined or not created)");
     }
-    
     if (disc->broadcast_thread) {
-        SOCKET_LOG("Joining broadcast_thread %lu", (unsigned long)disc->broadcast_thread);
         pthread_join(disc->broadcast_thread, NULL);
         disc->broadcast_thread = 0;
-        SOCKET_LOG("broadcast_thread joined");
-    } else {
-        SOCKET_LOG("broadcast_thread is 0 (already joined or not created)");
     }
-    
-    SOCKET_LOG("discovery_stop() done - socket=%d (still open)", disc->udp_socket);
     
     DLOG("Discovery stopped");
 }
 
-/* ===== REST OF discovery.c stays the same ===== */
-/* (The rest of the file continues with existing functions) */
-
-/* ... all other functions unchanged ... */
-
-// ===== Broadcasting =====
+/* ===== Broadcasting ===== */
 void discovery_broadcast_presence(Discovery* disc, const char* id, const char* endpoint) {
     if (!disc) return;
     
@@ -353,6 +291,7 @@ void discovery_query_peer(Discovery* disc, const char* id) {
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
+/* ===== Secure Messages ===== */
 void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id, 
                                          const char* my_id, const char* my_ip, int my_port) {
     if (!disc || !target_id || !my_id) return;
@@ -417,6 +356,7 @@ void discovery_send_add_request_ack(Discovery* disc, const char* target_id, cons
     DLOG("ADD_REQUEST_ACK sent to %s (%s:%d): %s", target_id, peer.ip, peer.port, msg);
 }
 
+/* ===== UDP Send ===== */
 static void send_udp(Discovery* disc, const char* msg, const char* ip, int port) {
     if (!disc || !msg || !ip) return;
     
@@ -432,6 +372,7 @@ static void send_udp(Discovery* disc, const char* msg, const char* ip, int port)
            (struct sockaddr*)&addr, sizeof(addr));
 }
 
+/* ===== Pending Requests ===== */
 void discovery_push_pending(Discovery* disc, const char* from_id, const char* from_ip, int from_port) {
     if (!disc || !from_id) return;
     
@@ -500,7 +441,7 @@ bool discovery_has_pending(Discovery* disc) {
     return has;
 }
 
-/* ===== Message Parsing and Handlers ===== */
+/* ===== Message Parsing ===== */
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_port;
     
@@ -531,6 +472,7 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
     }
 }
 
+/* ===== ORCA_PRESENCE Handler ===== */
 static void handle_presence(Discovery* disc, const char* msg, const char* sender_ip) {
     (void)sender_ip;
     
@@ -635,6 +577,7 @@ static void handle_presence(Discovery* disc, const char* msg, const char* sender
     pthread_mutex_unlock(&disc->mutex);
 }
 
+/* ===== WHO_HAS Handler ===== */
 static void handle_who_has(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* search_id = msg + 8;
     
@@ -646,12 +589,21 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
          search_id, norm_search, g_my_id, norm_my);
     
     if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
-        char response[1024];
+        char response[2048];
         if (g_my_secure) {
+            /* ===== FIXED: Send complete identity data =====
+             * Format: I_AM:SECURE:<id>:<name>:<role>:<created_at>:<ip>:<port>:<public_key>:<signature>
+             */
             snprintf(response, sizeof(response), 
-                    "I_AM:SECURE:%s:%s:%d:%s:%s:%s", 
-                    g_my_id, g_my_ip, g_my_port,
-                    g_my_name, g_my_public_key, g_my_signature);
+                    "I_AM:SECURE:%s:%s:%s:%ld:%s:%d:%s:%s", 
+                    g_my_id,                     /* 1: id */
+                    g_my_name,                   /* 2: name */
+                    g_my_role,                   /* 3: role */
+                    (long)g_my_created_at,       /* 4: created_at */
+                    g_my_ip,                     /* 5: advertised IP */
+                    g_my_port,                   /* 6: advertised port */
+                    g_my_public_key,             /* 7: public key */
+                    g_my_signature);             /* 8: signature */
         } else {
             snprintf(response, sizeof(response), 
                     "I_AM:%s:%s:%d", 
@@ -668,93 +620,170 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
     }
 }
 
+/* ===== I_AM Handler =====
+ * ===== FIXED: Parse complete identity data and verify identity signature =====
+ */
 static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* rest = msg + 5;
     bool is_secure = false;
     
+    /* Check if secure */
     if (strncmp(rest, "SECURE:", 7) == 0) {
         is_secure = true;
         rest += 7;
     }
     
-    const char* colon1 = strchr(rest, ':');
-    const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
-    
-    if (!colon1 || !colon2) return;
-    
-    char id[64];
-    char payload_ip[INET_ADDRSTRLEN];
-    int port;
-    char name[128] = {0};
-    char public_key[ORCA_PUBKEY_LEN] = {0};
-    char signature[ORCA_SIG_LEN] = {0};
-    
-    int id_len = colon1 - rest;
-    strncpy(id, rest, id_len);
-    id[id_len] = '\0';
-    
-    int ip_len = colon2 - colon1 - 1;
-    strncpy(payload_ip, colon1 + 1, ip_len);
-    payload_ip[ip_len] = '\0';
-    
-    port = atoi(colon2 + 1);
-    
-    if (is_secure) {
-        const char* secure_rest = colon2 + 1;
-        const char* name_start = strchr(secure_rest, ':');
-        if (name_start) {
-            name_start++;
-            const char* name_end = strchr(name_start, ':');
-            if (name_end) {
-                int len = name_end - name_start;
-                if (len < (int)sizeof(name)) {
-                    strncpy(name, name_start, len);
-                    name[len] = '\0';
-                }
-                const char* pk_start = name_end + 1;
-                const char* pk_end = strchr(pk_start, ':');
-                if (pk_end) {
-                    int pk_len = pk_end - pk_start;
-                    if (pk_len < (int)sizeof(public_key)) {
-                        strncpy(public_key, pk_start, pk_len);
-                        public_key[pk_len] = '\0';
-                    }
-                    strcpy(signature, pk_end + 1);
-                }
+    if (!is_secure) {
+        /* Normal (non-secure) I_AM - just store it */
+        const char* colon1 = strchr(rest, ':');
+        const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
+        
+        if (!colon1 || !colon2) return;
+        
+        char id[64];
+        char payload_ip[INET_ADDRSTRLEN];
+        int port;
+        
+        int id_len = colon1 - rest;
+        strncpy(id, rest, id_len);
+        id[id_len] = '\0';
+        
+        int ip_len = colon2 - colon1 - 1;
+        strncpy(payload_ip, colon1 + 1, ip_len);
+        payload_ip[ip_len] = '\0';
+        
+        port = atoi(colon2 + 1);
+        
+        pthread_mutex_lock(&disc->mutex);
+        
+        int found = -1;
+        for (int i = 0; i < disc->peer_count; i++) {
+            if (strcmp(disc->peers[i].id, id) == 0) {
+                found = i;
+                break;
             }
         }
-    }
-    
-    DLOG("I_AM: id='%s', payload_ip='%s', port=%d, secure=%d", id, payload_ip, port, is_secure);
-    
-    struct sockaddr_in sa;
-    if (inet_pton(AF_INET, sender_ip, &sa.sin_addr) != 1) {
-        DLOG("Invalid sender IP: %s — REJECTED", sender_ip);
+        
+        if (found == -1 && disc->peer_count < MAX_PEERS) {
+            found = disc->peer_count++;
+        }
+        
+        if (found >= 0) {
+            PeerInfo* peer = &disc->peers[found];
+            strcpy(peer->id, id);
+            strcpy(peer->ip, sender_ip);
+            peer->port = port;
+            peer->online = true;
+            peer->last_seen = time(NULL);
+            peer->is_secure = false;
+            peer->verified = false;
+            snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", sender_ip, port);
+            
+            DLOG("I_AM (normal) stored: %s at %s:%d", id, peer->ip, peer->port);
+        }
+        
+        pthread_mutex_unlock(&disc->mutex);
         return;
     }
     
-    if (strcmp(sender_ip, "127.0.0.1") == 0) {
-        DLOG("Rejected localhost: %s", sender_ip);
+    /* ===== SECURE I_AM - Parse complete identity data =====
+     * Format: I_AM:SECURE:<id>:<name>:<role>:<created_at>:<ip>:<port>:<public_key>:<signature>
+     */
+    
+    /* Parse id */
+    const char* id_start = rest;
+    const char* id_end = strchr(id_start, ':');
+    if (!id_end) return;
+    char id[64];
+    int id_len = id_end - id_start;
+    strncpy(id, id_start, id_len);
+    id[id_len] = '\0';
+    
+    /* Parse name */
+    const char* name_start = id_end + 1;
+    const char* name_end = strchr(name_start, ':');
+    if (!name_end) return;
+    char name[128];
+    int name_len = name_end - name_start;
+    strncpy(name, name_start, name_len);
+    name[name_len] = '\0';
+    
+    /* Parse role */
+    const char* role_start = name_end + 1;
+    const char* role_end = strchr(role_start, ':');
+    if (!role_end) return;
+    char role[32];
+    int role_len = role_end - role_start;
+    strncpy(role, role_start, role_len);
+    role[role_len] = '\0';
+    
+    /* Parse created_at */
+    const char* created_at_start = role_end + 1;
+    const char* created_at_end = strchr(created_at_start, ':');
+    if (!created_at_end) return;
+    time_t created_at = atol(created_at_start);
+    
+    /* Parse IP (advertised) */
+    const char* ip_start = created_at_end + 1;
+    const char* ip_end = strchr(ip_start, ':');
+    if (!ip_end) return;
+    char payload_ip[INET_ADDRSTRLEN];
+    int ip_len2 = ip_end - ip_start;
+    strncpy(payload_ip, ip_start, ip_len2);
+    payload_ip[ip_len2] = '\0';
+    
+    /* Parse port */
+    const char* port_start = ip_end + 1;
+    const char* port_end = strchr(port_start, ':');
+    if (!port_end) return;
+    int port = atoi(port_start);
+    
+    /* Parse public_key */
+    const char* pk_start = port_end + 1;
+    const char* pk_end = strchr(pk_start, ':');
+    if (!pk_end) return;
+    char public_key[ORCA_PUBKEY_LEN];
+    int pk_len = pk_end - pk_start;
+    strncpy(public_key, pk_start, pk_len);
+    public_key[pk_len] = '\0';
+    
+    /* Parse signature */
+    const char* signature_start = pk_end + 1;
+    char signature[ORCA_SIG_LEN];
+    strncpy(signature, signature_start, sizeof(signature) - 1);
+    signature[sizeof(signature) - 1] = '\0';
+    
+    DLOG("I_AM: id='%s', name='%s', role='%s', created_at=%ld, payload_ip='%s', port=%d", 
+         id, name, role, (long)created_at, payload_ip, port);
+    DLOG("I_AM: sender_ip='%s'", sender_ip);
+    
+    /* ===== VERIFY IDENTITY SIGNATURE =====
+     * The identity was signed with: id|name|role|created_at
+     * Verify using the SAME data that was signed.
+     * IP and port are NOT part of identity verification.
+     */
+    if (strlen(public_key) == 0 || strlen(signature) == 0) {
+        DLOG("Missing public_key or signature — REJECTED");
         return;
     }
     
-    if (is_secure) {
-        if (strlen(public_key) == 0 || strlen(signature) == 0) {
-            DLOG("Missing public_key or signature — REJECTED");
-            return;
-        }
-        
-        char data_to_verify[1024];
-        snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%d|%s", 
-                 id, sender_ip, port, name);
-        
-        if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
-            DLOG("Invalid signature from %s — REJECTED", id);
-            return;
-        }
-        DLOG("Signature verified for %s", id);
+    char data_to_verify[1024];
+    snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%ld",
+             id, name, role, (long)created_at);
+    
+    DLOG("Verifying identity data: '%s'", data_to_verify);
+    
+    if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
+        DLOG("Invalid identity signature from %s — REJECTED", id);
+        return;
     }
     
+    DLOG("Identity signature verified: %s", id);
+    
+    /* ===== STORE PEER =====
+     * Use sender_ip (from UDP packet) as the reachable endpoint.
+     * This handles iSH where payload_ip might be 127.0.0.1 but sender_ip is real.
+     */
     pthread_mutex_lock(&disc->mutex);
     
     int found = -1;
@@ -772,31 +801,31 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     if (found >= 0) {
         PeerInfo* peer = &disc->peers[found];
         strcpy(peer->id, id);
-        if (strcmp(sender_ip, payload_ip) != 0) {
-            DLOG("WARNING: payload_ip=%s != sender_ip=%s — USING SENDER_IP", 
-                 payload_ip, sender_ip);
-        }
+        strcpy(peer->name, name);
+        /* Use sender_ip from UDP packet as reachable endpoint */
         strcpy(peer->ip, sender_ip);
         peer->port = port;
         peer->online = true;
         peer->last_seen = time(NULL);
-        peer->is_secure = is_secure;
-        
-        if (is_secure) {
-            strcpy(peer->name, name);
-            strcpy(peer->public_key, public_key);
-            strcpy(peer->signature, signature);
-            peer->verified = true;
-        }
+        peer->is_secure = true;
+        peer->verified = true;
+        strcpy(peer->public_key, public_key);
+        strcpy(peer->signature, signature);
         
         snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", sender_ip, port);
         
-        DLOG("I_AM stored: %s at %s:%d (secure=%d)", id, peer->ip, peer->port, is_secure);
+        DLOG("I_AM stored: %s at %s:%d (secure, reachable endpoint from packet source)", 
+             id, peer->ip, peer->port);
+        
+        if (disc->on_peer_found) {
+            disc->on_peer_found(peer);
+        }
     }
     
     pthread_mutex_unlock(&disc->mutex);
 }
 
+/* ===== ADD_REQUEST Handler ===== */
 static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_ip;
     (void)sender_port;
@@ -962,6 +991,7 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
     }
 }
 
+/* ===== ADD_REQUEST_ACK Handler ===== */
 static void handle_add_request_ack(Discovery* disc, const char* msg) {
     const char* rest = msg + 16;
     const char* colon1 = strchr(rest, ':');
@@ -1001,6 +1031,7 @@ static void handle_add_request_ack(Discovery* disc, const char* msg) {
     }
 }
 
+/* ===== ORCA_SEARCH Handler ===== */
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* search_id = msg + 12;
     
@@ -1014,7 +1045,7 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
         char response[1024];
         if (g_my_secure) {
             snprintf(response, sizeof(response), 
-                    "ORCA_PRESENCE:SECURE:%s:%s:%d:%s:%s:%s", 
+                    "ORCA_PRESENCE:SECURE:%s:%s:%s:%s:%s", 
                     g_my_id, g_my_ip, g_my_port,
                     g_my_name, g_my_public_key, g_my_signature);
         } else {
@@ -1031,6 +1062,7 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
     }
 }
 
+/* ===== Peer Discovery ===== */
 bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
     if (!disc || !out_peer) return false;
     
@@ -1079,6 +1111,7 @@ int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers) {
     return count;
 }
 
+/* ===== Cleanup ===== */
 static time_t last_cleanup = 0;
 
 void discovery_cleanup_stale(Discovery* disc) {
@@ -1119,7 +1152,6 @@ static void* listen_loop(void* arg) {
     fd_set fds;
     struct timeval tv;
     
-    SOCKET_LOG("listen_loop started - socket=%d", disc->udp_socket);
     DLOG("Listen loop started");
     
     while (disc->running) {
@@ -1131,7 +1163,6 @@ static void* listen_loop(void* arg) {
         
         int ret = select(disc->udp_socket + 1, &fds, NULL, NULL, &tv);
         if (ret < 0) {
-            SOCKET_LOG("select() error: %s", strerror(errno));
             DLOG("select() error: %s", strerror(errno));
             break;
         }
@@ -1155,7 +1186,6 @@ static void* listen_loop(void* arg) {
         parse_message(disc, buffer, ip, port);
     }
     
-    SOCKET_LOG("listen_loop stopped");
     DLOG("Listen loop stopped");
     return NULL;
 }
@@ -1163,7 +1193,6 @@ static void* listen_loop(void* arg) {
 static void* broadcast_loop(void* arg) {
     Discovery* disc = (Discovery*)arg;
     
-    SOCKET_LOG("broadcast_loop started - socket=%d", disc->udp_socket);
     DLOG("Broadcast loop started");
     
     while (disc->running) {
@@ -1171,11 +1200,11 @@ static void* broadcast_loop(void* arg) {
         discovery_cleanup_stale(disc);
     }
     
-    SOCKET_LOG("broadcast_loop stopped");
     DLOG("Broadcast loop stopped");
     return NULL;
 }
 
+/* ===== Callbacks ===== */
 void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*)) {
     if (disc) {
         disc->on_peer_found = callback;
@@ -1190,6 +1219,7 @@ void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*))
     }
 }
 
+/* ===== Utility ===== */
 char* discovery_get_local_ip(void) {
     static char ip[INET_ADDRSTRLEN];
     struct ifaddrs* ifaddr;
