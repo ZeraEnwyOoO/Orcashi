@@ -1,4 +1,5 @@
- #include "bootstrap.h"
+ // bootstrap.c - Fixed version with proper ID generation
+#include "bootstrap.h"
 #include "dht.h"
 #include <stdio.h>
 #include <string.h>
@@ -7,6 +8,7 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <time.h>
 
 BootstrapNode bootstrap_nodes[BOOTSTRAP_NODES] = {
     {"router.bittorrent.com", 6881, ""},
@@ -68,10 +70,11 @@ int bootstrap_get_node(int index, BootstrapNode* node) {
     return 0;
 }
 
+/* ===== FIXED: Generate proper ID instead of passing NULL ===== */
 void bootstrap_connect_dht(int dht_socket) {
     (void)dht_socket;
     
-    usleep(100000);  // 100ms delay
+    usleep(100000);
     
     printf("[BOOTSTRAP] Connecting DHT to bootstrap nodes...\n");
     
@@ -86,11 +89,16 @@ void bootstrap_connect_dht(int dht_socket) {
             
             printf("[BOOTSTRAP] Inserting node %s:%d\n", node.ip, node.port);
             
-            int ret = dht_insert_node(NULL, (struct sockaddr*)&addr, sizeof(addr));
+            /* ===== FIX: Generate a dummy ID from IP + port ===== */
+            unsigned char dummy_id[20];
+            char seed[64];
+            snprintf(seed, sizeof(seed), "%s:%d:%ld", node.ip, node.port, (long)time(NULL));
+            dht_hash(dummy_id, 20, seed, strlen(seed), NULL, 0, NULL, 0);
+            
+            int ret = dht_insert_node(dummy_id, (struct sockaddr*)&addr, sizeof(addr));
             if (ret < 0) {
                 printf("[BOOTSTRAP] Failed to insert node %s:%d\n", node.ip, node.port);
             }
         }
     }
 }
- 
