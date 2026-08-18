@@ -41,7 +41,6 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
 static void handle_add_request_ack(Discovery* disc, const char* msg);
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip);
 
-/* ===== Global identity state ===== */
 static char g_my_id[64] = {0};
 static char g_my_ip[64] = {0};
 static int g_my_port = 9000;
@@ -49,8 +48,8 @@ static bool g_my_secure = false;
 static char g_my_public_key[ORCA_PUBKEY_LEN] = {0};
 static char g_my_signature[ORCA_SIG_LEN] = {0};
 static char g_my_name[128] = {0};
-static char g_my_role[32] = {0};              /* NEW: role for identity verification */
-static time_t g_my_created_at = 0;            /* NEW: created_at for identity verification */
+static char g_my_role[32] = {0};
+static time_t g_my_created_at = 0;
 
 static RequestManager* g_request_manager = NULL;
 static Registry* g_registry = NULL;
@@ -95,23 +94,21 @@ void discovery_set_my_identity(Discovery* disc, const char* id, const char* ip, 
     if (ip) strcpy(g_my_ip, ip);
     g_my_port = port;
     g_my_secure = false;
-    /* Clear secure fields */
     memset(g_my_role, 0, sizeof(g_my_role));
     g_my_created_at = 0;
     DLOG("Identity set: ID='%s' IP='%s' PORT=%d (NORMAL)", g_my_id, g_my_ip, g_my_port);
 }
 
-/* ===== FIXED: Store complete identity data ===== */
 void discovery_set_my_secure_identity(Discovery* disc, const OrcaIdentity* identity) {
     (void)disc;
     if (!identity) return;
     
     strcpy(g_my_id, identity->id);
     strcpy(g_my_name, identity->name);
-    strcpy(g_my_role, identity->role);           /* NEW: Store role */
+    strcpy(g_my_role, identity->role);
     strcpy(g_my_public_key, identity->public_key);
     strcpy(g_my_signature, identity->signature);
-    g_my_created_at = identity->created_at;      /* NEW: Store created_at */
+    g_my_created_at = identity->created_at;
     g_my_secure = true;
     DLOG("Secure identity set: ID='%s' NAME='%s' ROLE='%s' CREATED=%ld", 
          g_my_id, g_my_name, g_my_role, (long)g_my_created_at);
@@ -591,19 +588,16 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
     if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
         char response[2048];
         if (g_my_secure) {
-            /* ===== FIXED: Send complete identity data =====
-             * Format: I_AM:SECURE:<id>:<name>:<role>:<created_at>:<ip>:<port>:<public_key>:<signature>
-             */
             snprintf(response, sizeof(response), 
                     "I_AM:SECURE:%s:%s:%s:%ld:%s:%d:%s:%s", 
-                    g_my_id,                     /* 1: id */
-                    g_my_name,                   /* 2: name */
-                    g_my_role,                   /* 3: role */
-                    (long)g_my_created_at,       /* 4: created_at */
-                    g_my_ip,                     /* 5: advertised IP */
-                    g_my_port,                   /* 6: advertised port */
-                    g_my_public_key,             /* 7: public key */
-                    g_my_signature);             /* 8: signature */
+                    g_my_id,
+                    g_my_name,
+                    g_my_role,
+                    (long)g_my_created_at,
+                    g_my_ip,
+                    g_my_port,
+                    g_my_public_key,
+                    g_my_signature);
         } else {
             snprintf(response, sizeof(response), 
                     "I_AM:%s:%s:%d", 
@@ -620,21 +614,17 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
     }
 }
 
-/* ===== I_AM Handler =====
- * ===== FIXED: Parse complete identity data and verify identity signature =====
- */
+/* ===== I_AM Handler ===== */
 static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* rest = msg + 5;
     bool is_secure = false;
     
-    /* Check if secure */
     if (strncmp(rest, "SECURE:", 7) == 0) {
         is_secure = true;
         rest += 7;
     }
     
     if (!is_secure) {
-        /* Normal (non-secure) I_AM - just store it */
         const char* colon1 = strchr(rest, ':');
         const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
         
@@ -686,11 +676,6 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
         return;
     }
     
-    /* ===== SECURE I_AM - Parse complete identity data =====
-     * Format: I_AM:SECURE:<id>:<name>:<role>:<created_at>:<ip>:<port>:<public_key>:<signature>
-     */
-    
-    /* Parse id */
     const char* id_start = rest;
     const char* id_end = strchr(id_start, ':');
     if (!id_end) return;
@@ -699,7 +684,6 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     strncpy(id, id_start, id_len);
     id[id_len] = '\0';
     
-    /* Parse name */
     const char* name_start = id_end + 1;
     const char* name_end = strchr(name_start, ':');
     if (!name_end) return;
@@ -708,7 +692,6 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     strncpy(name, name_start, name_len);
     name[name_len] = '\0';
     
-    /* Parse role */
     const char* role_start = name_end + 1;
     const char* role_end = strchr(role_start, ':');
     if (!role_end) return;
@@ -717,13 +700,11 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     strncpy(role, role_start, role_len);
     role[role_len] = '\0';
     
-    /* Parse created_at */
     const char* created_at_start = role_end + 1;
     const char* created_at_end = strchr(created_at_start, ':');
     if (!created_at_end) return;
     time_t created_at = atol(created_at_start);
     
-    /* Parse IP (advertised) */
     const char* ip_start = created_at_end + 1;
     const char* ip_end = strchr(ip_start, ':');
     if (!ip_end) return;
@@ -732,13 +713,11 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     strncpy(payload_ip, ip_start, ip_len2);
     payload_ip[ip_len2] = '\0';
     
-    /* Parse port */
     const char* port_start = ip_end + 1;
     const char* port_end = strchr(port_start, ':');
     if (!port_end) return;
     int port = atoi(port_start);
     
-    /* Parse public_key */
     const char* pk_start = port_end + 1;
     const char* pk_end = strchr(pk_start, ':');
     if (!pk_end) return;
@@ -747,7 +726,6 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     strncpy(public_key, pk_start, pk_len);
     public_key[pk_len] = '\0';
     
-    /* Parse signature */
     const char* signature_start = pk_end + 1;
     char signature[ORCA_SIG_LEN];
     strncpy(signature, signature_start, sizeof(signature) - 1);
@@ -757,11 +735,6 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
          id, name, role, (long)created_at, payload_ip, port);
     DLOG("I_AM: sender_ip='%s'", sender_ip);
     
-    /* ===== VERIFY IDENTITY SIGNATURE =====
-     * The identity was signed with: id|name|role|created_at
-     * Verify using the SAME data that was signed.
-     * IP and port are NOT part of identity verification.
-     */
     if (strlen(public_key) == 0 || strlen(signature) == 0) {
         DLOG("Missing public_key or signature — REJECTED");
         return;
@@ -780,10 +753,6 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     
     DLOG("Identity signature verified: %s", id);
     
-    /* ===== STORE PEER =====
-     * Use sender_ip (from UDP packet) as the reachable endpoint.
-     * This handles iSH where payload_ip might be 127.0.0.1 but sender_ip is real.
-     */
     pthread_mutex_lock(&disc->mutex);
     
     int found = -1;
@@ -802,7 +771,6 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
         PeerInfo* peer = &disc->peers[found];
         strcpy(peer->id, id);
         strcpy(peer->name, name);
-        /* Use sender_ip from UDP packet as reachable endpoint */
         strcpy(peer->ip, sender_ip);
         peer->port = port;
         peer->online = true;
@@ -1031,7 +999,9 @@ static void handle_add_request_ack(Discovery* disc, const char* msg) {
     }
 }
 
-/* ===== ORCA_SEARCH Handler ===== */
+/* ============================================================================
+ * ORCA_SEARCH Handler - FIXED: %s -> %d for port
+ * ============================================================================ */
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* search_id = msg + 12;
     
@@ -1044,8 +1014,9 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
     if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
         char response[1024];
         if (g_my_secure) {
+            /* ===== FIXED: %s -> %d for g_my_port ===== */
             snprintf(response, sizeof(response), 
-                    "ORCA_PRESENCE:SECURE:%s:%s:%s:%s:%s", 
+                    "ORCA_PRESENCE:SECURE:%s:%s:%d:%s:%s:%s", 
                     g_my_id, g_my_ip, g_my_port,
                     g_my_name, g_my_public_key, g_my_signature);
         } else {
