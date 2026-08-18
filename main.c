@@ -286,18 +286,24 @@ static int listen_command(ORCASHI* orcashi) {
     free(json);
     
     printf("[ORCA] Identity found: %s\n", identity.id);
+    printf("[ORCA] Mode: %s\n", identity.mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL");
     
-    /* Get passcode */
+    /* Get passcode - only needed for secure identity */
     char passcode[128];
-    if (read_password("Enter passcode: ", passcode, sizeof(passcode)) < 0) {
-        printf("[ERROR] No input!\n");
-        return 1;
+    if (identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+        if (read_password("Enter passcode: ", passcode, sizeof(passcode)) < 0) {
+            printf("[ERROR] No input!\n");
+            return 1;
+        }
+        printf("[ORCA] Unlocking identity...\n");
+    } else {
+        /* Normal mode - no passcode needed */
+        passcode[0] = '\0';
+        printf("[ORCA] Normal mode - no passcode required\n");
     }
     
-    printf("[ORCA] Unlocking identity...\n");
-    
-    /* Load full identity with passcode */
-    if (orca_identity_load(&identity, passcode) < 0) {
+    /* Load full identity with passcode (if secure) */
+    if (orca_identity_load(&identity, passcode[0] ? passcode : NULL) < 0) {
         printf("[ERROR] Wrong passcode or corrupted identity!\n");
         zeroize(passcode, sizeof(passcode));
         return 1;
@@ -312,8 +318,10 @@ static int listen_command(ORCASHI* orcashi) {
     
     printf("[ORCA] Identity verified.\n");
     printf("[ORCA] ID: %s\n", identity.id);
-    printf("[ORCA] Mode: SECURE\n");
-    printf("[ORCA] Public Key: %.30s...\n", identity.public_key);
+    printf("[ORCA] Mode: %s\n", identity.mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL");
+    if (identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+        printf("[ORCA] Public Key: %.30s...\n", identity.public_key);
+    }
     printf("\n");
     
     /* Copy identity to orcashi */
@@ -321,13 +329,21 @@ static int listen_command(ORCASHI* orcashi) {
     orcashi->has_identity = true;
     strcpy(orcashi->my_id, identity.id);
     
-    /* Start discovery */
+    /* Stop any existing discovery/DHT and restart with proper identity */
+    discovery_stop(orcashi->discovery);
+    dht_node_stop(orcashi->dht);
+    
+    /* Start discovery with secure identity */
     printf("[ORCA] Starting discovery...\n");
     if (!discovery_init(orcashi->discovery, DISCOVERY_PORT)) {
         printf("[ERROR] Failed to init discovery!\n");
         return 1;
     }
-    discovery_set_my_secure_identity(orcashi->discovery, &identity);
+    if (identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+        discovery_set_my_secure_identity(orcashi->discovery, &identity);
+    } else {
+        discovery_set_my_identity(orcashi->discovery, identity.id, orcashi->local_ip, ORCASHI_PORT);
+    }
     discovery_start(orcashi->discovery);
     printf("[ORCA] Discovery started on port %d\n", DISCOVERY_PORT);
     
@@ -848,7 +864,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    printf("ID: %s\n", orcashi_get_my_id(g_orcashi));
+    /* Show initial status */
+    const char* my_id = orcashi_get_my_id(g_orcashi);
+    if (my_id) {
+        printf("ID: %s\n", my_id);
+    } else if (orca_identity_exists(NULL)) {
+        printf("Identity found (locked) - use './orcashi listen' to unlock\n");
+    } else {
+        printf("No identity - use './orcashi register'\n");
+    }
     printf("---\n");
     
     int is_daemon = 0;
@@ -879,7 +903,8 @@ int main(int argc, char* argv[]) {
     else if (strcmp(cmd, "identity") == 0) {
         OrcaIdentity identity;
         if (orca_identity_load(&identity, NULL) < 0) {
-            printf("No identity found! Use './orcashi register' first.\n");
+            printf("[ERROR] Failed to load identity!\n");
+            printf("[ORCA] Use './orcashi listen' to unlock with passcode first.\n");
             orcashi_destroy(g_orcashi);
             return 1;
         }
@@ -916,6 +941,14 @@ int main(int argc, char* argv[]) {
     
     /* CREATE COMMAND */
     else if (strcmp(cmd, "create") == 0) {
+        /* Check identity is loaded */
+        if (!orcashi_has_identity(g_orcashi)) {
+            printf("[ERROR] Identity not loaded!\n");
+            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
+        
         printf("Creating room on port 9000...\n");
         if (!orcashi_create_room(g_orcashi, 9000)) {
             fprintf(stderr, "Failed to create room!\n");
@@ -945,6 +978,14 @@ int main(int argc, char* argv[]) {
     
     /* JOIN COMMAND */
     else if (strcmp(cmd, "join") == 0 && argc >= 3) {
+        /* Check identity is loaded */
+        if (!orcashi_has_identity(g_orcashi)) {
+            printf("[ERROR] Identity not loaded!\n");
+            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
+        
         char* target = argv[2];
         
         struct sockaddr_in sa;
@@ -982,6 +1023,14 @@ int main(int argc, char* argv[]) {
      * ADD COMMAND - WITH DHT FALLBACK (PHASE 2)
      * ======================================================================== */
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
+        /* Check identity is loaded */
+        if (!orcashi_has_identity(g_orcashi)) {
+            printf("[ERROR] Identity not loaded!\n");
+            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
+        
         char* id = argv[2];
         char norm_id[64];
         strip_brackets(id, norm_id, sizeof(norm_id));
@@ -1084,6 +1133,14 @@ int main(int argc, char* argv[]) {
      * ACCEPT COMMAND - WITH IDENTITY VERIFICATION (PHASE 3)
      * ======================================================================== */
     else if (strcmp(cmd, "accept") == 0 && argc >= 3) {
+        /* Check identity is loaded */
+        if (!orcashi_has_identity(g_orcashi)) {
+            printf("[ERROR] Identity not loaded!\n");
+            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
+        
         char* id = argv[2];
         char norm_id[64];
         strip_brackets(id, norm_id, sizeof(norm_id));
@@ -1158,6 +1215,14 @@ int main(int argc, char* argv[]) {
     
     /* PEERS COMMAND */
     else if (strcmp(cmd, "peers") == 0) {
+        /* Check identity is loaded */
+        if (!orcashi_has_identity(g_orcashi)) {
+            printf("[ERROR] Identity not loaded!\n");
+            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
+        
         show_peers_interactive(g_orcashi);
         orcashi_destroy(g_orcashi);
         return 0;
@@ -1165,6 +1230,14 @@ int main(int argc, char* argv[]) {
     
     /* CHAT COMMAND */
     else if (strcmp(cmd, "chat") == 0 && argc >= 3) {
+        /* Check identity is loaded */
+        if (!orcashi_has_identity(g_orcashi)) {
+            printf("[ERROR] Identity not loaded!\n");
+            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
+        
         char* id = argv[2];
         RegistryPeer reg_peer;
         if (registry_get_peer(g_orcashi->registry, id, &reg_peer)) {
@@ -1183,6 +1256,14 @@ int main(int argc, char* argv[]) {
     
     /* REMOVE COMMAND */
     else if (strcmp(cmd, "remove") == 0 && argc >= 3) {
+        /* Check identity is loaded */
+        if (!orcashi_has_identity(g_orcashi)) {
+            printf("[ERROR] Identity not loaded!\n");
+            printf("[ORCA] Use './orcashi listen' first to unlock your identity.\n");
+            orcashi_destroy(g_orcashi);
+            return 1;
+        }
+        
         char* id = argv[2];
         if (registry_remove_peer(g_orcashi->registry, id)) {
             peer_cache_remove_peer(g_orcashi->cache, id);
