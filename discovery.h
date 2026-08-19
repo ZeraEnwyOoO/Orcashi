@@ -60,6 +60,7 @@ typedef struct {
     int pending_count;
     void (*on_peer_found)(PeerInfo* peer);
     void (*on_peer_offline)(PeerInfo* peer);
+    void (*on_accept_confirm)(const char* from_id, const char* from_ip, int from_port, bool is_secure);
 } Discovery;
 
 Discovery* discovery_create(void);
@@ -78,6 +79,13 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
                                          const char* my_id, const char* my_ip, int my_port);
 void discovery_send_add_request_ack(Discovery* disc, const char* target_id, const char* from_id);
 
+// ===== ACCEPT_CONFIRM =====
+void discovery_send_accept_confirm(Discovery* disc, const char* target_id, 
+                                   const char* my_id, const char* my_ip, int my_port);
+void discovery_send_accept_confirm_secure(Discovery* disc, const char* target_id,
+                                         const char* my_id, const char* my_ip, int my_port,
+                                         const char* public_key, const char* signature);
+
 // ===== Peer Discovery =====
 bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer);
 int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers);
@@ -92,6 +100,7 @@ void discovery_set_request_manager(RequestManager* rm);
 void discovery_set_registry(Registry* reg);
 void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*));
 void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*));
+void discovery_set_on_accept_confirm(Discovery* disc, void (*callback)(const char*, const char*, int, bool));
 
 // ===== Pending Requests =====
 void discovery_push_pending(Discovery* disc, const char* from_id, const char* from_ip, int from_port);
