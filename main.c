@@ -1,4 +1,3 @@
- 
  // main.c - Full version with ORCA Identity + Crypto integration
 #include "orcashi.h"
 #include "orca_identity.h"
@@ -292,7 +291,6 @@ static int register_secure_3digit(ORCASHI* orcashi) {
         return 1;
     }
     
-    registry_register_peer(orcashi->registry, identity.id, ip, "9000");
     orcashi->registered = true;
     strcpy(orcashi->my_id, identity.id);
     strcpy(orcashi->local_ip, ip);
@@ -316,8 +314,7 @@ static int register_secure_3digit(ORCASHI* orcashi) {
 }
 
 /* ============================================================================
- * LISTEN COMMAND - ONLY Discovery on UDP 9001
- * No TCP server! TCP server is for 'create', 'join', or 'chat' only.
+ * LISTEN COMMAND - Discovery ONLY on UDP 9001 with y/n prompt
  * ============================================================================ */
 
 static int listen_command(ORCASHI* orcashi) {
@@ -388,7 +385,6 @@ static int listen_command(ORCASHI* orcashi) {
     strcpy(orcashi->my_id, identity.id);
     
     /* ===== ONLY Start Discovery on UDP 9001 ===== */
-    /* NO TCP server! TCP server is started by 'create', 'join', or 'chat' only. */
     printf("[ORCA] Starting discovery on port %d...\n", DISCOVERY_PORT);
     if (!discovery_init(orcashi->discovery, DISCOVERY_PORT)) {
         printf("[ERROR] Failed to init discovery!\n");
@@ -448,8 +444,35 @@ static int listen_command(ORCASHI* orcashi) {
                 }
                 printf("+-----------------------------------------------------------+\n");
                 printf("\n");
-                printf("[ORCA] Use './orcashi accept %s' to accept\n", req.from_id);
-                printf("[ORCA] Use './orcashi reject %s' to reject\n", req.from_id);
+                
+                /* ===== FIX: Ask y/n inline ===== */
+                printf("[ORCA] Accept? (y/n): ");
+                fflush(stdout);
+                
+                char answer[16];
+                if (fgets(answer, sizeof(answer), stdin)) {
+                    answer[strcspn(answer, "\n")] = '\0';
+                    if (strcmp(answer, "y") == 0 || strcmp(answer, "Y") == 0 ||
+                        strcmp(answer, "yes") == 0 || strcmp(answer, "YES") == 0) {
+                        /* ===== Accept: Save to registry ===== */
+                        registry_register_peer(orcashi->registry, req.from_id, req.from_ip, "9000");
+                        registry_update_status(orcashi->registry, req.from_id, "accepted");
+                        printf("[ORCA] Accepted friend request from %s\n", req.from_id);
+                        printf("[ORCA] Use './orcashi peers' to see your peers\n");
+                    } else if (strlen(answer) > 0) {
+                        /* ===== Reject: Do NOT save ===== */
+                        registry_update_status(orcashi->registry, req.from_id, "rejected");
+                        printf("[ORCA] Rejected friend request from %s\n", req.from_id);
+                    } else {
+                        printf("[ORCA] No input - keeping pending\n");
+                        /* Push back to pending */
+                        discovery_push_pending(orcashi->discovery, req.from_id, req.from_ip, req.from_port);
+                    }
+                } else {
+                    printf("[ORCA] No input - keeping pending\n");
+                    discovery_push_pending(orcashi->discovery, req.from_id, req.from_ip, req.from_port);
+                }
+                printf("+-----------------------------------------------------------+\n");
                 printf("\n");
             }
         }
@@ -510,8 +533,6 @@ static int register_normal(ORCASHI* orcashi) {
         printf("[ERROR] Failed to save identity!\n");
         return 1;
     }
-    
-    registry_register_peer(orcashi->registry, id, ip, "9000");
     
     printf("\n");
     printf("+-----------------------------------------------------------+\n");
@@ -592,8 +613,6 @@ static int register_secure(ORCASHI* orcashi) {
     char* local_ip = orcashi_get_local_ip();
     strcpy(orcashi->local_ip, local_ip);
     free(local_ip);
-    
-    registry_register_peer(orcashi->registry, identity.id, orcashi->local_ip, "9000");
     
     printf("\n");
     printf("+-----------------------------------------------------------+\n");
@@ -930,7 +949,7 @@ int main(int argc, char* argv[]) {
         return reg_result;
     }
     
-    /* LISTEN COMMAND - Discovery ONLY on UDP 9001 */
+    /* LISTEN COMMAND - With y/n prompt */
     else if (strcmp(cmd, "listen") == 0) {
         int result = listen_command(g_orcashi);
         orcashi_destroy(g_orcashi);
@@ -1052,8 +1071,7 @@ int main(int argc, char* argv[]) {
     }
     
     /* ==========================================================================
-     * ADD COMMAND - Discovery ONLY on UDP 9001, then exit
-     * Do NOT connect TCP 9000 here!
+     * ADD COMMAND - Send friend request ONLY, NO auto-save to registry
      * ========================================================================== */
     else if (strcmp(cmd, "add") == 0 && argc >= 3) {
         if (load_identity_with_passcode(g_orcashi, "add") < 0) {
@@ -1129,11 +1147,9 @@ int main(int argc, char* argv[]) {
         discovery_stop(g_orcashi->discovery);
         
         if (found) {
-            char port_str[16];
-            snprintf(port_str, sizeof(port_str), "%d", p.port);
-            registry_register_peer(g_orcashi->registry, norm_id, p.ip, port_str);
-            
-            printf("[ORCA] Sending friend request to %s at %s:%s...\n", id, p.ip, port_str);
+            /* ===== FIX: Do NOT save to registry here! ===== */
+            /* Only send friend request */
+            printf("[ORCA] Sending friend request to %s at %s:%d...\n", id, p.ip, p.port);
             
             discovery_send_add_request_with_ack(g_orcashi->discovery, norm_id,
                                                g_orcashi->my_id,
@@ -1141,6 +1157,7 @@ int main(int argc, char* argv[]) {
                                                ORCASHI_PORT);
             
             printf("[ORCA] Friend request sent to %s\n", id);
+            printf("[ORCA] Wait for peer to accept.\n");
             printf("[ORCA] Use './orcashi peers' to check status\n");
         } else {
             printf("[ORCA] Peer %s not found.\n", id);
@@ -1148,10 +1165,10 @@ int main(int argc, char* argv[]) {
         }
         
         orcashi_destroy(g_orcashi);
-        return 0;  /* ===== EXIT back to shell ===== */
+        return 0;
     }
     
-    /* ACCEPT COMMAND */
+    /* ACCEPT COMMAND - Save peer to registry on accept */
     else if (strcmp(cmd, "accept") == 0 && argc >= 3) {
         if (load_identity_with_passcode(g_orcashi, "accept") < 0) {
             orcashi_destroy(g_orcashi);
@@ -1162,15 +1179,18 @@ int main(int argc, char* argv[]) {
         char norm_id[64];
         strip_brackets(id, norm_id, sizeof(norm_id));
         
+        /* Get peer from pending requests or registry */
         RegistryPeer reg_peer;
         if (!registry_get_peer(g_orcashi->registry, norm_id, &reg_peer)) {
             printf("[ERROR] Peer %s not found in registry!\n", id);
+            printf("[ORCA] No pending request from %s\n", id);
             orcashi_destroy(g_orcashi);
             return 1;
         }
         
         printf("[ORCA] Accepting friend request from %s...\n", id);
         
+        /* Verify identity if secure */
         if (reg_peer.mode == REG_MODE_SECURE) {
             printf("[ORCA] Verifying peer identity...\n");
             
@@ -1192,16 +1212,9 @@ int main(int argc, char* argv[]) {
             printf("[ORCA]   Name: %s\n", reg_peer.name);
             printf("[ORCA]   Created: %s", ctime(&reg_peer.created_at));
             printf("[ORCA]   Mode: SECURE\n");
-            
-        } else if (reg_peer.mode == REG_MODE_NORMAL) {
-            printf("[ORCA] WARNING: Normal mode has NO cryptographic verification.\n");
-            printf("[ORCA] Accepting without verification.\n");
-        } else {
-            printf("[ERROR] Unknown mode for peer %s\n", id);
-            orcashi_destroy(g_orcashi);
-            return 1;
         }
         
+        /* ===== FIX: Save peer to registry on accept ===== */
         registry_update_status(g_orcashi->registry, norm_id, "accepted");
         printf("[ORCA] Friend request accepted from %s\n", id);
         printf("[ORCA] Use './orcashi peers' to see your peers\n");
