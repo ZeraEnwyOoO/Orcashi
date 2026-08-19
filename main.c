@@ -445,7 +445,7 @@ static int listen_command(ORCASHI* orcashi) {
                 printf("+-----------------------------------------------------------+\n");
                 printf("\n");
                 
-                /* ===== FIX: Ask y/n inline ===== */
+                /* Ask y/n inline */
                 printf("[ORCA] Accept? (y/n): ");
                 fflush(stdout);
                 
@@ -454,18 +454,17 @@ static int listen_command(ORCASHI* orcashi) {
                     answer[strcspn(answer, "\n")] = '\0';
                     if (strcmp(answer, "y") == 0 || strcmp(answer, "Y") == 0 ||
                         strcmp(answer, "yes") == 0 || strcmp(answer, "YES") == 0) {
-                        /* ===== Accept: Save to registry ===== */
+                        /* Accept: Save to registry */
                         registry_register_peer(orcashi->registry, req.from_id, req.from_ip, "9000");
                         registry_update_status(orcashi->registry, req.from_id, "accepted");
                         printf("[ORCA] Accepted friend request from %s\n", req.from_id);
                         printf("[ORCA] Use './orcashi peers' to see your peers\n");
                     } else if (strlen(answer) > 0) {
-                        /* ===== Reject: Do NOT save ===== */
+                        /* Reject: Do NOT save */
                         registry_update_status(orcashi->registry, req.from_id, "rejected");
                         printf("[ORCA] Rejected friend request from %s\n", req.from_id);
                     } else {
                         printf("[ORCA] No input - keeping pending\n");
-                        /* Push back to pending */
                         discovery_push_pending(orcashi->discovery, req.from_id, req.from_ip, req.from_port);
                     }
                 } else {
@@ -795,7 +794,7 @@ void chat_loop(void) {
 }
 
 /* ============================================================================
- * PEERS INTERACTIVE
+ * PEERS INTERACTIVE - WITH DEBUG LOGS + EARLY RETURN FIX
  * ============================================================================ */
 
 void show_peers_interactive(ORCASHI* orcashi) {
@@ -803,38 +802,88 @@ void show_peers_interactive(ORCASHI* orcashi) {
     printf("ORCASHI PEERS\n");
     printf("------------------------------------------------------------\n");
     
+    /* DEBUG: Registry pointer */
+    fprintf(stderr, "[PEERS DEBUG] orcashi=%p, registry=%p\n", 
+            (void*)orcashi, (void*)(orcashi ? orcashi->registry : NULL));
+    fflush(stderr);
+    
+    /* DEBUG: Before registry_load */
+    fprintf(stderr, "[PEERS DEBUG] Before registry_load()\n");
+    fflush(stderr);
+    
     registry_load(orcashi->registry);
     
+    fprintf(stderr, "[PEERS DEBUG] After registry_load()\n");
+    fflush(stderr);
+    
     RegistryPeer pending[MAX_REGISTRY_PEERS];
+    
+    fprintf(stderr, "[PEERS DEBUG] Before registry_get_pending_peers()\n");
+    fflush(stderr);
+    
     int pending_count = registry_get_pending_peers(orcashi->registry, pending, MAX_REGISTRY_PEERS);
+    
+    fprintf(stderr, "[PEERS DEBUG] After registry_get_pending_peers(): pending_count=%d\n", pending_count);
+    fflush(stderr);
+    
     if (pending_count > 0) {
         printf("PENDING REQUESTS:\n");
         for (int i = 0; i < pending_count; i++) {
+            fprintf(stderr, "[PEERS DEBUG] pending[%d]: id='%s'\n", i, pending[i].id);
+            fflush(stderr);
             printf("  [%s] from %s\n", pending[i].id, pending[i].id);
         }
         printf("\n");
     }
     
     RegistryPeer peers[MAX_REGISTRY_PEERS];
+    
+    fprintf(stderr, "[PEERS DEBUG] Before registry_get_accepted_peers()\n");
+    fflush(stderr);
+    
     int peer_count = registry_get_accepted_peers(orcashi->registry, peers, MAX_REGISTRY_PEERS);
     
+    fprintf(stderr, "[PEERS DEBUG] After registry_get_accepted_peers(): peer_count=%d\n", peer_count);
+    fflush(stderr);
+    
+    /* DEBUG: Check peers array */
+    if (peer_count > 0) {
+        for (int i = 0; i < peer_count && i < 5; i++) {
+            fprintf(stderr, "[PEERS DEBUG] peers[%d]: id='%s', ip='%s', port='%s'\n", 
+                    i, peers[i].id, peers[i].ip, peers[i].port);
+            fflush(stderr);
+        }
+    }
+    
+    /* ===== FIX: Early return when NO peers ===== */
     if (peer_count == 0 && pending_count == 0) {
         printf("  No peers yet. Use './orcashi add <id>' to add friends.\n");
-    } else {
-        if (peer_count > 0) {
-            printf("ACCEPTED PEERS:\n");
-            for (int i = 0; i < peer_count; i++) {
-                PeerInfo p;
-                bool online = false;
-                if (discovery_find_peer(orcashi->discovery, peers[i].id, &p)) {
-                    online = p.online;
-                }
-                printf("  [%d] %s  %s  %s\n",
-                       i + 1,
-                       peers[i].id,
-                       peers[i].ip,
-                       online ? "ONLINE" : "OFFLINE");
+        printf("------------------------------------------------------------\n");
+        printf("\n");
+        fprintf(stderr, "[PEERS DEBUG] No peers, returning early\n");
+        fflush(stderr);
+        return;  /* ← EARLY RETURN PREVENTS SIGSEGV */
+    }
+    
+    fprintf(stderr, "[PEERS DEBUG] Continuing to display peers\n");
+    fflush(stderr);
+    
+    if (peer_count > 0) {
+        printf("ACCEPTED PEERS:\n");
+        for (int i = 0; i < peer_count; i++) {
+            fprintf(stderr, "[PEERS DEBUG] Displaying peer[%d]: id='%s'\n", i, peers[i].id);
+            fflush(stderr);
+            
+            PeerInfo p;
+            bool online = false;
+            if (discovery_find_peer(orcashi->discovery, peers[i].id, &p)) {
+                online = p.online;
             }
+            printf("  [%d] %s  %s  %s\n",
+                   i + 1,
+                   peers[i].id,
+                   peers[i].ip,
+                   online ? "ONLINE" : "OFFLINE");
         }
     }
     
@@ -845,15 +894,32 @@ void show_peers_interactive(ORCASHI* orcashi) {
     fflush(stdout);
     
     char input[64];
-    if (!fgets(input, sizeof(input), stdin)) return;
+    if (!fgets(input, sizeof(input), stdin)) {
+        fprintf(stderr, "[PEERS DEBUG] fgets() failed\n");
+        fflush(stderr);
+        return;
+    }
     input[strcspn(input, "\n")] = '\0';
     
-    if (strcmp(input, "q") == 0) return;
+    fprintf(stderr, "[PEERS DEBUG] User input: '%s'\n", input);
+    fflush(stderr);
+    
+    if (strcmp(input, "q") == 0) {
+        fprintf(stderr, "[PEERS DEBUG] User quit\n");
+        fflush(stderr);
+        return;
+    }
     
     if (input[0] == 'c' && strlen(input) > 2) {
         int idx = atoi(input + 2);
+        fprintf(stderr, "[PEERS DEBUG] Chat idx=%d, peer_count=%d\n", idx, peer_count);
+        fflush(stderr);
+        
         if (idx > 0 && idx <= peer_count) {
             char* id = peers[idx - 1].id;
+            fprintf(stderr, "[PEERS DEBUG] Chatting with id='%s'\n", id);
+            fflush(stderr);
+            
             printf("Chatting with %s...\n", id);
             RegistryPeer reg_peer;
             if (registry_get_peer(orcashi->registry, id, &reg_peer)) {
@@ -868,8 +934,14 @@ void show_peers_interactive(ORCASHI* orcashi) {
         }
     } else if (input[0] == 'r' && strlen(input) > 2) {
         int idx = atoi(input + 2);
+        fprintf(stderr, "[PEERS DEBUG] Remove idx=%d, peer_count=%d\n", idx, peer_count);
+        fflush(stderr);
+        
         if (idx > 0 && idx <= peer_count) {
             char* id = peers[idx - 1].id;
+            fprintf(stderr, "[PEERS DEBUG] Removing id='%s'\n", id);
+            fflush(stderr);
+            
             if (registry_remove_peer(orcashi->registry, id)) {
                 peer_cache_remove_peer(orcashi->cache, id);
                 printf("Removed peer %s\n", id);
@@ -878,6 +950,9 @@ void show_peers_interactive(ORCASHI* orcashi) {
             printf("Invalid peer number\n");
         }
     }
+    
+    fprintf(stderr, "[PEERS DEBUG] Exiting normally\n");
+    fflush(stderr);
 }
 
 /* ============================================================================
@@ -1147,7 +1222,7 @@ int main(int argc, char* argv[]) {
         discovery_stop(g_orcashi->discovery);
         
         if (found) {
-            /* ===== FIX: Do NOT save to registry here! ===== */
+            /* ===== Do NOT save to registry here! ===== */
             /* Only send friend request */
             printf("[ORCA] Sending friend request to %s at %s:%d...\n", id, p.ip, p.port);
             
@@ -1214,7 +1289,7 @@ int main(int argc, char* argv[]) {
             printf("[ORCA]   Mode: SECURE\n");
         }
         
-        /* ===== FIX: Save peer to registry on accept ===== */
+        /* ===== Save peer to registry on accept ===== */
         registry_update_status(g_orcashi->registry, norm_id, "accepted");
         printf("[ORCA] Friend request accepted from %s\n", id);
         printf("[ORCA] Use './orcashi peers' to see your peers\n");
@@ -1242,7 +1317,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     
-    /* PEERS COMMAND */
+    /* PEERS COMMAND - With debug logs and early return */
     else if (strcmp(cmd, "peers") == 0) {
         if (load_identity_with_passcode(g_orcashi, "peers") < 0) {
             orcashi_destroy(g_orcashi);
