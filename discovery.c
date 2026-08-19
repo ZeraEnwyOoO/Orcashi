@@ -261,9 +261,6 @@ void discovery_broadcast_search(Discovery* disc, const char* id) {
            (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
 }
 
-/* ============================================================================
- * discovery_query_peer - DEBUG: Add sendto logging
- * ============================================================================ */
 void discovery_query_peer(Discovery* disc, const char* id) {
     if (!disc || !id) return;
     
@@ -283,11 +280,9 @@ void discovery_query_peer(Discovery* disc, const char* id) {
     setsockopt(disc->udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
     
     DLOG("Querying for peer: %s (normalized from %s)", norm_id, id);
-    DLOG("  Sending to 255.255.255.255:%d on socket %d", disc->port, disc->udp_socket);
     
     int sent = sendto(disc->udp_socket, msg, strlen(msg), 0,
                       (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
-    
     if (sent < 0) {
         DLOG("sendto() FAILED: errno=%d (%s)", errno, strerror(errno));
     } else {
@@ -374,6 +369,10 @@ static void send_udp(Discovery* disc, const char* msg, const char* ip, int port)
            (struct sockaddr*)&addr, sizeof(addr));
 }
 
+/* ============================================================================
+ * PENDING REQUESTS - Add/remove from pending queue
+ * ============================================================================ */
+
 void discovery_push_pending(Discovery* disc, const char* from_id, const char* from_ip, int from_port) {
     if (!disc || !from_id) return;
     
@@ -443,14 +442,13 @@ bool discovery_has_pending(Discovery* disc) {
 }
 
 /* ============================================================================
- * parse_message - DEBUG: Add detailed logging
+ * parse_message - Message parser
  * ============================================================================ */
 static void parse_message(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_port;
     
     DLOG("parse_message: '%s' from %s", msg, sender_ip);
     
-    /* Check if this is a message from ourselves */
     if (strlen(g_my_ip) > 0 && strcmp(sender_ip, g_my_ip) == 0) {
         DLOG("Skipping self-message from %s", sender_ip);
         return;
@@ -484,6 +482,9 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
     }
 }
 
+/* ============================================================================
+ * handle_presence - Handle ORCA_PRESENCE
+ * ============================================================================ */
 static void handle_presence(Discovery* disc, const char* msg, const char* sender_ip) {
     (void)sender_ip;
     
@@ -589,7 +590,7 @@ static void handle_presence(Discovery* disc, const char* msg, const char* sender
 }
 
 /* ============================================================================
- * handle_who_has - DEBUG: Add ID matching log
+ * handle_who_has - Respond to WHO_HAS with I_AM
  * ============================================================================ */
 static void handle_who_has(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* search_id = msg + 8;
@@ -622,7 +623,7 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
                     g_my_id, g_my_ip, g_my_port);
         }
         
-        DLOG("Sending I_AM to %s:%d: %s", sender_ip, DISCOVERY_PORT, response);
+        DLOG("Sending I_AM to %s:%d", sender_ip, DISCOVERY_PORT);
         
         send_udp(disc, response, sender_ip, DISCOVERY_PORT);
         
@@ -632,6 +633,9 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
     }
 }
 
+/* ============================================================================
+ * handle_i_am - Store discovered peer in cache (NOT registry!)
+ * ============================================================================ */
 static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* rest = msg + 5;
     bool is_secure = false;
@@ -688,13 +692,14 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
             peer->verified = false;
             snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", sender_ip, port);
             
-            DLOG("I_AM (normal) stored: %s at %s:%d", id, peer->ip, peer->port);
+            DLOG("I_AM (normal) stored in cache: %s at %s:%d", id, peer->ip, peer->port);
         }
         
         pthread_mutex_unlock(&disc->mutex);
         return;
     }
     
+    /* ===== SECURE I_AM ===== */
     const char* id_start = rest;
     const char* id_end = strchr(id_start, ':');
     if (!id_end) return;
@@ -772,6 +777,7 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     
     DLOG("Identity signature verified: %s", id);
     
+    /* ===== Store in discovery cache ONLY (NOT registry!) ===== */
     pthread_mutex_lock(&disc->mutex);
     
     int found = -1;
@@ -801,8 +807,7 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
         
         snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", sender_ip, port);
         
-        DLOG("I_AM stored: %s at %s:%d (secure, reachable endpoint from packet source)", 
-             id, peer->ip, peer->port);
+        DLOG("I_AM stored in cache: %s at %s:%d (secure)", id, peer->ip, peer->port);
         
         if (disc->on_peer_found) {
             disc->on_peer_found(peer);
@@ -812,6 +817,9 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     pthread_mutex_unlock(&disc->mutex);
 }
 
+/* ============================================================================
+ * handle_add_request - Handle friend request, push to pending queue
+ * ============================================================================ */
 static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_ip;
     (void)sender_port;
@@ -901,27 +909,19 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
     normalize_id(g_my_id, norm_my, sizeof(norm_my));
     
     if (strcmp(norm_target, norm_my) == 0) {
+        /* ===== This is for ME! ===== */
+        DLOG("ADD_REQUEST is for me! From: %s", from_id);
+        
+        /* Send ACK back */
         discovery_send_add_request_ack(disc, from_id, g_my_id);
         
+        /* ===== Store in request manager (pending) ===== */
         if (g_request_manager) {
             request_send(g_request_manager, from_id, g_my_id);
             DLOG("ADD_REQUEST saved to request.json from %s", from_id);
         }
         
-        if (g_registry) {
-            char port_str[16];
-            snprintf(port_str, sizeof(port_str), "%d", from_port);
-            
-            if (is_secure) {
-                registry_register_secure(g_registry, from_id, sender_ip, port_str,
-                                        from_name, public_key, signature, "");
-            } else {
-                registry_register_peer(g_registry, from_id, sender_ip, port_str);
-            }
-            DLOG("ADD_REQUEST: registered peer %s in registry with IP %s:%s", 
-                 from_id, sender_ip, port_str);
-        }
-        
+        /* ===== Store in discovery cache ===== */
         pthread_mutex_lock(&disc->mutex);
         
         int found = -1;
@@ -954,22 +954,23 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
             
             snprintf(peer->endpoint, sizeof(peer->endpoint), "%s:%d", sender_ip, from_port);
             
-            DLOG("ADD_REQUEST: stored peer %s at %s:%d", from_id, sender_ip, from_port);
+            DLOG("ADD_REQUEST: stored peer %s in cache at %s:%d", from_id, sender_ip, from_port);
         }
         
         pthread_mutex_unlock(&disc->mutex);
         
+        /* ===== Push to pending queue for y/n prompt ===== */
         discovery_push_pending(disc, from_id, sender_ip, from_port);
         DLOG("ADD_REQUEST: pushed to pending queue, pending_count=%d", disc->pending_count);
         
+        /* ===== Print notification ===== */
         printf("\n[ORCA] ========================================\n");
         printf("[ORCA] Friend request from %s (%s:%d)\n", from_id, sender_ip, from_port);
         if (is_secure) {
             printf("[ORCA] Secure identity: %s\n", from_name);
         }
-        printf("[ORCA] Use './orcashi accept %s' to accept\n", from_id);
-        printf("[ORCA] Use './orcashi reject %s' to reject\n", from_id);
         printf("[ORCA] ========================================\n");
+        printf("[ORCA] Press Enter to accept or Ctrl+C to ignore\n");
         fflush(stdout);
         
     } else {
@@ -977,6 +978,9 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
     }
 }
 
+/* ============================================================================
+ * handle_add_request_ack - Handle ACK from peer
+ * ============================================================================ */
 static void handle_add_request_ack(Discovery* disc, const char* msg) {
     const char* rest = msg + 16;
     const char* colon1 = strchr(rest, ':');
@@ -1016,6 +1020,9 @@ static void handle_add_request_ack(Discovery* disc, const char* msg) {
     }
 }
 
+/* ============================================================================
+ * handle_search - Handle ORCA_SEARCH
+ * ============================================================================ */
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* search_id = msg + 12;
     
@@ -1038,8 +1045,7 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
                     g_my_id, g_my_ip, g_my_port);
         }
         
-        DLOG("MATCH! Sending ORCA_PRESENCE response: %s", response);
-        
+        DLOG("MATCH! Sending ORCA_PRESENCE response");
         send_udp(disc, response, sender_ip, DISCOVERY_PORT);
     } else {
         DLOG("No match for ORCA_SEARCH");
@@ -1047,7 +1053,7 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
 }
 
 /* ============================================================================
- * discovery_find_peer - DEBUG: Show cache contents
+ * discovery_find_peer - Search discovery cache (NOT registry!)
  * ============================================================================ */
 bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
     if (!disc || !out_peer) return false;
@@ -1133,7 +1139,7 @@ void discovery_cleanup_stale(Discovery* disc) {
 }
 
 /* ============================================================================
- * listen_loop - DEBUG: Add recvfrom logging
+ * listen_loop - UDP receive loop
  * ============================================================================ */
 static void* listen_loop(void* arg) {
     Discovery* disc = (Discovery*)arg;
