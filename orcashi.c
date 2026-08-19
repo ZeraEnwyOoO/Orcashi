@@ -106,8 +106,7 @@ void orcashi_destroy(ORCASHI* orcashi) {
 }
 
 /* ============================================================================
- * FIXED: orcashi_init() - NO discovery start here
- * Discovery will be started in listen_command() after identity unlock
+ * FIXED: orcashi_init() - NO registry_load() and NO discovery start here
  * ============================================================================ */
 
 bool orcashi_init(ORCASHI* orcashi) {
@@ -120,7 +119,7 @@ bool orcashi_init(ORCASHI* orcashi) {
     discovery_set_registry(orcashi->registry);
     discovery_set_request_manager(orcashi->requests);
     
-    registry_load(orcashi->registry);
+    /* ===== FIX: registry_load() removed - persistence handled by peer_list ===== */
     request_load(orcashi->requests);
     
     if (punch_init(orcashi->punch, PUNCH_PORT) < 0) {
