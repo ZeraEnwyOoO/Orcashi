@@ -821,10 +821,17 @@ static bool plug_parse_handshake(TCPPlug* plug, const char* msg) {
         return true;
     }
     
-    /* ECDH_RESPONSE:<pubkey> - Received by initiator */
+    /* ECDH_RESPONSE:<pubkey> - Received by initiator ONLY */
     if (strncmp(msg, "ECDH_RESPONSE:", 14) == 0) {
         printf("[PLUG] Received ECDH_RESPONSE\n");
         const char* pubkey = msg + 14;
+        
+        /* ===== FIX: Only initiator can complete ===== */
+        if (!plug->ecdh_initiated) {
+            printf("[PLUG] Ignoring ECDH_RESPONSE - not initiator\n");
+            return true;
+        }
+        
         plug_complete_ecdh(plug, pubkey);
         return true;
     }
