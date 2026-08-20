@@ -178,8 +178,8 @@ Discovery* discovery_create(void) {
     disc->pending_count = 0;
     disc->listen_thread_created = false;
     disc->broadcast_thread_created = false;
-    disc->registry = NULL;
-    disc->request_manager = NULL;
+    /* ===== REMOVED: disc->registry = NULL; ===== */
+    /* ===== REMOVED: disc->request_manager = NULL; ===== */
     disc->on_peer_found = NULL;
     disc->on_peer_offline = NULL;
     disc->on_accept_confirm = NULL;
@@ -417,22 +417,9 @@ void discovery_set_my_secure_identity(Discovery* disc,
 }
 
 /* ============================================================================
- * External References
+ * REMOVED: discovery_set_registry()
+ * REMOVED: discovery_set_request_manager()
  * ============================================================================ */
-
-void discovery_set_registry(Discovery* disc, Registry* reg) {
-    if (disc) {
-        disc->registry = reg;
-        DLOG("registry set");
-    }
-}
-
-void discovery_set_request_manager(Discovery* disc, RequestManager* rm) {
-    if (disc) {
-        disc->request_manager = rm;
-        DLOG("request_manager set");
-    }
-}
 
 /* ============================================================================
  * Sending UDP (Defensive)
@@ -1547,11 +1534,13 @@ static void discovery_handle_add_request(Discovery* disc, const char* data,
     discovery_send_add_request_ack(disc, from_id, g_my_identity.id);
     DLOG("handle_add_request: sent ACK to %s", from_id);
     
-    /* Store in request manager (pending) */
-    if (disc->request_manager) {
-        request_send(disc->request_manager, from_id, g_my_identity.id);
-        DLOG("handle_add_request: saved to request manager");
-    }
+    /* ===== REMOVED: request_manager block ===== */
+    /* The following code was removed:
+       if (disc->request_manager) {
+           request_send(disc->request_manager, from_id, g_my_identity.id);
+           DLOG("handle_add_request: saved to request manager");
+       }
+    */
     
     /* Store in discovery cache */
     pthread_mutex_lock(&disc->mutex);
@@ -1799,7 +1788,7 @@ static void discovery_handle_accept_confirm(Discovery* disc, const char* data) {
     printf("[ORCA] Friendship with %s is now accepted.\n", from_id);
     fflush(stdout);
     
-    /* ===== CALLBACK FOR PERSISTENCE ===== */
+    /* ===== CALLBACK FOR PERSISTENCE (NEW) ===== */
     if (disc->on_accept_confirm) {
         disc->on_accept_confirm(from_id, from_ip, from_port, is_secure);
     }
@@ -1847,7 +1836,7 @@ static void discovery_handle_search(Discovery* disc, const char* data,
 }
 
 /* ============================================================================
- * Packet Parser (Main Entry Point)
+ * Packet Parser (Main Entry Point) - FIXED
  * ============================================================================ */
 
 static void discovery_parse_packet(Discovery* disc, const char* data, 
@@ -1855,8 +1844,8 @@ static void discovery_parse_packet(Discovery* disc, const char* data,
                                    int sender_port) {
     if (!disc || !data || data_len == 0 || !sender_ip) return;
     
-    /* Defensive: ensure null-termination */
-    if (data[data_len - 1] != '\0') {
+    /* ===== FIX: Check null terminator at data[data_len] ===== */
+    if (data[data_len] != '\0') {
         DLOG("parse_packet: not null-terminated, ignoring");
         return;
     }
