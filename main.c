@@ -19,6 +19,8 @@ static ORCASHI* g_orcashi = NULL;
 static PeerList* g_peer_list = NULL;
 static volatile int running = 1;
 
+#define PEERS_DISPLAY_MAX 64
+
 void signal_handler(int sig) {
     (void)sig;
     printf("\nShutting down...\n");
@@ -721,7 +723,7 @@ void chat_loop(void) {
 }
 
 /* ============================================================================
- * PEERS INTERACTIVE - Fixed with Defensive Checks
+ * PEERS INTERACTIVE - FIXED with PEERS_DISPLAY_MAX
  * ============================================================================ */
 
 void show_peers_interactive(ORCASHI* orcashi) {
@@ -734,8 +736,8 @@ void show_peers_interactive(ORCASHI* orcashi) {
     printf("ORCASHI PEERS\n");
     printf("------------------------------------------------------------\n");
     
-    RegistryPeer pending[REGISTRY_MAX_PEERS];
-    int pending_count = registry_get_pending_peers(orcashi->registry, pending, REGISTRY_MAX_PEERS);
+    RegistryPeer pending[PEERS_DISPLAY_MAX];
+    int pending_count = registry_get_pending_peers(orcashi->registry, pending, PEERS_DISPLAY_MAX);
     if (pending_count > 0) {
         printf("PENDING REQUESTS:\n");
         for (int i = 0; i < pending_count; i++) {
@@ -746,8 +748,8 @@ void show_peers_interactive(ORCASHI* orcashi) {
         printf("\n");
     }
     
-    RegistryPeer peers[REGISTRY_MAX_PEERS];
-    int peer_count = registry_get_accepted_peers(orcashi->registry, peers, REGISTRY_MAX_PEERS);
+    RegistryPeer peers[PEERS_DISPLAY_MAX];
+    int peer_count = registry_get_accepted_peers(orcashi->registry, peers, PEERS_DISPLAY_MAX);
     
     /* ===== DEFENSIVE: Handle empty state ===== */
     if (peer_count == 0 && pending_count == 0) {
@@ -1316,7 +1318,7 @@ int main(int argc, char* argv[]) {
     }
     
     /* ==========================================================================
-     * PEERS COMMAND - Fixed with Defensive Checks
+     * PEERS COMMAND - FIXED with PEERS_DISPLAY_MAX
      * ========================================================================== */
     else if (strcmp(cmd, "peers") == 0) {
         if (load_identity_with_passcode(g_orcashi, "peers") < 0) {
