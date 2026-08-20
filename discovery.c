@@ -57,6 +57,15 @@ static struct {
 };
 
 /* ============================================================================
+ * ACCEPT_CONFIRM State
+ * ============================================================================ */
+
+static char g_accept_target[DISCOVERY_MAX_ID_LEN] = {0};
+static bool g_accept_received = false;
+static pthread_mutex_t g_accept_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_accept_cond = PTHREAD_COND_INITIALIZER;
+
+/* ============================================================================
  * Forward Declarations
  * ============================================================================ */
 
@@ -67,6 +76,7 @@ static void discovery_parse_packet(Discovery* disc, const char* data,
                                    int sender_port);
 static bool discovery_send_udp(Discovery* disc, const char* msg, 
                                const char* ip, int port);
+static bool discovery_send_broadcast(Discovery* disc, const char* msg);
 static void discovery_handle_presence(Discovery* disc, const char* data,
                                       const char* sender_ip);
 static void discovery_handle_who_has(Discovery* disc, const char* data,
@@ -160,122 +170,6 @@ bool discovery_is_same_id(const char* id1, const char* id2) {
 }
 
 /* ============================================================================
- * Packet Parsing Helpers (Defensive)
- * ============================================================================ */
-
-static bool parse_field(const char* data, size_t data_len, 
-                        const char* field_name, char* output, 
-                        size_t output_size) {
-    if (!data || !field_name || !output || output_size == 0) {
-        return false;
-    }
-    
-    /* Build search string: "\"field_name\":" */
-    char search[128];
-    int search_len = snprintf(search, sizeof(search), "\"%s\":", field_name);
-    if (search_len <= 0 || search_len >= (int)sizeof(search)) {
-        return false;
-    }
-    
-    const char* pos = strstr(data, search);
-    if (!pos) {
-        return false;
-    }
-    
-    pos += search_len;
-    
-    /* Skip whitespace */
-    while (pos < data + data_len && (*pos == ' ' || *pos == '\t')) {
-        pos++;
-    }
-    
-    /* Must be a quoted string */
-    if (pos >= data + data_len || *pos != '"') {
-        return false;
-    }
-    pos++;
-    
-    /* Find closing quote */
-    const char* end = strchr(pos, '"');
-    if (!end || end >= data + data_len) {
-        return false;
-    }
-    
-    size_t len = end - pos;
-    if (len == 0 || len >= output_size) {
-        return false;
-    }
-    
-    memcpy(output, pos, len);
-    output[len] = '\0';
-    return true;
-}
-
-static bool parse_int_field(const char* data, size_t data_len,
-                            const char* field_name, int* output) {
-    if (!data || !field_name || !output) {
-        return false;
-    }
-    
-    char search[128];
-    int search_len = snprintf(search, sizeof(search), "\"%s\":", field_name);
-    if (search_len <= 0 || search_len >= (int)sizeof(search)) {
-        return false;
-    }
-    
-    const char* pos = strstr(data, search);
-    if (!pos) {
-        return false;
-    }
-    
-    pos += search_len;
-    
-    /* Skip whitespace */
-    while (pos < data + data_len && (*pos == ' ' || *pos == '\t')) {
-        pos++;
-    }
-    
-    if (pos >= data + data_len) {
-        return false;
-    }
-    
-    *output = atoi(pos);
-    return true;
-}
-
-static bool parse_long_field(const char* data, size_t data_len,
-                             const char* field_name, long* output) {
-    if (!data || !field_name || !output) {
-        return false;
-    }
-    
-    char search[128];
-    int search_len = snprintf(search, sizeof(search), "\"%s\":", field_name);
-    if (search_len <= 0 || search_len >= (int)sizeof(search)) {
-        return false;
-    }
-    
-    const char* pos = strstr(data, search);
-    if (!pos) {
-        return false;
-    }
-    
-    pos += search_len;
-    
-    /* Skip whitespace */
-    while (pos < data + data_len && (*pos == ' ' || *pos == '\t')) {
-        pos++;
-    }
-    
-    if (pos >= data + data_len) {
-        return false;
-    }
-    
-    *output = atol(pos);
-    return true;
-}
-
-/* ============================================================================
  * Lifecycle
  * ============================================================================ */
 
@@ -293,8 +187,6 @@ Discovery* discovery_create(void) {
     disc->pending_count = 0;
     disc->listen_thread_created = false;
     disc->broadcast_thread_created = false;
-    disc->registry = NULL;
-    disc->request_manager = NULL;
     disc->on_peer_found = NULL;
     disc->on_peer_offline = NULL;
     disc->on_accept_confirm = NULL;
@@ -529,24 +421,6 @@ void discovery_set_my_secure_identity(Discovery* disc,
     
     DLOG("secure identity set: id='%s' name='%s'", 
          g_my_identity.id, g_my_identity.name);
-}
-
-/* ============================================================================
- * External References
- * ============================================================================ */
-
-void discovery_set_registry(Discovery* disc, Registry* reg) {
-    if (disc) {
-        disc->registry = reg;
-        DLOG("registry set");
-    }
-}
-
-void discovery_set_request_manager(Discovery* disc, RequestManager* rm) {
-    if (disc) {
-        disc->request_manager = rm;
-        DLOG("request_manager set");
-    }
 }
 
 /* ============================================================================
@@ -1661,12 +1535,6 @@ static void discovery_handle_add_request(Discovery* disc, const char* data,
     discovery_send_add_request_ack(disc, from_id, g_my_identity.id);
     DLOG("handle_add_request: sent ACK to %s", from_id);
     
-    /* Store in request manager (pending) */
-    if (disc->request_manager) {
-        request_send(disc->request_manager, from_id, g_my_identity.id);
-        DLOG("handle_add_request: saved to request manager");
-    }
-    
     /* Store in discovery cache */
     pthread_mutex_lock(&disc->mutex);
     
@@ -1913,7 +1781,7 @@ static void discovery_handle_accept_confirm(Discovery* disc, const char* data) {
     printf("[ORCA] Friendship with %s is now accepted.\n", from_id);
     fflush(stdout);
     
-    /* Callback for persistence */
+    /* ===== CALLBACK FOR PERSISTENCE ===== */
     if (disc->on_accept_confirm) {
         disc->on_accept_confirm(from_id, from_ip, from_port, is_secure);
     }
