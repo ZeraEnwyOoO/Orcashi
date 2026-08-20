@@ -1847,7 +1847,7 @@ static void discovery_handle_search(Discovery* disc, const char* data,
 }
 
 /* ============================================================================
- * Packet Parser (Main Entry Point)
+ * Packet Parser (Main Entry Point) - FIXED
  * ============================================================================ */
 
 static void discovery_parse_packet(Discovery* disc, const char* data, 
@@ -1855,8 +1855,8 @@ static void discovery_parse_packet(Discovery* disc, const char* data,
                                    int sender_port) {
     if (!disc || !data || data_len == 0 || !sender_ip) return;
     
-    /* Defensive: ensure null-termination */
-    if (data[data_len - 1] != '\0') {
+    /* ===== FIX: Check null terminator at data[data_len] ===== */
+    if (data[data_len] != '\0') {
         DLOG("parse_packet: not null-terminated, ignoring");
         return;
     }
