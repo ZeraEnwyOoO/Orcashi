@@ -94,9 +94,11 @@ ORCASHI* orcashi_create(void) {
         return NULL;
     }
     
-    /* Set discovery callbacks */
+    /* Set discovery callbacks and references */
     discovery_set_on_peer_found(orcashi->discovery, on_peer_found_callback);
     discovery_set_on_peer_offline(orcashi->discovery, on_peer_offline_callback);
+    discovery_set_registry(orcashi->discovery, orcashi->registry);
+    discovery_set_request_manager(orcashi->discovery, orcashi->requests);
     
     return orcashi;
 }
