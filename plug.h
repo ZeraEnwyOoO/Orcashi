@@ -26,10 +26,8 @@ typedef enum {
 } PlugMessageType;
 
 /* ============================================================================
- * TCP PLUG STRUCT
+ * TCP PLUG STRUCT - PHASE 4
  * ============================================================================ */
-
-#define BUFFER_SIZE 16384  /* Increased for large messages */
 
 typedef struct {
     /* Socket */
@@ -53,23 +51,23 @@ typedef struct {
     int send_count;
     int queue_capacity;
     
-    /* Legacy Security */
+    /* ===== LEGACY SECURITY ===== */
     bool secure_mode;
-    char aes_key_hex[65];
-    char nonce_hex[25];
+    char aes_key_hex[65];      /* AES-256 key as hex */
+    char nonce_hex[25];        /* Current nonce */
     bool handshake_complete;
     char peer_public_key_hex[65];
     char handshake_buffer[1024];
     
-    /* ECDH + AES-GCM Secure Session */
+    /* ===== PHASE 4: ECDH + AES-GCM SECURE SESSION ===== */
     bool ecdh_initiated;
     bool ecdh_complete;
     unsigned char ecdh_public_key[32];
     unsigned char ecdh_private_key[32];
     unsigned char ecdh_shared_secret[32];
-    unsigned char aes_key[32];
-    unsigned char nonce[12];
-    uint64_t nonce_counter;
+    unsigned char aes_key[32];         /* AES-256-GCM key */
+    unsigned char nonce[12];           /* 12-byte nonce for GCM */
+    uint64_t nonce_counter;            /* Counter for nonce generation */
     char peer_ecdh_public_key_hex[65];
     
 } TCPPlug;
@@ -89,7 +87,7 @@ bool plug_create_server(TCPPlug* plug, int port);
 bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port);
 
 /* ============================================================================
- * MESSAGING
+ * LEGACY MESSAGING
  * ============================================================================ */
 
 bool plug_send_message(TCPPlug* plug, const char* msg);
@@ -105,15 +103,28 @@ bool plug_complete_handshake(TCPPlug* plug, const char* peer_public_key_hex);
 bool plug_handshake_complete(TCPPlug* plug);
 
 /* ============================================================================
- * ECDH + AES-GCM SECURE SESSION
+ * PHASE 4: ECDH + AES-GCM SECURE SESSION
  * ============================================================================ */
 
+/* Initiate ECDH handshake (call after connection established) */
 bool plug_initiate_ecdh(TCPPlug* plug);
+
+/* Respond to ECDH_INIT (called automatically from receive loop) */
 bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex);
+
+/* Complete ECDH handshake after receiving ECDH_RESPONSE */
 bool plug_complete_ecdh(TCPPlug* plug, const char* peer_pubkey_hex);
+
+/* Check if ECDH secure channel is established */
 bool plug_ecdh_complete(TCPPlug* plug);
+
+/* Send secure message (encrypted with AES-GCM) */
 bool plug_send_secure(TCPPlug* plug, const char* msg);
+
+/* Receive secure message (decrypts if SECURE: format) */
 bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size);
+
+/* Check if connection is in secure mode */
 bool plug_is_secure(TCPPlug* plug);
 
 /* ============================================================================
