@@ -198,6 +198,12 @@ bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port) {
 bool plug_initiate_ecdh(TCPPlug* plug) {
     if (!plug || !plug->connected) return false;
     
+    /* ===== FIX: Don't reset if already complete ===== */
+    if (plug->ecdh_complete && plug->secure_mode) {
+        printf("[PLUG] ECDH already complete, ignoring initiate\n");
+        return true;
+    }
+    
     /* Reset secure state */
     plug->ecdh_complete = false;
     plug->secure_mode = false;
@@ -240,6 +246,12 @@ bool plug_initiate_ecdh(TCPPlug* plug) {
 
 bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
     if (!plug || !plug->connected || !peer_pubkey_hex) return false;
+    
+    /* ===== FIX: Don't respond if already complete ===== */
+    if (plug->ecdh_complete && plug->secure_mode) {
+        printf("[PLUG] ECDH already complete, ignoring response\n");
+        return true;
+    }
     
     /* Validate hex length (64 chars for 32 bytes) */
     if (strlen(peer_pubkey_hex) != 64) {
@@ -322,6 +334,12 @@ bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
 bool plug_complete_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
     if (!plug || !plug->connected || !peer_pubkey_hex) return false;
     
+    /* ===== FIX: Don't complete if already complete ===== */
+    if (plug->ecdh_complete && plug->secure_mode) {
+        printf("[PLUG] ECDH already complete, ignoring duplicate complete\n");
+        return true;
+    }
+    
     if (!plug->ecdh_initiated) {
         fprintf(stderr, "[PLUG] Complete called but not initiated - REJECTED\n");
         return false;
@@ -382,7 +400,7 @@ bool plug_ecdh_complete(TCPPlug* plug) {
 }
 
 /* ============================================================================
- * SECURE MESSAGING - SEND (FIXED: Raw AES Key)
+ * SECURE MESSAGING - SEND
  * ============================================================================ */
 
 bool plug_send_secure(TCPPlug* plug, const char* msg) {
@@ -448,7 +466,7 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
 }
 
 /* ============================================================================
- * SECURE MESSAGING - RECEIVE (FIXED: Raw AES Key)
+ * SECURE MESSAGING - RECEIVE
  * ============================================================================ */
 
 bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
@@ -520,7 +538,7 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
     strncpy(tag_hex, tag_start, tag_len);
     tag_hex[tag_len] = '\0';
     
-    /* ===== FIX: Convert hex to raw bytes, use raw key directly ===== */
+    /* Convert hex to raw bytes, use raw key directly */
     unsigned char nonce[12];
     unsigned char tag[16];
     
@@ -544,7 +562,7 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
     unsigned char* plaintext;
     size_t plaintext_len;
     
-    /* ===== Use raw key directly, not hex string ===== */
+    /* Use raw key directly, not hex string */
     int result = orca_aes_gcm_decrypt(ciphertext, ciphertext_len,
                                       plug->aes_key, nonce, tag,
                                       &plaintext, &plaintext_len);
