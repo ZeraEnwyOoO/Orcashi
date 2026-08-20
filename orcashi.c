@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "orcashi.h"
+#include "peer_list.h"
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
@@ -10,22 +11,25 @@
 #include <sys/select.h>
 #include <ifaddrs.h>
 
+/* ============================================================================
+ * External References from main.c
+ * ============================================================================ */
+
+extern ORCASHI* g_orcashi;
+extern PeerList* g_peer_list;
+
+/* ============================================================================
+ * Forward Declarations
+ * ============================================================================ */
+
 #define MAX_MSG_LEN 4096
 
-static void micro_sleep(long microseconds) {
-    struct timespec ts;
-    ts.tv_sec = microseconds / 1000000;
-    ts.tv_nsec = (microseconds % 1000000) * 1000;
-    nanosleep(&ts, NULL);
-}
-
+static void micro_sleep(long microseconds);
 static void orcashi_broadcast_presence(ORCASHI* orcashi);
 static void orcashi_show_banner(ORCASHI* orcashi);
 static void* heartbeat_loop(void* arg);
 static void on_peer_found_callback(DiscoveryPeerInfo* peer);
 static void on_peer_offline_callback(DiscoveryPeerInfo* peer);
-static void on_accept_confirm_callback(const char* from_id, const char* from_ip, 
-                                       int from_port, bool is_secure);
 
 /* ============================================================================
  * LIFECYCLE
@@ -93,7 +97,6 @@ ORCASHI* orcashi_create(void) {
     /* Set discovery callbacks */
     discovery_set_on_peer_found(orcashi->discovery, on_peer_found_callback);
     discovery_set_on_peer_offline(orcashi->discovery, on_peer_offline_callback);
-    discovery_set_on_accept_confirm(orcashi->discovery, on_accept_confirm_callback);
     
     return orcashi;
 }
@@ -119,10 +122,6 @@ void orcashi_destroy(ORCASHI* orcashi) {
 
 bool orcashi_init(ORCASHI* orcashi) {
     if (!orcashi) return false;
-    
-    /* Set registry references in discovery */
-    discovery_set_registry(orcashi->discovery, orcashi->registry);
-    discovery_set_request_manager(orcashi->discovery, orcashi->requests);
     
     /* Load requests from disk */
     request_load(orcashi->requests);
@@ -720,6 +719,13 @@ void orcashi_set_callbacks(ORCASHI* orcashi,
  * INTERNAL FUNCTIONS
  * ============================================================================ */
 
+static void micro_sleep(long microseconds) {
+    struct timespec ts;
+    ts.tv_sec = microseconds / 1000000;
+    ts.tv_nsec = (microseconds % 1000000) * 1000;
+    nanosleep(&ts, NULL);
+}
+
 static void orcashi_broadcast_presence(ORCASHI* orcashi) {
     if (!orcashi) return;
     char endpoint[128];
@@ -765,38 +771,6 @@ static void on_peer_found_callback(DiscoveryPeerInfo* peer) {
 static void on_peer_offline_callback(DiscoveryPeerInfo* peer) {
     (void)peer;
     /* This is called when a peer goes offline */
-}
-
-static void on_accept_confirm_callback(const char* from_id, const char* from_ip, 
-                                       int from_port, bool is_secure) {
-    (void)from_port;
-    (void)is_secure;
-    
-    if (!g_orcashi) {
-        fprintf(stderr, "[ORCA] on_accept_confirm_callback: g_orcashi is NULL\n");
-        return;
-    }
-    
-    printf("\n[ORCA] ACCEPT_CONFIRM received from %s!\n", from_id);
-    printf("[ORCA] Friendship with %s is now ACCEPTED on both devices.\n", from_id);
-    
-    /* Save to registry */
-    registry_register_peer(g_orcashi->registry, from_id, from_ip, "9000");
-    registry_update_status(g_orcashi->registry, from_id, "accepted");
-    
-    /* Save to peer_list and persist */
-    RegistryPeer peer;
-    if (registry_get_peer(g_orcashi->registry, from_id, &peer)) {
-        if (peer_list_add(g_peer_list, &peer) == 0) {
-            if (peer_list_save(g_peer_list) != 0) {
-                printf("[WARNING] Failed to save peer list!\n");
-            } else {
-                printf("[ORCA] Peer %s saved to peer list (accepted)\n", from_id);
-            }
-        }
-    }
-    
-    printf("[ORCA] Use './orcashi peers' to see your accepted peers.\n");
 }
 
 static void* heartbeat_loop(void* arg) {
