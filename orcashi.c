@@ -188,8 +188,6 @@ bool orcashi_create_room(ORCASHI* orcashi, int port) {
             } else {
                 printf("[WARNING] Failed to initiate ECDH\n");
             }
-        } else {
-            orcashi_init_secure_session(orcashi);
         }
         
         orcashi_broadcast_presence(orcashi);
@@ -221,8 +219,6 @@ bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
             } else {
                 printf("[WARNING] Failed to initiate ECDH\n");
             }
-        } else {
-            orcashi_init_secure_session(orcashi);
         }
         
         CachePeer peer;
@@ -242,93 +238,51 @@ bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
 }
 
 /* ============================================================================
- * MESSAGING
+ * MESSAGING - FIXED: ONLY use plug.c
  * ============================================================================ */
 
 bool orcashi_send_message(ORCASHI* orcashi, const char* msg) {
     if (!orcashi || !orcashi->connected) return false;
     
+    /* ===== FIX: Use plug.c's secure channel exclusively ===== */
     if (plug_ecdh_complete(orcashi->plug)) {
         return plug_send_secure(orcashi->plug, msg);
     }
     
-    if (orcashi->session_established) {
-        return orcashi_send_secure_message(orcashi, msg);
-    }
-    
+    /* Plaintext only - no legacy secure path */
     return plug_send_message(orcashi->plug, msg);
 }
 
+/* Legacy secure message - kept for API compatibility but uses plug.c */
 bool orcashi_send_secure_message(ORCASHI* orcashi, const char* msg) {
-    if (!orcashi || !orcashi->connected || !orcashi->session_established) {
-        return false;
+    if (!orcashi || !orcashi->connected) return false;
+    
+    /* ===== FIX: Use plug.c exclusively ===== */
+    if (plug_ecdh_complete(orcashi->plug)) {
+        return plug_send_secure(orcashi->plug, msg);
     }
     
-    char nonce_hex[25];
-    char tag_hex[33];
-    char* ciphertext_b64 = NULL;
-    
-    if (orca_aes_gcm_encrypt_string(msg, orcashi->peer_public_key_hex,
-                                    nonce_hex, tag_hex, &ciphertext_b64) < 0) {
-        fprintf(stderr, "[ORCA] Failed to encrypt message\n");
-        return false;
-    }
-    
-    char secure_msg[4096];
-    snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s",
-             nonce_hex, tag_hex, ciphertext_b64);
-    free(ciphertext_b64);
-    
-    return plug_send_message(orcashi->plug, secure_msg);
+    return false;
 }
 
 bool orcashi_receive_message(ORCASHI* orcashi, char* msg, int msg_size, int timeout_ms) {
     if (!orcashi || !orcashi->connected) return false;
     
+    /* ===== FIX: Use plug.c's secure channel exclusively ===== */
     if (plug_ecdh_complete(orcashi->plug)) {
         return plug_receive_secure(orcashi->plug, msg, msg_size);
     }
     
+    /* Plaintext only - no legacy secure path */
     char raw_msg[MAX_MSG_LEN];
     if (!plug_receive_message(orcashi->plug, raw_msg, sizeof(raw_msg), timeout_ms)) {
         return false;
     }
     
-    if (strncmp(raw_msg, "SECURE:", 7) == 0 && orcashi->session_established) {
-        char* nonce_start = raw_msg + 7;
-        char* tag_start = strchr(nonce_start, ':');
-        if (!tag_start) {
-            strncpy(msg, raw_msg, msg_size - 1);
-            msg[msg_size - 1] = '\0';
-            return true;
-        }
-        tag_start++;
-        char* cipher_start = strchr(tag_start, ':');
-        if (!cipher_start) {
-            strncpy(msg, raw_msg, msg_size - 1);
-            msg[msg_size - 1] = '\0';
-            return true;
-        }
-        cipher_start++;
-        
-        char nonce_hex[25];
-        char tag_hex[33];
-        strncpy(nonce_hex, nonce_start, tag_start - nonce_start - 1);
-        nonce_hex[tag_start - nonce_start - 1] = '\0';
-        strncpy(tag_hex, tag_start, cipher_start - tag_start - 1);
-        tag_hex[cipher_start - tag_start - 1] = '\0';
-        
-        char* plaintext = NULL;
-        if (orca_aes_gcm_decrypt_string(cipher_start, nonce_hex, tag_hex,
-                                        orcashi->peer_public_key_hex, &plaintext) < 0) {
-            fprintf(stderr, "[ORCA] Failed to decrypt message\n");
-            return false;
-        }
-        
-        strncpy(msg, plaintext, msg_size - 1);
-        msg[msg_size - 1] = '\0';
-        free(plaintext);
-        return true;
+    /* If we get a SECURE: message but no secure channel, it's an error */
+    if (strncmp(raw_msg, "SECURE:", 7) == 0) {
+        fprintf(stderr, "[ORCA] Received SECURE message but no secure channel!\n");
+        return false;
     }
     
     strncpy(msg, raw_msg, msg_size - 1);
@@ -408,90 +362,28 @@ bool orcashi_has_identity(ORCASHI* orcashi) {
 }
 
 /* ============================================================================
- * SECURE SESSION (Legacy)
+ * SECURE SESSION - FIXED: Use plug.c exclusively
  * ============================================================================ */
 
 bool orcashi_init_secure_session(ORCASHI* orcashi) {
-    if (!orcashi) return false;
+    if (!orcashi || !orcashi->plug) return false;
     
-    if (!orcashi->has_identity || orcashi->identity.mode != ORCA_IDENTITY_MODE_SECURE) {
-        return false;
-    }
-    
-    RegistryPeer peer;
-    if (!registry_get_peer(orcashi->registry, orcashi->peer_id, &peer)) {
-        return false;
-    }
-    if (peer.mode != REG_MODE_SECURE) {
-        return false;
-    }
-    
-    orcashi->session = (OrcaECDSession*)calloc(1, sizeof(OrcaECDSession));
-    if (!orcashi->session) return false;
-    
-    unsigned char peer_pub_key[32];
-    if (orca_hex_to_bytes(peer.public_key, peer_pub_key, 32) < 0) {
-        free(orcashi->session);
-        orcashi->session = NULL;
-        return false;
-    }
-    
-    if (orca_ecdh_session_init(orcashi->session, true, peer_pub_key) < 0) {
-        free(orcashi->session);
-        orcashi->session = NULL;
-        return false;
-    }
-    
-    unsigned char pub_key[32];
-    if (orca_ecdh_session_initiate(orcashi->session, pub_key) < 0) {
-        orca_ecdh_session_destroy(orcashi->session);
-        free(orcashi->session);
-        orcashi->session = NULL;
-        return false;
-    }
-    
-    orca_bytes_to_hex(pub_key, 32, orcashi->peer_public_key_hex);
-    
-    char handshake[128];
-    snprintf(handshake, sizeof(handshake), "ECDH:%s", orcashi->peer_public_key_hex);
-    plug_send_message(orcashi->plug, handshake);
-    
-    return true;
+    /* ===== FIX: Use plug.c exclusively ===== */
+    return plug_initiate_ecdh(orcashi->plug);
 }
 
 bool orcashi_complete_secure_session(ORCASHI* orcashi, const char* peer_public_key_hex) {
-    if (!orcashi || !orcashi->session) return false;
+    if (!orcashi || !orcashi->plug) return false;
     
-    unsigned char peer_pub_key[32];
-    if (orca_hex_to_bytes(peer_public_key_hex, peer_pub_key, 32) < 0) {
-        return false;
-    }
-    
-    if (orca_ecdh_session_complete(orcashi->session, peer_pub_key) < 0) {
-        return false;
-    }
-    
-    unsigned char shared_secret[32];
-    if (orca_ecdh_session_get_shared_secret(orcashi->session, shared_secret) < 0) {
-        return false;
-    }
-    
-    unsigned char aes_key[32];
-    if (orca_aes_gcm_derive_key_from_shared_secret(shared_secret, NULL, 0,
-                                                   (const unsigned char*)"orcashi-chat", 12,
-                                                   aes_key) < 0) {
-        return false;
-    }
-    
-    orca_bytes_to_hex(aes_key, 32, orcashi->peer_public_key_hex);
-    orcashi->session_established = true;
-    
-    printf("[ORCA] Legacy secure session established!\n");
-    return true;
+    /* ===== FIX: Use plug.c exclusively ===== */
+    return plug_complete_ecdh(orcashi->plug, peer_public_key_hex);
 }
 
 bool orcashi_session_established(ORCASHI* orcashi) {
-    return orcashi && orcashi->session_established;
+    if (!orcashi || !orcashi->plug) return false;
+    
+    /* ===== FIX: Use plug.c exclusively ===== */
+    return plug_ecdh_complete(orcashi->plug);
 }
 
 /* ============================================================================
@@ -752,12 +644,14 @@ static void orcashi_show_banner(ORCASHI* orcashi) {
     if (orcashi->has_identity && orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
         printf("Secure Mode: %s\n", orcashi->identity.name);
     }
-    if (orcashi->session_established) {
-        printf("Secure Session: ENABLED (Legacy)\n");
-    }
+    
+    /* ===== FIX: Use plug.c exclusively for secure status ===== */
     if (plug_ecdh_complete(orcashi->plug)) {
         printf("Secure Session: ENABLED (ECDH+AES-GCM)\n");
+    } else {
+        printf("Secure Session: DISABLED (Plaintext)\n");
     }
+    
     printf("Type /help for commands\n");
     printf("============================================================\n");
     printf("\n");
