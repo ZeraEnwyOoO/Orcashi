@@ -29,16 +29,6 @@ static void* send_loop(void* arg);
 static bool plug_parse_handshake(TCPPlug* plug, const char* msg);
 
 /* ============================================================================
- * SECURE SESSION STATE MACHINE
- * ============================================================================ */
-
-typedef enum {
-    PLUG_SECURE_NONE = 0,        /* No secure session */
-    PLUG_SECURE_INITIATED = 1,   /* ECDH_INIT sent, waiting for response */
-    PLUG_SECURE_ESTABLISHED = 2  /* ECDH complete, secure channel active */
-} PlugSecureState;
-
-/* ============================================================================
  * LIFECYCLE
  * ============================================================================ */
 
@@ -202,11 +192,15 @@ bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port) {
 }
 
 /* ============================================================================
- * ECDH SECURE HANDSHAKE - Initiator
+ * ECDH SECURE HANDSHAKE - INITIATOR ONLY
  * ============================================================================ */
 
 bool plug_initiate_ecdh(TCPPlug* plug) {
     if (!plug || !plug->connected) return false;
+    
+    printf("[PLUG] ECDH role: INITIATOR\n");
+    printf("[PLUG] ecdh_initiated: %d, ecdh_complete: %d, secure_mode: %d\n",
+           plug->ecdh_initiated, plug->ecdh_complete, plug->secure_mode);
     
     /* Reset secure state */
     plug->ecdh_complete = false;
@@ -240,16 +234,23 @@ bool plug_initiate_ecdh(TCPPlug* plug) {
     }
     
     plug->ecdh_initiated = true;
-    printf("[PLUG] ECDH initiated\n");
+    printf("[PLUG] ECDH_INIT sent (initiator)\n");
+    printf("[PLUG] ecdh_initiated: %d, ecdh_complete: %d, secure_mode: %d\n",
+           plug->ecdh_initiated, plug->ecdh_complete, plug->secure_mode);
     return true;
 }
 
 /* ============================================================================
- * ECDH SECURE HANDSHAKE - Responder
+ * ECDH SECURE HANDSHAKE - RESPONDER ONLY
  * ============================================================================ */
 
 bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
     if (!plug || !plug->connected || !peer_pubkey_hex) return false;
+    
+    printf("[PLUG] ECDH role: RESPONDER\n");
+    printf("[PLUG] Received ECDH_INIT from peer\n");
+    printf("[PLUG] ecdh_initiated: %d, ecdh_complete: %d, secure_mode: %d\n",
+           plug->ecdh_initiated, plug->ecdh_complete, plug->secure_mode);
     
     /* Validate hex length (64 chars for 32 bytes) */
     if (strlen(peer_pubkey_hex) != 64) {
@@ -314,27 +315,45 @@ bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
         return false;
     }
     
-    /* Secure channel is now established */
+    /* Secure channel is now established (responder) */
     memset(plug->nonce, 0, 12);
     plug->nonce_counter = 0;
     plug->ecdh_complete = true;
     plug->secure_mode = true;
-    plug->ecdh_initiated = false;
+    /* ecdh_initiated remains false - responder never sets this */
     
+    printf("[PLUG] ECDH_RESPONSE sent (responder)\n");
     printf("[PLUG] ECDH secure channel established (responder)\n");
+    printf("[PLUG] ecdh_initiated: %d, ecdh_complete: %d, secure_mode: %d\n",
+           plug->ecdh_initiated, plug->ecdh_complete, plug->secure_mode);
     return true;
 }
 
 /* ============================================================================
- * ECDH SECURE HANDSHAKE - Complete (Initiator receives response)
+ * ECDH SECURE HANDSHAKE - INITIATOR COMPLETE ONLY
  * ============================================================================ */
 
 bool plug_complete_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
-    if (!plug || !plug->connected || !peer_pubkey_hex) return false;
-    
-    if (!plug->ecdh_initiated) {
-        fprintf(stderr, "[PLUG] Complete called but not initiated\n");
+    if (!plug || !plug->connected || !peer_pubkey_hex) {
+        fprintf(stderr, "[PLUG] complete_ecdh: NULL parameter\n");
         return false;
+    }
+    
+    printf("[PLUG] ECDH role: INITIATOR (completing)\n");
+    printf("[PLUG] Received ECDH_RESPONSE from peer\n");
+    printf("[PLUG] ecdh_initiated: %d, ecdh_complete: %d, secure_mode: %d\n",
+           plug->ecdh_initiated, plug->ecdh_complete, plug->secure_mode);
+    
+    /* ===== CRITICAL: Only initiator can call this ===== */
+    if (!plug->ecdh_initiated) {
+        fprintf(stderr, "[PLUG] Complete called but not initiated - REJECTED\n");
+        return false;
+    }
+    
+    /* Prevent double completion */
+    if (plug->ecdh_complete) {
+        printf("[PLUG] ECDH already complete, ignoring duplicate response\n");
+        return true;
     }
     
     /* Validate hex length (64 chars for 32 bytes) */
@@ -376,14 +395,17 @@ bool plug_complete_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
         return false;
     }
     
-    /* Secure channel is now established */
+    /* Secure channel is now established (initiator) */
     memset(plug->nonce, 0, 12);
     plug->nonce_counter = 0;
     plug->ecdh_complete = true;
     plug->secure_mode = true;
-    plug->ecdh_initiated = false;
+    /* ecdh_initiated remains true but complete now takes precedence */
     
+    printf("[PLUG] ECDH complete (initiator)\n");
     printf("[PLUG] ECDH secure channel established (initiator)\n");
+    printf("[PLUG] ecdh_initiated: %d, ecdh_complete: %d, secure_mode: %d\n",
+           plug->ecdh_initiated, plug->ecdh_complete, plug->secure_mode);
     return true;
 }
 
@@ -391,12 +413,22 @@ bool plug_ecdh_complete(TCPPlug* plug) {
     return plug && plug->ecdh_complete && plug->secure_mode;
 }
 
+bool plug_is_secure(TCPPlug* plug) {
+    return plug && plug->secure_mode && plug->ecdh_complete;
+}
+
 /* ============================================================================
  * SECURE MESSAGING - SEND
  * ============================================================================ */
 
 bool plug_send_secure(TCPPlug* plug, const char* msg) {
-    if (!plug || !plug->connected || !plug->ecdh_complete || !plug->secure_mode) {
+    if (!plug || !plug->connected) {
+        fprintf(stderr, "[PLUG] send_secure: not connected\n");
+        return false;
+    }
+    
+    if (!plug->ecdh_complete || !plug->secure_mode) {
+        fprintf(stderr, "[PLUG] send_secure: secure channel not established\n");
         return false;
     }
     
@@ -547,10 +579,6 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
     free(plaintext);
     
     return true;
-}
-
-bool plug_is_secure(TCPPlug* plug) {
-    return plug && plug->secure_mode && plug->ecdh_complete;
 }
 
 /* ============================================================================
@@ -787,6 +815,7 @@ static void* send_loop(void* arg) {
 static bool plug_parse_handshake(TCPPlug* plug, const char* msg) {
     /* ECDH_INIT:<pubkey> - Received by responder */
     if (strncmp(msg, "ECDH_INIT:", 10) == 0) {
+        printf("[PLUG] Received ECDH_INIT\n");
         const char* pubkey = msg + 10;
         plug_respond_ecdh(plug, pubkey);
         return true;
@@ -794,6 +823,7 @@ static bool plug_parse_handshake(TCPPlug* plug, const char* msg) {
     
     /* ECDH_RESPONSE:<pubkey> - Received by initiator */
     if (strncmp(msg, "ECDH_RESPONSE:", 14) == 0) {
+        printf("[PLUG] Received ECDH_RESPONSE\n");
         const char* pubkey = msg + 14;
         plug_complete_ecdh(plug, pubkey);
         return true;
@@ -801,13 +831,16 @@ static bool plug_parse_handshake(TCPPlug* plug, const char* msg) {
     
     /* Legacy HANDSHAKE messages - ignored (deprecated) */
     if (strncmp(msg, "HANDSHAKE:", 10) == 0) {
-        return true;  /* Silently ignore */
+        printf("[PLUG] Ignoring legacy HANDSHAKE\n");
+        return true;
     }
     if (strncmp(msg, "HANDSHAKE_RESPONSE:", 19) == 0) {
-        return true;  /* Silently ignore */
+        printf("[PLUG] Ignoring legacy HANDSHAKE_RESPONSE\n");
+        return true;
     }
     if (strcmp(msg, "HANDSHAKE_OK") == 0) {
-        return true;  /* Silently ignore */
+        printf("[PLUG] Ignoring legacy HANDSHAKE_OK\n");
+        return true;
     }
     
     return false;
