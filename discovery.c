@@ -57,15 +57,6 @@ static struct {
 };
 
 /* ============================================================================
- * ACCEPT_CONFIRM State
- * ============================================================================ */
-
-static char g_accept_target[DISCOVERY_MAX_ID_LEN] = {0};
-static bool g_accept_received = false;
-static pthread_mutex_t g_accept_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_accept_cond = PTHREAD_COND_INITIALIZER;
-
-/* ============================================================================
  * Forward Declarations
  * ============================================================================ */
 
@@ -1411,6 +1402,7 @@ static void discovery_handle_i_am(Discovery* disc, const char* data,
 
 static void discovery_handle_add_request(Discovery* disc, const char* data,
                                          const char* sender_ip, int sender_port) {
+    (void)sender_port;
     if (!disc || !data || !sender_ip) return;
     
     const char* rest = data + 12; /* Skip "ADD_REQUEST:" */
@@ -1829,7 +1821,7 @@ static void discovery_handle_search(Discovery* disc, const char* data,
 }
 
 /* ============================================================================
- * Packet Parser (Main Entry Point)
+ * Packet Parser (Main Entry Point) - FIXED
  * ============================================================================ */
 
 static void discovery_parse_packet(Discovery* disc, const char* data, 
@@ -1837,8 +1829,8 @@ static void discovery_parse_packet(Discovery* disc, const char* data,
                                    int sender_port) {
     if (!disc || !data || data_len == 0 || !sender_ip) return;
     
-    /* Defensive: ensure null-termination */
-    if (data[data_len - 1] != '\0') {
+    /* ===== FIX: Check null terminator at data[data_len], not data[data_len - 1] ===== */
+    if (data[data_len] != '\0') {
         DLOG("parse_packet: not null-terminated, ignoring");
         return;
     }
