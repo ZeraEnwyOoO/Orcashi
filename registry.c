@@ -1,4 +1,4 @@
-// registry.c - Runtime registry/business logic ONLY
+ // registry.c - Runtime registry/business logic ONLY
 #include "registry.h"
 #include <string.h>
 #include <stdlib.h>
@@ -98,7 +98,7 @@ bool registry_register_peer(Registry* reg, const char* id, const char* ip, const
         }
     }
     
-    if (reg->peer_count >= MAX_REGISTRY_PEERS) {
+    if (reg->peer_count >= REGISTRY_MAX_PEERS) {
         RLOG("registry_register_peer: registry full");
         pthread_mutex_unlock(&reg->mutex);
         return false;
@@ -155,7 +155,7 @@ bool registry_register_secure(Registry* reg, const char* id, const char* ip, con
         }
     }
     
-    if (reg->peer_count >= MAX_REGISTRY_PEERS) {
+    if (reg->peer_count >= REGISTRY_MAX_PEERS) {
         RLOG("registry_register_secure: registry full");
         pthread_mutex_unlock(&reg->mutex);
         return false;
