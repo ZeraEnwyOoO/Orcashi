@@ -114,6 +114,10 @@ struct Discovery {
     /* ACCEPT_CONFIRM State */
     DiscoveryAcceptState accept_state;
     
+    /* External References */
+    Registry* registry;
+    RequestManager* request_manager;
+    
     /* Callbacks */
     void (*on_peer_found)(DiscoveryPeerInfo* peer);
     void (*on_peer_offline)(DiscoveryPeerInfo* peer);
@@ -140,6 +144,13 @@ void discovery_set_my_identity(Discovery* disc, const char* id,
                                const char* ip, int port);
 void discovery_set_my_secure_identity(Discovery* disc, 
                                       const OrcaIdentity* identity);
+
+/* ============================================================================
+ * External References
+ * ============================================================================ */
+
+void discovery_set_registry(Discovery* disc, Registry* reg);
+void discovery_set_request_manager(Discovery* disc, RequestManager* rm);
 
 /* ============================================================================
  * Broadcasting
