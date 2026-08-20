@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <ctype.h>
 
 #define QUEUE_INITIAL_SIZE 100
 #define BUFFER_SIZE 16384
