@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <ctype.h>  // ADDED for isdigit()
+#include <ctype.h>
 
 #define BUFFER_SIZE 4096
 #define BROADCAST_INTERVAL 30
@@ -833,6 +833,7 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
 
 /* ============================================================================
  * handle_add_request - Handle friend request, push to pending queue
+ * FIXED: Verify identity signature with created_at
  * ============================================================================ */
 static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_ip;
@@ -846,6 +847,9 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
         rest += 7;
     }
     
+    /* For secure: target_id:from_id:from_ip:from_port:name:created_at:public_key:signature */
+    /* For normal: target_id:from_id:from_ip:from_port */
+    
     const char* colon1 = strchr(rest, ':');
     const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
     const char* colon3 = colon2 ? strchr(colon2 + 1, ':') : NULL;
@@ -855,6 +859,7 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
     char target_id[64], from_id[64], from_ip[INET_ADDRSTRLEN];
     int from_port;
     char from_name[128] = {0};
+    time_t created_at = 0;
     char public_key[ORCA_PUBKEY_LEN] = {0};
     char signature[ORCA_SIG_LEN] = {0};
     
@@ -873,6 +878,7 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
     from_port = atoi(colon3 + 1);
     
     if (is_secure) {
+        /* Parse name, created_at, public_key, signature */
         const char* secure_rest = colon3 + 1;
         const char* name_start = strchr(secure_rest, ':');
         if (name_start) {
@@ -884,15 +890,34 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
                     strncpy(from_name, name_start, name_len);
                     from_name[name_len] = '\0';
                 }
-                const char* pk_start = name_end + 1;
-                const char* pk_end = strchr(pk_start, ':');
-                if (pk_end) {
-                    int pk_len = pk_end - pk_start;
-                    if (pk_len < (int)sizeof(public_key)) {
-                        strncpy(public_key, pk_start, pk_len);
-                        public_key[pk_len] = '\0';
+                
+                /* Parse created_at */
+                const char* created_start = name_end + 1;
+                const char* created_end = strchr(created_start, ':');
+                if (created_end) {
+                    int created_len = created_end - created_start;
+                    char created_str[32];
+                    if (created_len < (int)sizeof(created_str)) {
+                        strncpy(created_str, created_start, created_len);
+                        created_str[created_len] = '\0';
+                        created_at = atol(created_str);
                     }
-                    strcpy(signature, pk_end + 1);
+                    
+                    /* Parse public_key */
+                    const char* pk_start = created_end + 1;
+                    const char* pk_end = strchr(pk_start, ':');
+                    if (pk_end) {
+                        int pk_len = pk_end - pk_start;
+                        if (pk_len < (int)sizeof(public_key)) {
+                            strncpy(public_key, pk_start, pk_len);
+                            public_key[pk_len] = '\0';
+                        }
+                        
+                        /* Parse signature */
+                        const char* sig_start = pk_end + 1;
+                        strncpy(signature, sig_start, sizeof(signature) - 1);
+                        signature[sizeof(signature) - 1] = '\0';
+                    }
                 }
             }
         }
@@ -902,20 +927,23 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
          target_id, from_id, from_ip, from_port, is_secure);
     
     if (is_secure) {
-        if (strlen(public_key) == 0 || strlen(signature) == 0) {
-            DLOG("Missing public_key or signature — REJECTED");
+        if (strlen(public_key) == 0 || strlen(signature) == 0 || created_at == 0) {
+            DLOG("Missing public_key, signature, or created_at — REJECTED");
             return;
         }
         
-        char data_to_verify[1024];
-        snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%d", 
-                 target_id, from_id, from_ip, from_port);
+        /* Verify identity signature: id|name|role|created_at */
+        char identity_data[1024];
+        snprintf(identity_data, sizeof(identity_data), "%s|%s|%s|%ld",
+                 from_id, from_name, "user", (long)created_at);
         
-        if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
-            DLOG("Invalid signature in ADD_REQUEST from %s — REJECTED", from_id);
+        DLOG("Verifying identity: '%s'", identity_data);
+        
+        if (!orca_rsa_verify_string(identity_data, signature, public_key)) {
+            DLOG("Invalid identity signature from %s — REJECTED", from_id);
             return;
         }
-        DLOG("Signature verified for ADD_REQUEST from %s", from_id);
+        DLOG("Identity signature verified for %s", from_id);
     }
     
     char norm_target[64], norm_my[64];
@@ -1550,7 +1578,8 @@ void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
                                        const char* my_id, const char* my_ip,
                                        int my_port, const char* name,
                                        const char* public_key,
-                                       const char* signature) {
+                                       const char* signature,
+                                       time_t created_at) {
     if (!disc || !target_id || !my_id || !my_ip) {
         DLOG("send_add_request_secure: NULL parameter");
         return;
@@ -1566,16 +1595,17 @@ void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
         return;
     }
     
-    char msg[2048];
+    char msg[4096];
     snprintf(msg, sizeof(msg),
-             "ADD_REQUEST:SECURE:%s:%s:%s:%d:%s:%s:%s",
+             "ADD_REQUEST:SECURE:%s:%s:%s:%d:%s:%ld:%s:%s",
              norm_target, norm_my, my_ip, my_port,
              name ? name : "",
+             (long)created_at,
              public_key ? public_key : "",
              signature ? signature : "");
     
     send_udp(disc, msg, peer.ip, DISCOVERY_PORT);
-    DLOG("send_add_request_secure: sent to %s", target_id);
+    DLOG("send_add_request_secure: sent to %s (created_at=%ld)", target_id, (long)created_at);
 }
 
 void discovery_send_accept_confirm(Discovery* disc, const char* target_id,
