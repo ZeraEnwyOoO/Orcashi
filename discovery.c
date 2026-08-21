@@ -929,18 +929,34 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
     if (is_secure) {
         if (strlen(public_key) == 0 || strlen(signature) == 0 || created_at == 0) {
             DLOG("Missing public_key, signature, or created_at — REJECTED");
+            DLOG("  public_key length=%zu", strlen(public_key));
+            DLOG("  signature length=%zu", strlen(signature));
+            DLOG("  created_at=%ld", (long)created_at);
             return;
         }
+        
+        /* DEBUG */
+        DLOG("========================================");
+        DLOG("handle_add_request: Verifying identity");
+        DLOG("  from_id=%s", from_id);
+        DLOG("  from_name=%s", from_name);
+        DLOG("  created_at=%ld", (long)created_at);
+        DLOG("  public_key length=%zu", strlen(public_key));
+        DLOG("  signature length=%zu", strlen(signature));
+        DLOG("  signature (first 50): %.50s...", signature);
+        DLOG("========================================");
         
         /* Verify identity signature: id|name|role|created_at */
         char identity_data[1024];
         snprintf(identity_data, sizeof(identity_data), "%s|%s|%s|%ld",
                  from_id, from_name, "user", (long)created_at);
         
-        DLOG("Verifying identity: '%s'", identity_data);
+        DLOG("Verifying identity data: '%s'", identity_data);
         
         if (!orca_rsa_verify_string(identity_data, signature, public_key)) {
             DLOG("Invalid identity signature from %s — REJECTED", from_id);
+            DLOG("  Expected data: %s", identity_data);
+            DLOG("  Signature: %.50s...", signature);
             return;
         }
         DLOG("Identity signature verified for %s", from_id);
@@ -1594,6 +1610,17 @@ void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
         DLOG("send_add_request_secure: peer %s not found", target_id);
         return;
     }
+    
+    /* DEBUG */
+    DLOG("========================================");
+    DLOG("send_add_request_secure: Sending to %s", target_id);
+    DLOG("  my_id=%s", my_id);
+    DLOG("  name=%s", name);
+    DLOG("  created_at=%ld", (long)created_at);
+    DLOG("  public_key length=%zu", strlen(public_key));
+    DLOG("  signature length=%zu", strlen(signature));
+    DLOG("  signature (first 50): %.50s...", signature);
+    DLOG("========================================");
     
     char msg[4096];
     snprintf(msg, sizeof(msg),
