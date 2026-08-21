@@ -187,11 +187,14 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
 void discovery_send_add_request(Discovery* disc, const char* target_id,
                                 const char* my_id, const char* my_ip, 
                                 int my_port);
+
+/* FIX: Added created_at parameter for secure identity verification */
 void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
                                        const char* my_id, const char* my_ip,
                                        int my_port, const char* name,
                                        const char* public_key,
-                                       const char* signature);
+                                       const char* signature,
+                                       time_t created_at);
 
 /* ============================================================================
  * ACCEPT_CONFIRM Flow
