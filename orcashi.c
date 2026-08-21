@@ -167,7 +167,7 @@ bool orcashi_init(ORCASHI* orcashi) {
 }
 
 /* ============================================================================
- * ROOM MANAGEMENT
+ * ROOM MANAGEMENT - FIXED
  * ============================================================================ */
 
 bool orcashi_create_room(ORCASHI* orcashi, int port) {
@@ -183,13 +183,10 @@ bool orcashi_create_room(ORCASHI* orcashi, int port) {
         strcpy(orcashi->peer_ip, plug_get_peer_ip(orcashi->plug));
         strcpy(orcashi->peer_id, orcashi->peer_ip);
         
+        /* FIX: Server is RESPONDER - DO NOT call plug_initiate_ecdh() */
         if (orcashi->has_identity && orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
-            printf("[ORCA] Initiating ECDH secure channel...\n");
-            if (plug_initiate_ecdh(orcashi->plug)) {
-                printf("[ORCA] ECDH handshake initiated\n");
-            } else {
-                printf("[WARNING] Failed to initiate ECDH\n");
-            }
+            printf("[ORCA] Server ready for ECDH secure channel...\n");
+            printf("[ORCA] Waiting for client to initiate ECDH handshake...\n");
         }
         
         orcashi_broadcast_presence(orcashi);
@@ -218,6 +215,24 @@ bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
             printf("[ORCA] Initiating ECDH secure channel...\n");
             if (plug_initiate_ecdh(orcashi->plug)) {
                 printf("[ORCA] ECDH handshake initiated\n");
+                
+                /* FIX: Wait for ECDH to complete */
+                printf("[ORCA] Waiting for ECDH handshake to complete...\n");
+                int waited = 0;
+                while (!plug_ecdh_complete(orcashi->plug) && waited < 10) {
+                    sleep(1);
+                    waited++;
+                    if (waited % 2 == 0) {
+                        printf("[ORCA] Waiting... (%d seconds)\n", waited);
+                    }
+                }
+                
+                if (plug_ecdh_complete(orcashi->plug)) {
+                    printf("[ORCA] ECDH handshake complete! Secure channel established.\n");
+                } else {
+                    printf("[WARNING] ECDH handshake timeout - continuing in plaintext mode\n");
+                    printf("[ORCA] Type '/secure' to try again\n");
+                }
             } else {
                 printf("[WARNING] Failed to initiate ECDH\n");
             }
@@ -240,13 +255,13 @@ bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port) {
 }
 
 /* ============================================================================
- * MESSAGING - FIXED: ONLY use plug.c
+ * MESSAGING - FIXED
  * ============================================================================ */
 
 bool orcashi_send_message(ORCASHI* orcashi, const char* msg) {
     if (!orcashi || !orcashi->connected) return false;
     
-    /* ===== FIX: Use plug.c's secure channel exclusively ===== */
+    /* FIX: Use secure send if available */
     if (plug_ecdh_complete(orcashi->plug)) {
         return plug_send_secure(orcashi->plug, msg);
     }
@@ -259,7 +274,6 @@ bool orcashi_send_message(ORCASHI* orcashi, const char* msg) {
 bool orcashi_send_secure_message(ORCASHI* orcashi, const char* msg) {
     if (!orcashi || !orcashi->connected) return false;
     
-    /* ===== FIX: Use plug.c exclusively ===== */
     if (plug_ecdh_complete(orcashi->plug)) {
         return plug_send_secure(orcashi->plug, msg);
     }
@@ -270,7 +284,7 @@ bool orcashi_send_secure_message(ORCASHI* orcashi, const char* msg) {
 bool orcashi_receive_message(ORCASHI* orcashi, char* msg, int msg_size, int timeout_ms) {
     if (!orcashi || !orcashi->connected) return false;
     
-    /* ===== FIX: Use plug.c's secure channel exclusively ===== */
+    /* FIX: Use secure receive if available */
     if (plug_ecdh_complete(orcashi->plug)) {
         return plug_receive_secure(orcashi->plug, msg, msg_size);
     }
@@ -370,21 +384,18 @@ bool orcashi_has_identity(ORCASHI* orcashi) {
 bool orcashi_init_secure_session(ORCASHI* orcashi) {
     if (!orcashi || !orcashi->plug) return false;
     
-    /* ===== FIX: Use plug.c exclusively ===== */
     return plug_initiate_ecdh(orcashi->plug);
 }
 
 bool orcashi_complete_secure_session(ORCASHI* orcashi, const char* peer_public_key_hex) {
     if (!orcashi || !orcashi->plug) return false;
     
-    /* ===== FIX: Use plug.c exclusively ===== */
     return plug_complete_ecdh(orcashi->plug, peer_public_key_hex);
 }
 
 bool orcashi_session_established(ORCASHI* orcashi) {
     if (!orcashi || !orcashi->plug) return false;
     
-    /* ===== FIX: Use plug.c exclusively ===== */
     return plug_ecdh_complete(orcashi->plug);
 }
 
@@ -647,11 +658,14 @@ static void orcashi_show_banner(ORCASHI* orcashi) {
         printf("Secure Mode: %s\n", orcashi->identity.name);
     }
     
-    /* ===== FIX: Use plug.c exclusively for secure status ===== */
+    /* FIX: Show secure status correctly */
     if (plug_ecdh_complete(orcashi->plug)) {
         printf("Secure Session: ENABLED (ECDH+AES-GCM)\n");
     } else {
         printf("Secure Session: DISABLED (Plaintext)\n");
+        if (orcashi->has_identity && orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+            printf("   Type '/secure' to enable secure channel\n");
+        }
     }
     
     printf("Type /help for commands\n");
@@ -689,6 +703,95 @@ static void* heartbeat_loop(void* arg) {
         }
     }
     return NULL;
+}
+
+/* ============================================================================
+ * CHAT LOOP - FIXED with /secure command
+ * ============================================================================ */
+
+void chat_loop(void) {
+    printf("Type /exit to quit\n");
+    printf("---\n");
+    
+    if (plug_ecdh_complete(g_orcashi->plug)) {
+        printf("Secure channel: ENABLED (ECDH + AES-256-GCM)\n");
+    } else {
+        printf("Secure channel: DISABLED (Plaintext)\n");
+        if (g_orcashi->has_identity && g_orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+            printf("Type '/secure' to enable secure channel\n");
+        }
+    }
+    printf("---\n");
+    
+    char input[4096];
+    char msg[4096];
+    fd_set fds;
+    struct timeval tv;
+    
+    while (running && orcashi_is_connected(g_orcashi)) {
+        while (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
+            if (plug_ecdh_complete(g_orcashi->plug)) {
+                printf("[%s] (secure) %s\n", orcashi_get_peer_id(g_orcashi), msg);
+            } else {
+                printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
+            }
+            fflush(stdout);
+        }
+        
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;
+        
+        int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+        if (ret > 0) {
+            if (!fgets(input, sizeof(input), stdin)) break;
+            input[strcspn(input, "\n")] = '\0';
+            
+            if (strcmp(input, "/exit") == 0) break;
+            
+            /* FIX: Add /secure command */
+            if (strcmp(input, "/secure") == 0) {
+                if (plug_ecdh_complete(g_orcashi->plug)) {
+                    printf("[ORCA] Secure channel already ENABLED\n");
+                } else {
+                    printf("[ORCA] Initiating secure channel...\n");
+                    if (plug_initiate_ecdh(g_orcashi->plug)) {
+                        printf("[ORCA] Waiting for handshake...\n");
+                        int waited = 0;
+                        while (!plug_ecdh_complete(g_orcashi->plug) && waited < 10) {
+                            sleep(1);
+                            waited++;
+                            if (waited % 2 == 0) {
+                                printf("[ORCA] Waiting... (%d seconds)\n", waited);
+                            }
+                        }
+                        if (plug_ecdh_complete(g_orcashi->plug)) {
+                            printf("[ORCA] Secure channel ENABLED!\n");
+                        } else {
+                            printf("[ORCA] Handshake timeout\n");
+                        }
+                    } else {
+                        printf("[ORCA] Failed to initiate secure channel\n");
+                    }
+                }
+                continue;
+            }
+            
+            if (strcmp(input, "/status") == 0) {
+                if (plug_ecdh_complete(g_orcashi->plug)) {
+                    printf("[ORCA] Secure: ENABLED (ECDH+AES-GCM)\n");
+                } else {
+                    printf("[ORCA] Secure: DISABLED (Plaintext)\n");
+                }
+                continue;
+            }
+            
+            if (strlen(input) > 0) {
+                orcashi_send_message(g_orcashi, input);
+            }
+        }
+    }
 }
 
 /* ============================================================================
