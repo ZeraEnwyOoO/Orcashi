@@ -33,6 +33,18 @@
 #define DISCOVERY_MAX_SIG_LEN ORCA_SIG_LEN
 
 /* ============================================================================
+ * COMPATIBILITY MACROS FOR OLD DISCOVERY.C
+ * ============================================================================ */
+
+/* Alias for old type names used in discovery.c */
+#define PeerInfo DiscoveryPeerInfo
+#define PendingRequest DiscoveryPendingRequest
+
+/* Alias for old constants */
+#define MAX_PEERS DISCOVERY_MAX_PEERS
+#define PEER_TIMEOUT DISCOVERY_PEER_TIMEOUT
+
+/* ============================================================================
  * Peer Information (Runtime Discovery Cache)
  * ============================================================================ */
 
@@ -146,9 +158,14 @@ void discovery_set_my_secure_identity(Discovery* disc,
                                       const OrcaIdentity* identity);
 
 /* ============================================================================
- * External References
+ * External References - COMPATIBLE WITH OLD DISCOVERY.C
  * ============================================================================ */
 
+/* Old style (no disc parameter) - used by old discovery.c */
+void discovery_set_registry(Registry* reg);
+void discovery_set_request_manager(RequestManager* rm);
+
+/* New style (with disc parameter) - used by new code */
 void discovery_set_registry(Discovery* disc, Registry* reg);
 void discovery_set_request_manager(Discovery* disc, RequestManager* rm);
 
@@ -162,9 +179,15 @@ void discovery_broadcast_search(Discovery* disc, const char* id);
 void discovery_query_peer(Discovery* disc, const char* id);
 
 /* ============================================================================
- * Friend Request Flow
+ * Friend Request Flow - COMPATIBLE WITH OLD DISCOVERY.C
  * ============================================================================ */
 
+/* Old style - used by old discovery.c */
+void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
+                                         const char* my_id, const char* my_ip, 
+                                         int my_port);
+
+/* New style - used by new code */
 void discovery_send_add_request(Discovery* disc, const char* target_id,
                                 const char* my_id, const char* my_ip, 
                                 int my_port);
@@ -195,13 +218,14 @@ bool discovery_wait_for_accept(Discovery* disc, const char* target_id,
 void discovery_reset_accept_state(Discovery* disc);
 
 /* ============================================================================
- * Peer Discovery
+ * Peer Discovery - COMPATIBLE WITH OLD DISCOVERY.C
  * ============================================================================ */
 
-bool discovery_find_peer(Discovery* disc, const char* id, 
-                         DiscoveryPeerInfo* out_peer);
-int discovery_get_peers(Discovery* disc, DiscoveryPeerInfo* peers, 
-                        int max_peers);
+/* Old style - used by old discovery.c */
+bool discovery_find_peer(Discovery* disc, const char* id, DiscoveryPeerInfo* out_peer);
+
+/* New style - same as old now */
+int discovery_get_peers(Discovery* disc, DiscoveryPeerInfo* peers, int max_peers);
 void discovery_cleanup_stale(Discovery* disc);
 
 /* ============================================================================
