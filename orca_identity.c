@@ -189,13 +189,6 @@ int orca_identity_create(const char* name, const char* passcode,
 
 /* ============================================================================
  * NEW: 3-DIGIT SECURE IDENTITY CREATION
- *
- * Creates a secure identity with:
- *   - RSA 2048-bit keypair
- *   - User-provided 3-digit ID (e.g., "<075>")
- *   - ID is cryptographically bound to public key via signature
- *   - Private key encrypted with passcode-derived key (AES-256-CBC)
- *   - Password is NOT stored anywhere
  * ============================================================================ */
 
 int orca_identity_create_secure_3digit(const char* id, const char* passcode,
@@ -296,11 +289,22 @@ int orca_identity_create_secure_3digit(const char* id, const char* passcode,
     identity_out->verified = false;
     strcpy(identity_out->version, ORCA_IDENTITY_VERSION);
     
+    /* DEBUG: Print created_at when creating identity */
+    printf("[DEBUG] ========================================\n");
+    printf("[DEBUG] Creating identity\n");
+    printf("[DEBUG] ID: %s\n", id);
+    printf("[DEBUG] Name: %s\n", name ? name : "NULL");
+    printf("[DEBUG] created_at: %ld\n", (long)identity_out->created_at);
+    printf("[DEBUG] public_key length: %zu\n", strlen(identity_out->public_key));
+    printf("[DEBUG] ========================================\n");
+    
     /* 6. Sign identity data (ID is included in signature!) */
     char data_to_sign[1024];
     snprintf(data_to_sign, sizeof(data_to_sign), "%s|%s|%s|%ld",
              identity_out->id, identity_out->name, identity_out->role,
              (long)identity_out->created_at);
+    
+    printf("[DEBUG] Signing data: '%s'\n", data_to_sign);
     
     char* signature = NULL;
     if (orca_rsa_sign_string(data_to_sign, private_key, &signature) < 0) {
@@ -381,6 +385,18 @@ int orca_identity_load(OrcaIdentity* identity_out, const char* passcode) {
     }
     
     identity_out->last_used = time(NULL);
+    
+    /* DEBUG: Print loaded identity info */
+    printf("[DEBUG] ========================================\n");
+    printf("[DEBUG] Loaded identity\n");
+    printf("[DEBUG] ID: %s\n", identity_out->id);
+    printf("[DEBUG] Name: %s\n", identity_out->name);
+    printf("[DEBUG] created_at: %ld\n", (long)identity_out->created_at);
+    printf("[DEBUG] public_key length: %zu\n", strlen(identity_out->public_key));
+    printf("[DEBUG] signature length: %zu\n", strlen(identity_out->signature));
+    printf("[DEBUG] signature (first 50): %.50s...\n", identity_out->signature);
+    printf("[DEBUG] ========================================\n");
+    
     return 0;
 }
 
@@ -613,12 +629,6 @@ bool orca_identity_verify(OrcaIdentity* identity) {
                                   identity->public_key);
 }
 
-/* ============================================================================
- * FIXED: orca_identity_verify_with_passcode()
- *
- * Fix: Convert raw key to hex before passing to decrypt function.
- * ============================================================================ */
-
 bool orca_identity_verify_with_passcode(OrcaIdentity* identity,
                                         const char* passcode) {
     if (!identity || !passcode) return false;
@@ -648,7 +658,6 @@ bool orca_identity_verify_with_passcode(OrcaIdentity* identity,
     iv_hex[iv_len] = '\0';
     strcpy(ciphertext_b64, colon + 1);
     
-    /* ===== FIX: Convert raw key to hex before passing ===== */
     char key_hex[65];
     orca_bytes_to_hex(key, ORCA_AES_KEY_LEN, key_hex);
     
@@ -739,7 +748,7 @@ bool orca_identity_is_normal(OrcaIdentity* identity) {
 }
 
 /* ============================================================================
- * IDENTITY CONVERSION FUNCTIONS - FIXED JSON PARSER
+ * IDENTITY CONVERSION FUNCTIONS
  * ============================================================================ */
 
 int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
@@ -750,13 +759,11 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
     
     memset(identity_out, 0, sizeof(OrcaIdentity));
     
-    /* ===== FIXED: Parse "id" with flexible whitespace handling ===== */
     const char* pos = strstr(json, "\"id\"");
     if (pos) {
         pos = strchr(pos, ':');
         if (pos) {
             pos++;
-            /* Skip whitespace */
             while (*pos == ' ' || *pos == '\t') pos++;
             if (*pos == '"') {
                 pos++;
@@ -772,7 +779,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* ===== FIXED: Parse "name" with flexible whitespace handling ===== */
     pos = strstr(json, "\"name\"");
     if (pos) {
         pos = strchr(pos, ':');
@@ -793,7 +799,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* ===== FIXED: Parse "role" with flexible whitespace handling ===== */
     pos = strstr(json, "\"role\"");
     if (pos) {
         pos = strchr(pos, ':');
@@ -814,7 +819,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* Parse mode (number, no quotes) */
     pos = strstr(json, "\"mode\"");
     if (pos) {
         pos = strchr(pos, ':');
@@ -825,7 +829,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* ===== FIXED: Parse "version" with flexible whitespace handling ===== */
     pos = strstr(json, "\"version\"");
     if (pos) {
         pos = strchr(pos, ':');
@@ -846,7 +849,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* Parse created_at (number) */
     pos = strstr(json, "\"created_at\"");
     if (pos) {
         pos = strchr(pos, ':');
@@ -857,7 +859,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* Parse last_used (number) */
     pos = strstr(json, "\"last_used\"");
     if (pos) {
         pos = strchr(pos, ':');
@@ -868,7 +869,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* Parse verified (boolean) */
     pos = strstr(json, "\"verified\"");
     if (pos) {
         pos = strchr(pos, ':');
@@ -879,7 +879,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* Load public key from file if not in JSON */
     if (strlen(identity_out->public_key) == 0) {
         char* pubkey = read_file_content(ORCA_PUBLIC_KEY_FILE);
         if (pubkey) {
@@ -888,7 +887,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* Load private key from file if not in JSON */
     if (strlen(identity_out->private_key_encrypted) == 0 &&
         identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         char* privkey = read_file_content(ORCA_PRIVATE_KEY_FILE);
@@ -898,7 +896,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* Load signature from file if not in JSON */
     if (strlen(identity_out->signature) == 0 &&
         identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         char* sig = read_file_content(ORCA_SIGNATURE_FILE);
@@ -908,7 +905,6 @@ int orca_identity_from_json(const char* json, OrcaIdentity* identity_out) {
         }
     }
     
-    /* Load salt from file if not in JSON */
     if (strlen(identity_out->salt_hex) == 0 &&
         identity_out->mode == ORCA_IDENTITY_MODE_SECURE) {
         char* salt = read_file_content(ORCA_SALT_FILE);
