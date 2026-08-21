@@ -17,7 +17,7 @@
 
 extern ORCASHI* g_orcashi;
 extern PeerList* g_peer_list;
-extern volatile int running;  // FIX: Add this line
+extern volatile int running;
 
 /* ============================================================================
  * Forward Declarations
@@ -704,96 +704,6 @@ static void* heartbeat_loop(void* arg) {
         }
     }
     return NULL;
-}
-
-/* ============================================================================
- * CHAT LOOP - FIXED with /secure command and running variable
- * ============================================================================ */
-
-void chat_loop(void) {
-    printf("Type /exit to quit\n");
-    printf("---\n");
-    
-    if (plug_ecdh_complete(g_orcashi->plug)) {
-        printf("Secure channel: ENABLED (ECDH + AES-256-GCM)\n");
-    } else {
-        printf("Secure channel: DISABLED (Plaintext)\n");
-        if (g_orcashi->has_identity && g_orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
-            printf("Type '/secure' to enable secure channel\n");
-        }
-    }
-    printf("---\n");
-    
-    char input[4096];
-    char msg[4096];
-    fd_set fds;
-    struct timeval tv;
-    
-    /* FIX: Use g_orcashi->running instead of running */
-    while (g_orcashi && g_orcashi->running && orcashi_is_connected(g_orcashi)) {
-        while (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
-            if (plug_ecdh_complete(g_orcashi->plug)) {
-                printf("[%s] (secure) %s\n", orcashi_get_peer_id(g_orcashi), msg);
-            } else {
-                printf("[%s] %s\n", orcashi_get_peer_id(g_orcashi), msg);
-            }
-            fflush(stdout);
-        }
-        
-        FD_ZERO(&fds);
-        FD_SET(STDIN_FILENO, &fds);
-        tv.tv_sec = 0;
-        tv.tv_usec = 100000;
-        
-        int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
-        if (ret > 0) {
-            if (!fgets(input, sizeof(input), stdin)) break;
-            input[strcspn(input, "\n")] = '\0';
-            
-            if (strcmp(input, "/exit") == 0) break;
-            
-            /* FIX: Add /secure command */
-            if (strcmp(input, "/secure") == 0) {
-                if (plug_ecdh_complete(g_orcashi->plug)) {
-                    printf("[ORCA] Secure channel already ENABLED\n");
-                } else {
-                    printf("[ORCA] Initiating secure channel...\n");
-                    if (plug_initiate_ecdh(g_orcashi->plug)) {
-                        printf("[ORCA] Waiting for handshake...\n");
-                        int waited = 0;
-                        while (!plug_ecdh_complete(g_orcashi->plug) && waited < 10) {
-                            sleep(1);
-                            waited++;
-                            if (waited % 2 == 0) {
-                                printf("[ORCA] Waiting... (%d seconds)\n", waited);
-                            }
-                        }
-                        if (plug_ecdh_complete(g_orcashi->plug)) {
-                            printf("[ORCA] Secure channel ENABLED!\n");
-                        } else {
-                            printf("[ORCA] Handshake timeout\n");
-                        }
-                    } else {
-                        printf("[ORCA] Failed to initiate secure channel\n");
-                    }
-                }
-                continue;
-            }
-            
-            if (strcmp(input, "/status") == 0) {
-                if (plug_ecdh_complete(g_orcashi->plug)) {
-                    printf("[ORCA] Secure: ENABLED (ECDH+AES-GCM)\n");
-                } else {
-                    printf("[ORCA] Secure: DISABLED (Plaintext)\n");
-                }
-                continue;
-            }
-            
-            if (strlen(input) > 0) {
-                orcashi_send_message(g_orcashi, input);
-            }
-        }
-    }
 }
 
 /* ============================================================================
