@@ -1183,13 +1183,15 @@ int main(int argc, char* argv[]) {
             printf("[ORCA] Sending friend request to %s at %s:%d...\n", id, p.ip, p.port);
             
             if (g_orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
+                /* FIX: Added created_at parameter */
                 discovery_send_add_request_secure(g_orcashi->discovery, norm_id,
                                                   g_orcashi->my_id,
                                                   g_orcashi->local_ip,
                                                   ORCASHI_PORT,
                                                   g_orcashi->identity.name,
                                                   g_orcashi->identity.public_key,
-                                                  g_orcashi->identity.signature);
+                                                  g_orcashi->identity.signature,
+                                                  g_orcashi->identity.created_at);
             } else {
                 discovery_send_add_request(g_orcashi->discovery, norm_id,
                                            g_orcashi->my_id,
