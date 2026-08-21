@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <ctype.h>  // ADDED for isdigit()
 
 #define BUFFER_SIZE 4096
 #define BROADCAST_INTERVAL 30
@@ -40,6 +41,7 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
 static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port);
 static void handle_add_request_ack(Discovery* disc, const char* msg);
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip);
+static void handle_accept_confirm(Discovery* disc, const char* msg, const char* sender_ip, int sender_port);
 
 static char g_my_id[64] = {0};
 static char g_my_ip[64] = {0};
@@ -134,6 +136,7 @@ Discovery* discovery_create(void) {
     disc->pending_count = 0;
     
     pthread_mutex_init(&disc->mutex, NULL);
+    pthread_cond_init(&disc->accept_cond, NULL);
     
     DLOG("Discovery created");
     return disc;
@@ -149,6 +152,7 @@ void discovery_destroy(Discovery* disc) {
         disc->udp_socket = -1;
     }
     
+    pthread_cond_destroy(&disc->accept_cond);
     pthread_mutex_destroy(&disc->mutex);
     free(disc);
     
@@ -202,6 +206,8 @@ void discovery_stop(Discovery* disc) {
     
     disc->running = false;
     
+    pthread_cond_broadcast(&disc->accept_cond);
+    
     if (disc->listen_thread) {
         pthread_join(disc->listen_thread, NULL);
         disc->listen_thread = 0;
@@ -212,6 +218,10 @@ void discovery_stop(Discovery* disc) {
     }
     
     DLOG("Discovery stopped");
+}
+
+bool discovery_is_running(Discovery* disc) {
+    return disc && disc->running;
 }
 
 void discovery_broadcast_presence(Discovery* disc, const char* id, const char* endpoint) {
@@ -308,7 +318,7 @@ void discovery_send_add_request_with_ack(Discovery* disc, const char* target_id,
                  norm_target, norm_my, my_ip, my_port);
     }
     
-    PeerInfo peer;
+    DiscoveryPeerInfo peer;
     if (!discovery_find_peer(disc, target_id, &peer)) {
         DLOG("Peer %s not found in discovery, trying registry...", target_id);
         
@@ -344,7 +354,7 @@ void discovery_send_add_request_ack(Discovery* disc, const char* target_id, cons
     char msg[512];
     snprintf(msg, sizeof(msg), "ADD_REQUEST_ACK:%s:%s", norm_target, norm_from);
     
-    PeerInfo peer;
+    DiscoveryPeerInfo peer;
     if (!discovery_find_peer(disc, target_id, &peer)) {
         DLOG("Cannot send ADD_REQUEST_ACK: peer %s not found", target_id);
         return;
@@ -389,7 +399,7 @@ void discovery_push_pending(Discovery* disc, const char* from_id, const char* fr
     }
     
     if (disc->pending_count < MAX_PEERS) {
-        PendingRequest* req = &disc->pending_requests[disc->pending_count++];
+        DiscoveryPendingRequest* req = &disc->pending_requests[disc->pending_count++];
         strcpy(req->from_id, from_id);
         strcpy(req->from_ip, from_ip);
         req->from_port = from_port;
@@ -401,7 +411,7 @@ void discovery_push_pending(Discovery* disc, const char* from_id, const char* fr
     pthread_mutex_unlock(&disc->mutex);
 }
 
-bool discovery_pop_pending(Discovery* disc, PendingRequest* out) {
+bool discovery_pop_pending(Discovery* disc, DiscoveryPendingRequest* out) {
     if (!disc || !out) return false;
     
     pthread_mutex_lock(&disc->mutex);
@@ -477,6 +487,10 @@ static void parse_message(Discovery* disc, const char* msg, const char* sender_i
     else if (strncmp(msg, "ORCA_SEARCH:", 12) == 0) {
         DLOG("Handling ORCA_SEARCH");
         handle_search(disc, msg, sender_ip);
+    }
+    else if (strncmp(msg, "ACCEPT_CONFIRM:", 15) == 0) {
+        DLOG("Handling ACCEPT_CONFIRM");
+        handle_accept_confirm(disc, msg, sender_ip, sender_port);
     } else {
         DLOG("Unknown message type: '%s'", msg);
     }
@@ -557,7 +571,7 @@ static void handle_presence(Discovery* disc, const char* msg, const char* sender
     }
     
     if (found >= 0) {
-        PeerInfo* peer = &disc->peers[found];
+        DiscoveryPeerInfo* peer = &disc->peers[found];
         strcpy(peer->id, id);
         strcpy(peer->endpoint, endpoint);
         strcpy(peer->ip, sender_ip);
@@ -682,7 +696,7 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
         }
         
         if (found >= 0) {
-            PeerInfo* peer = &disc->peers[found];
+            DiscoveryPeerInfo* peer = &disc->peers[found];
             strcpy(peer->id, id);
             strcpy(peer->ip, sender_ip);
             peer->port = port;
@@ -793,7 +807,7 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
     }
     
     if (found >= 0) {
-        PeerInfo* peer = &disc->peers[found];
+        DiscoveryPeerInfo* peer = &disc->peers[found];
         strcpy(peer->id, id);
         strcpy(peer->name, name);
         strcpy(peer->ip, sender_ip);
@@ -937,7 +951,7 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
         }
         
         if (found >= 0) {
-            PeerInfo* peer = &disc->peers[found];
+            DiscoveryPeerInfo* peer = &disc->peers[found];
             strcpy(peer->id, from_id);
             strcpy(peer->ip, sender_ip);
             peer->port = from_port;
@@ -1021,6 +1035,130 @@ static void handle_add_request_ack(Discovery* disc, const char* msg) {
 }
 
 /* ============================================================================
+ * handle_accept_confirm - Handle ACCEPT_CONFIRM from peer
+ * ============================================================================ */
+static void handle_accept_confirm(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
+    (void)sender_port;
+    
+    const char* rest = msg + 15;
+    bool is_secure = false;
+    
+    if (strncmp(rest, "SECURE:", 7) == 0) {
+        is_secure = true;
+        rest += 7;
+    }
+    
+    const char* colon1 = strchr(rest, ':');
+    const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
+    const char* colon3 = colon2 ? strchr(colon2 + 1, ':') : NULL;
+    
+    if (!colon1 || !colon2 || !colon3) return;
+    
+    char target_id[64], from_id[64], from_ip[INET_ADDRSTRLEN];
+    int from_port = 0;
+    char public_key[ORCA_PUBKEY_LEN] = {0};
+    char signature[ORCA_SIG_LEN] = {0};
+    
+    int len = colon1 - rest;
+    strncpy(target_id, rest, len);
+    target_id[len] = '\0';
+    
+    len = colon2 - colon1 - 1;
+    strncpy(from_id, colon1 + 1, len);
+    from_id[len] = '\0';
+    
+    len = colon3 - colon2 - 1;
+    strncpy(from_ip, colon2 + 1, len);
+    from_ip[len] = '\0';
+    
+    from_port = atoi(colon3 + 1);
+    
+    if (is_secure) {
+        const char* secure_rest = colon3 + 1;
+        const char* pk_start = strchr(secure_rest, ':');
+        if (pk_start) {
+            const char* sig_start = strchr(pk_start + 1, ':');
+            if (sig_start) {
+                int pk_len = sig_start - pk_start - 1;
+                if (pk_len < (int)sizeof(public_key)) {
+                    strncpy(public_key, pk_start + 1, pk_len);
+                    public_key[pk_len] = '\0';
+                }
+                strcpy(signature, sig_start + 1);
+            }
+        }
+    }
+    
+    char norm_target[64], norm_my[64];
+    normalize_id(target_id, norm_target, sizeof(norm_target));
+    normalize_id(g_my_id, norm_my, sizeof(norm_my));
+    
+    if (strcmp(norm_target, norm_my) != 0) {
+        DLOG("ACCEPT_CONFIRM not for me: target=%s, my=%s", target_id, g_my_id);
+        return;
+    }
+    
+    DLOG("ACCEPT_CONFIRM from %s at %s:%d", from_id, sender_ip, from_port);
+    
+    if (is_secure) {
+        if (strlen(public_key) == 0 || strlen(signature) == 0) {
+            DLOG("ACCEPT_CONFIRM: missing public_key or signature");
+            return;
+        }
+        
+        char data_to_verify[1024];
+        snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%d",
+                 from_id, from_ip, "9000", (int)time(NULL));
+        
+        if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
+            DLOG("ACCEPT_CONFIRM: invalid signature from %s", from_id);
+            return;
+        }
+        DLOG("ACCEPT_CONFIRM: signature verified for %s", from_id);
+    }
+    
+    /* ===== THREAD-SAFE: Set accept state with mutex ===== */
+    pthread_mutex_lock(&disc->mutex);
+    
+    strncpy(disc->accept_state.from_id, from_id, 
+            sizeof(disc->accept_state.from_id) - 1);
+    disc->accept_state.from_id[sizeof(disc->accept_state.from_id) - 1] = '\0';
+    
+    strncpy(disc->accept_state.from_ip, from_ip, 
+            sizeof(disc->accept_state.from_ip) - 1);
+    disc->accept_state.from_ip[sizeof(disc->accept_state.from_ip) - 1] = '\0';
+    
+    disc->accept_state.from_port = from_port;
+    disc->accept_state.is_secure = is_secure;
+    
+    if (is_secure) {
+        strncpy(disc->accept_state.public_key, public_key, 
+                sizeof(disc->accept_state.public_key) - 1);
+        disc->accept_state.public_key[sizeof(disc->accept_state.public_key) - 1] = '\0';
+        
+        strncpy(disc->accept_state.signature, signature, 
+                sizeof(disc->accept_state.signature) - 1);
+        disc->accept_state.signature[sizeof(disc->accept_state.signature) - 1] = '\0';
+    }
+    
+    disc->accept_state.received = true;
+    
+    /* Wake up waiting thread */
+    pthread_cond_broadcast(&disc->accept_cond);
+    
+    pthread_mutex_unlock(&disc->mutex);
+    
+    printf("\n[ORCA] ACCEPT_CONFIRM received from %s!\n", from_id);
+    printf("[ORCA] Friendship with %s is now accepted.\n", from_id);
+    fflush(stdout);
+    
+    /* ===== CALLBACK FOR PERSISTENCE ===== */
+    if (disc->on_accept_confirm) {
+        disc->on_accept_confirm(from_id, from_ip, from_port, is_secure);
+    }
+}
+
+/* ============================================================================
  * handle_search - Handle ORCA_SEARCH
  * ============================================================================ */
 static void handle_search(Discovery* disc, const char* msg, const char* sender_ip) {
@@ -1055,7 +1193,7 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
 /* ============================================================================
  * discovery_find_peer - Search discovery cache (NOT registry!)
  * ============================================================================ */
-bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
+bool discovery_find_peer(Discovery* disc, const char* id, DiscoveryPeerInfo* out_peer) {
     if (!disc || !out_peer) return false;
     
     char norm_id[64];
@@ -1089,7 +1227,7 @@ bool discovery_find_peer(Discovery* disc, const char* id, PeerInfo* out_peer) {
     return false;
 }
 
-int discovery_get_peers(Discovery* disc, PeerInfo* peers, int max_peers) {
+int discovery_get_peers(Discovery* disc, DiscoveryPeerInfo* peers, int max_peers) {
     if (!disc || !peers) return 0;
     
     pthread_mutex_lock(&disc->mutex);
@@ -1204,14 +1342,14 @@ static void* broadcast_loop(void* arg) {
     return NULL;
 }
 
-void discovery_set_on_peer_found(Discovery* disc, void (*callback)(PeerInfo*)) {
+void discovery_set_on_peer_found(Discovery* disc, void (*callback)(DiscoveryPeerInfo*)) {
     if (disc) {
         disc->on_peer_found = callback;
         DLOG("on_peer_found callback set");
     }
 }
 
-void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(PeerInfo*)) {
+void discovery_set_on_peer_offline(Discovery* disc, void (*callback)(DiscoveryPeerInfo*)) {
     if (disc) {
         disc->on_peer_offline = callback;
         DLOG("on_peer_offline callback set");
@@ -1243,4 +1381,256 @@ char* discovery_get_local_ip(void) {
     strcpy(ip, "127.0.0.1");
     DLOG("get_local_ip: no interface found, using 127.0.0.1");
     return ip;
+}
+
+/* ============================================================================
+ * NEW FUNCTIONS FOR MAIN.C COMPATIBILITY
+ * ============================================================================ */
+
+void discovery_set_on_accept_confirm(Discovery* disc,
+                                     void (*callback)(const char*, const char*,
+                                                      int, bool)) {
+    if (disc) {
+        disc->on_accept_confirm = callback;
+        DLOG("on_accept_confirm callback set");
+    }
+}
+
+bool discovery_normalize_id(const char* input, char* output, size_t output_size) {
+    if (!input || !output || output_size == 0) {
+        return false;
+    }
+    
+    size_t i = 0, j = 0;
+    size_t len = strlen(input);
+    
+    /* Strip angle brackets */
+    for (i = 0; i < len && j < output_size - 1; i++) {
+        if (input[i] != '<' && input[i] != '>') {
+            output[j++] = input[i];
+        }
+    }
+    output[j] = '\0';
+    
+    /* Validate: must not be empty */
+    if (j == 0) {
+        return false;
+    }
+    
+    /* Validate: must contain only digits */
+    for (i = 0; i < j; i++) {
+        if (!isdigit((unsigned char)output[i])) {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+bool discovery_is_valid_id(const char* id) {
+    if (!id) return false;
+    size_t len = strlen(id);
+    if (len == 0 || len >= DISCOVERY_MAX_ID_LEN) return false;
+    
+    /* Check format: <XXX> where X are digits */
+    if (len >= 3 && len <= 6) {
+        size_t i = 0;
+        if (id[0] == '<' && id[len - 1] == '>') {
+            for (i = 1; i < len - 1; i++) {
+                if (!isdigit((unsigned char)id[i])) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    
+    /* Check format: ORCA-XXXXXXXX */
+    if (strncmp(id, "ORCA-", 5) == 0) {
+        size_t i;
+        for (i = 5; i < len; i++) {
+            if (!isalnum((unsigned char)id[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    return false;
+}
+
+bool discovery_is_same_id(const char* id1, const char* id2) {
+    if (!id1 || !id2) return false;
+    
+    char n1[DISCOVERY_MAX_ID_LEN];
+    char n2[DISCOVERY_MAX_ID_LEN];
+    
+    if (!discovery_normalize_id(id1, n1, sizeof(n1))) return false;
+    if (!discovery_normalize_id(id2, n2, sizeof(n2))) return false;
+    
+    return strcmp(n1, n2) == 0;
+}
+
+void discovery_reset_accept_state(Discovery* disc) {
+    if (!disc) return;
+    pthread_mutex_lock(&disc->mutex);
+    memset(&disc->accept_state, 0, sizeof(disc->accept_state));
+    disc->accept_state.received = false;
+    disc->accept_state.processed = false;
+    pthread_mutex_unlock(&disc->mutex);
+    DLOG("reset_accept_state: reset");
+}
+
+bool discovery_wait_for_accept(Discovery* disc, const char* target_id, 
+                               int timeout_sec) {
+    if (!disc || !target_id) {
+        DLOG("wait_for_accept: NULL parameter");
+        return false;
+    }
+    
+    if (!disc->running) {
+        DLOG("wait_for_accept: discovery not running");
+        return false;
+    }
+    
+    char norm_target[DISCOVERY_MAX_ID_LEN];
+    if (!discovery_normalize_id(target_id, norm_target, sizeof(norm_target))) {
+        DLOG("wait_for_accept: invalid target id");
+        return false;
+    }
+    
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += timeout_sec;
+    
+    pthread_mutex_lock(&disc->mutex);
+    
+    /* Reset accept state for this target */
+    memset(&disc->accept_state, 0, sizeof(disc->accept_state));
+    strncpy(disc->accept_state.target_id, norm_target, 
+            sizeof(disc->accept_state.target_id) - 1);
+    disc->accept_state.target_id[sizeof(disc->accept_state.target_id) - 1] = '\0';
+    disc->accept_state.received = false;
+    disc->accept_state.processed = false;
+    
+    DLOG("wait_for_accept: waiting for %s (timeout %ds)", target_id, timeout_sec);
+    
+    while (!disc->accept_state.received) {
+        int ret = pthread_cond_timedwait(&disc->accept_cond, &disc->mutex, &ts);
+        if (ret == ETIMEDOUT) {
+            DLOG("wait_for_accept: timeout for %s", target_id);
+            pthread_mutex_unlock(&disc->mutex);
+            return false;
+        }
+        if (!disc->running) {
+            DLOG("wait_for_accept: discovery stopped");
+            pthread_mutex_unlock(&disc->mutex);
+            return false;
+        }
+    }
+    
+    /* Mark as processed */
+    disc->accept_state.processed = true;
+    
+    DLOG("wait_for_accept: received confirmation from %s", 
+         disc->accept_state.from_id);
+    
+    pthread_mutex_unlock(&disc->mutex);
+    return true;
+}
+
+void discovery_send_add_request(Discovery* disc, const char* target_id,
+                                const char* my_id, const char* my_ip, 
+                                int my_port) {
+    /* Reuse old function */
+    discovery_send_add_request_with_ack(disc, target_id, my_id, my_ip, my_port);
+}
+
+void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
+                                       const char* my_id, const char* my_ip,
+                                       int my_port, const char* name,
+                                       const char* public_key,
+                                       const char* signature) {
+    if (!disc || !target_id || !my_id || !my_ip) {
+        DLOG("send_add_request_secure: NULL parameter");
+        return;
+    }
+    
+    char norm_target[DISCOVERY_MAX_ID_LEN], norm_my[DISCOVERY_MAX_ID_LEN];
+    discovery_normalize_id(target_id, norm_target, sizeof(norm_target));
+    discovery_normalize_id(my_id, norm_my, sizeof(norm_my));
+    
+    DiscoveryPeerInfo peer;
+    if (!discovery_find_peer(disc, target_id, &peer)) {
+        DLOG("send_add_request_secure: peer %s not found", target_id);
+        return;
+    }
+    
+    char msg[2048];
+    snprintf(msg, sizeof(msg),
+             "ADD_REQUEST:SECURE:%s:%s:%s:%d:%s:%s:%s",
+             norm_target, norm_my, my_ip, my_port,
+             name ? name : "",
+             public_key ? public_key : "",
+             signature ? signature : "");
+    
+    send_udp(disc, msg, peer.ip, DISCOVERY_PORT);
+    DLOG("send_add_request_secure: sent to %s", target_id);
+}
+
+void discovery_send_accept_confirm(Discovery* disc, const char* target_id,
+                                   const char* my_id, const char* my_ip,
+                                   int my_port) {
+    if (!disc || !target_id || !my_id || !my_ip) {
+        DLOG("send_accept_confirm: NULL parameter");
+        return;
+    }
+    
+    char norm_target[DISCOVERY_MAX_ID_LEN], norm_my[DISCOVERY_MAX_ID_LEN];
+    discovery_normalize_id(target_id, norm_target, sizeof(norm_target));
+    discovery_normalize_id(my_id, norm_my, sizeof(norm_my));
+    
+    DiscoveryPeerInfo peer;
+    if (!discovery_find_peer(disc, target_id, &peer)) {
+        DLOG("send_accept_confirm: peer %s not found", target_id);
+        return;
+    }
+    
+    char msg[1024];
+    snprintf(msg, sizeof(msg),
+             "ACCEPT_CONFIRM:%s:%s:%s:%d",
+             norm_target, norm_my, my_ip, my_port);
+    
+    send_udp(disc, msg, peer.ip, DISCOVERY_PORT);
+    DLOG("send_accept_confirm: sent to %s", target_id);
+}
+
+void discovery_send_accept_confirm_secure(Discovery* disc, const char* target_id,
+                                          const char* my_id, const char* my_ip,
+                                          int my_port, const char* public_key,
+                                          const char* signature) {
+    if (!disc || !target_id || !my_id || !my_ip) {
+        DLOG("send_accept_confirm_secure: NULL parameter");
+        return;
+    }
+    
+    char norm_target[DISCOVERY_MAX_ID_LEN], norm_my[DISCOVERY_MAX_ID_LEN];
+    discovery_normalize_id(target_id, norm_target, sizeof(norm_target));
+    discovery_normalize_id(my_id, norm_my, sizeof(norm_my));
+    
+    DiscoveryPeerInfo peer;
+    if (!discovery_find_peer(disc, target_id, &peer)) {
+        DLOG("send_accept_confirm_secure: peer %s not found", target_id);
+        return;
+    }
+    
+    char msg[2048];
+    snprintf(msg, sizeof(msg),
+             "ACCEPT_CONFIRM:SECURE:%s:%s:%s:%d:%s:%s",
+             norm_target, norm_my, my_ip, my_port,
+             public_key ? public_key : "",
+             signature ? signature : "");
+    
+    send_udp(disc, msg, peer.ip, DISCOVERY_PORT);
+    DLOG("send_accept_confirm_secure: sent to %s", target_id);
 }
