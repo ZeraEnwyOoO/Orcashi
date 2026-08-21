@@ -44,6 +44,24 @@ static int write_file_content(const char* path, const char* content) {
 }
 
 /* ============================================================================
+ * ID NORMALIZATION (for consistent signing/verification)
+ * ============================================================================ */
+
+static void normalize_id(const char* input, char* output, size_t out_size) {
+    if (!input || !output || out_size == 0) return;
+    
+    size_t i = 0, j = 0;
+    size_t len = strlen(input);
+    
+    for (i = 0; i < len && j < out_size - 1; i++) {
+        if (input[i] != '<' && input[i] != '>') {
+            output[j++] = input[i];
+        }
+    }
+    output[j] = '\0';
+}
+
+/* ============================================================================
  * EXPORTED HELPERS (used by main.c)
  * ============================================================================ */
 
@@ -188,7 +206,7 @@ int orca_identity_create(const char* name, const char* passcode,
 }
 
 /* ============================================================================
- * NEW: 3-DIGIT SECURE IDENTITY CREATION - FIXED WITH DEBUG
+ * NEW: 3-DIGIT SECURE IDENTITY CREATION - FIXED with normalize_id
  * ============================================================================ */
 
 int orca_identity_create_secure_3digit(const char* id, const char* passcode,
@@ -298,15 +316,18 @@ int orca_identity_create_secure_3digit(const char* id, const char* passcode,
     printf("[DEBUG] public_key length: %zu\n", strlen(identity_out->public_key));
     printf("[DEBUG] ========================================\n");
     
-    /* 6. Sign identity data (ID is included in signature!) */
+    /* 6. Sign identity data - FIX: Normalize ID before signing */
+    char norm_id[64];
+    normalize_id(identity_out->id, norm_id, sizeof(norm_id));
+    
     char data_to_sign[1024];
     snprintf(data_to_sign, sizeof(data_to_sign), "%s|%s|%s|%ld",
-             identity_out->id, identity_out->name, identity_out->role,
+             norm_id, identity_out->name, identity_out->role,
              (long)identity_out->created_at);
     
     printf("[DEBUG] ========================================\n");
     printf("[DEBUG] Signing identity\n");
-    printf("[DEBUG] Data to sign: '%s'\n", data_to_sign);
+    printf("[DEBUG] Data to sign (normalized): '%s'\n", data_to_sign);
     printf("[DEBUG] Private key length: %zu\n", strlen(private_key));
     printf("[DEBUG] Private key (first 50): %.50s...\n", private_key);
     printf("[DEBUG] ========================================\n");
@@ -324,8 +345,18 @@ int orca_identity_create_secure_3digit(const char* id, const char* passcode,
     printf("[DEBUG] Signature created, length: %zu\n", strlen(identity_out->signature));
     printf("[DEBUG] Signature (first 50): %.50s...\n", identity_out->signature);
     
-    /* 7. Verify identity */
-    if (!orca_identity_verify(identity_out)) {
+    /* 7. Verify identity - FIX: Normalize ID before verification */
+    char norm_id_verify[64];
+    normalize_id(identity_out->id, norm_id_verify, sizeof(norm_id_verify));
+    
+    char data_to_verify[1024];
+    snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%ld",
+             norm_id_verify, identity_out->name, identity_out->role,
+             (long)identity_out->created_at);
+    
+    printf("[DEBUG] Verifying with data (normalized): '%s'\n", data_to_verify);
+    
+    if (!orca_rsa_verify_string(data_to_verify, identity_out->signature, identity_out->public_key)) {
         free(public_key);
         free(private_key);
         printf("[DEBUG] Identity verification FAILED after creation!\n");
@@ -622,7 +653,7 @@ int orca_identity_set_default(const char* id) {
 }
 
 /* ============================================================================
- * IDENTITY VERIFICATION FUNCTIONS
+ * IDENTITY VERIFICATION FUNCTIONS - FIXED with normalize_id
  * ============================================================================ */
 
 bool orca_identity_verify(OrcaIdentity* identity) {
@@ -632,12 +663,16 @@ bool orca_identity_verify(OrcaIdentity* identity) {
         return true;
     }
     
+    /* FIX: Normalize ID before verification */
+    char norm_id[64];
+    normalize_id(identity->id, norm_id, sizeof(norm_id));
+    
     char data_to_verify[1024];
     snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%ld",
-             identity->id, identity->name, identity->role,
+             norm_id, identity->name, identity->role,
              (long)identity->created_at);
     
-    printf("[DEBUG] Verifying: '%s'\n", data_to_verify);
+    printf("[DEBUG] Verifying (normalized): '%s'\n", data_to_verify);
     
     return orca_rsa_verify_string(data_to_verify, identity->signature,
                                   identity->public_key);
