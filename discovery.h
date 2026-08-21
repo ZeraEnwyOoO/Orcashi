@@ -165,10 +165,6 @@ void discovery_set_my_secure_identity(Discovery* disc,
 void discovery_set_registry(Registry* reg);
 void discovery_set_request_manager(RequestManager* rm);
 
-/* New style (with disc parameter) - used by new code */
-void discovery_set_registry(Discovery* disc, Registry* reg);
-void discovery_set_request_manager(Discovery* disc, RequestManager* rm);
-
 /* ============================================================================
  * Broadcasting
  * ============================================================================ */
