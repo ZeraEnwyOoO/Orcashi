@@ -150,6 +150,11 @@ bool plug_create_server(TCPPlug* plug, int port) {
     pthread_create(&plug->receive_thread, NULL, receive_loop, plug);
     pthread_create(&plug->send_thread, NULL, send_loop, plug);
     
+    /* Server is RESPONDER - wait for ECDH_INIT from client */
+    plug->ecdh_initiated = false;
+    plug->ecdh_complete = false;
+    plug->secure_mode = false;
+    
     return true;
 }
 
@@ -188,17 +193,25 @@ bool plug_connect_client(TCPPlug* plug, const char* target_ip, int port) {
     pthread_create(&plug->receive_thread, NULL, receive_loop, plug);
     pthread_create(&plug->send_thread, NULL, send_loop, plug);
     
+    /* Client is INITIATOR - will call plug_initiate_ecdh() from orcashi.c */
+    plug->ecdh_initiated = false;
+    plug->ecdh_complete = false;
+    plug->secure_mode = false;
+    
     return true;
 }
 
 /* ============================================================================
- * ECDH SECURE HANDSHAKE - Initiator
+ * ECDH SECURE HANDSHAKE - Initiator (Client)
  * ============================================================================ */
 
 bool plug_initiate_ecdh(TCPPlug* plug) {
-    if (!plug || !plug->connected) return false;
+    if (!plug || !plug->connected) {
+        fprintf(stderr, "[PLUG] ECDH initiate failed: not connected\n");
+        return false;
+    }
     
-    /* ===== FIX: Don't reset if already complete ===== */
+    /* Don't reset if already complete */
     if (plug->ecdh_complete && plug->secure_mode) {
         printf("[PLUG] ECDH already complete, ignoring initiate\n");
         return true;
@@ -232,22 +245,26 @@ bool plug_initiate_ecdh(TCPPlug* plug) {
     snprintf(msg, sizeof(msg), "ECDH_INIT:%s", pubkey_hex);
     
     if (!plug_send_message(plug, msg)) {
+        fprintf(stderr, "[PLUG] Failed to send ECDH_INIT\n");
         return false;
     }
     
     plug->ecdh_initiated = true;
-    printf("[PLUG] ECDH initiated\n");
+    printf("[PLUG] ECDH initiated (client/initiator)\n");
     return true;
 }
 
 /* ============================================================================
- * ECDH SECURE HANDSHAKE - Responder
+ * ECDH SECURE HANDSHAKE - Responder (Server)
  * ============================================================================ */
 
 bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
-    if (!plug || !plug->connected || !peer_pubkey_hex) return false;
+    if (!plug || !plug->connected || !peer_pubkey_hex) {
+        fprintf(stderr, "[PLUG] ECDH respond failed: NULL parameter\n");
+        return false;
+    }
     
-    /* ===== FIX: Don't respond if already complete ===== */
+    /* Don't respond if already complete */
     if (plug->ecdh_complete && plug->secure_mode) {
         printf("[PLUG] ECDH already complete, ignoring response\n");
         return true;
@@ -295,8 +312,11 @@ bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
     }
     
     /* Derive AES-256-GCM key from shared secret */
-    if (orca_aes_gcm_derive_key_from_shared_secret(plug->ecdh_shared_secret, NULL, 0,
-                                                   (const unsigned char*)"orcashi-chat", 12,
+    const unsigned char* salt = (const unsigned char*)"orcashi-ecdh-salt";
+    const unsigned char* info = (const unsigned char*)"orcashi-chat";
+    if (orca_aes_gcm_derive_key_from_shared_secret(plug->ecdh_shared_secret, 
+                                                   salt, 17,
+                                                   info, 12,
                                                    plug->aes_key) < 0) {
         fprintf(stderr, "[PLUG] Failed to derive AES key\n");
         return false;
@@ -313,6 +333,7 @@ bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
     snprintf(msg, sizeof(msg), "ECDH_RESPONSE:%s", pubkey_hex);
     
     if (!plug_send_message(plug, msg)) {
+        fprintf(stderr, "[PLUG] Failed to send ECDH_RESPONSE\n");
         return false;
     }
     
@@ -323,7 +344,13 @@ bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
     plug->secure_mode = true;
     plug->ecdh_initiated = false;
     
-    printf("[PLUG] ECDH secure channel established (responder)\n");
+    /* Debug: print keys */
+    char key_hex[65];
+    orca_bytes_to_hex(plug->aes_key, 32, key_hex);
+    printf("[PLUG DEBUG] Responder AES Key: %s\n", key_hex);
+    printf("[PLUG DEBUG] Responder Nonce counter: %lu\n", plug->nonce_counter);
+    
+    printf("[PLUG] ECDH secure channel established (responder/server)\n");
     return true;
 }
 
@@ -332,9 +359,12 @@ bool plug_respond_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
  * ============================================================================ */
 
 bool plug_complete_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
-    if (!plug || !plug->connected || !peer_pubkey_hex) return false;
+    if (!plug || !plug->connected || !peer_pubkey_hex) {
+        fprintf(stderr, "[PLUG] ECDH complete failed: NULL parameter\n");
+        return false;
+    }
     
-    /* ===== FIX: Don't complete if already complete ===== */
+    /* Don't complete if already complete */
     if (plug->ecdh_complete && plug->secure_mode) {
         printf("[PLUG] ECDH already complete, ignoring duplicate complete\n");
         return true;
@@ -376,9 +406,12 @@ bool plug_complete_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
         return false;
     }
     
-    /* Derive AES-256-GCM key from shared secret */
-    if (orca_aes_gcm_derive_key_from_shared_secret(plug->ecdh_shared_secret, NULL, 0,
-                                                   (const unsigned char*)"orcashi-chat", 12,
+    /* Derive AES-256-GCM key from shared secret - MUST use same salt/info as responder */
+    const unsigned char* salt = (const unsigned char*)"orcashi-ecdh-salt";
+    const unsigned char* info = (const unsigned char*)"orcashi-chat";
+    if (orca_aes_gcm_derive_key_from_shared_secret(plug->ecdh_shared_secret,
+                                                   salt, 17,
+                                                   info, 12,
                                                    plug->aes_key) < 0) {
         fprintf(stderr, "[PLUG] Failed to derive AES key\n");
         return false;
@@ -391,7 +424,13 @@ bool plug_complete_ecdh(TCPPlug* plug, const char* peer_pubkey_hex) {
     plug->secure_mode = true;
     plug->ecdh_initiated = false;
     
-    printf("[PLUG] ECDH secure channel established (initiator)\n");
+    /* Debug: print keys */
+    char key_hex[65];
+    orca_bytes_to_hex(plug->aes_key, 32, key_hex);
+    printf("[PLUG DEBUG] Initiator AES Key: %s\n", key_hex);
+    printf("[PLUG DEBUG] Initiator Nonce counter: %lu\n", plug->nonce_counter);
+    
+    printf("[PLUG] ECDH secure channel established (initiator/client)\n");
     return true;
 }
 
@@ -404,7 +443,17 @@ bool plug_ecdh_complete(TCPPlug* plug) {
  * ============================================================================ */
 
 bool plug_send_secure(TCPPlug* plug, const char* msg) {
-    if (!plug || !plug->connected || !plug->ecdh_complete || !plug->secure_mode) {
+    if (!plug || !plug->connected) {
+        fprintf(stderr, "[PLUG] send_secure: not connected\n");
+        return false;
+    }
+    
+    if (!plug->ecdh_complete || !plug->secure_mode) {
+        fprintf(stderr, "[PLUG] send_secure: ECDH not complete\n");
+        return false;
+    }
+    
+    if (!msg || strlen(msg) == 0) {
         return false;
     }
     
@@ -417,6 +466,11 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
     for (int i = 0; i < 8; i++) {
         nonce[11 - i] = (plug->nonce_counter >> (i * 8)) & 0xFF;
     }
+    
+    /* Debug */
+    char nonce_hex[25];
+    orca_bytes_to_hex(nonce, 12, nonce_hex);
+    printf("[PLUG DEBUG] Sending with nonce: %s (counter: %lu)\n", nonce_hex, plug->nonce_counter);
     
     /* Encrypt with AES-256-GCM using raw key directly */
     unsigned char tag[16];
@@ -431,16 +485,16 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
     }
     
     /* Format: SECURE:<nonce_hex>:<tag_hex>:<ciphertext_b64>\n */
-    char nonce_hex[25];
+    char nonce_hex_str[25];
     char tag_hex[33];
     char* ciphertext_b64 = orca_base64_encode(ciphertext, ciphertext_len);
     
-    orca_bytes_to_hex(nonce, 12, nonce_hex);
+    orca_bytes_to_hex(nonce, 12, nonce_hex_str);
     orca_bytes_to_hex(tag, 16, tag_hex);
     
     char secure_msg[8192];
     snprintf(secure_msg, sizeof(secure_msg), "SECURE:%s:%s:%s\n",
-             nonce_hex, tag_hex, ciphertext_b64);
+             nonce_hex_str, tag_hex, ciphertext_b64);
     
     free(ciphertext);
     free(ciphertext_b64);
@@ -449,6 +503,7 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
     pthread_mutex_lock(&plug->queue_mutex);
     if (plug->send_count >= plug->queue_capacity) {
         pthread_mutex_unlock(&plug->queue_mutex);
+        fprintf(stderr, "[PLUG] send_secure: queue full\n");
         return false;
     }
     
@@ -470,7 +525,12 @@ bool plug_send_secure(TCPPlug* plug, const char* msg) {
  * ============================================================================ */
 
 bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
-    if (!plug || !plug->ecdh_complete || !plug->secure_mode) {
+    if (!plug || !msg || msg_size <= 0) {
+        return false;
+    }
+    
+    if (!plug->ecdh_complete || !plug->secure_mode) {
+        fprintf(stderr, "[PLUG] receive_secure: ECDH not complete\n");
         return false;
     }
     
@@ -479,7 +539,7 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
         return false;
     }
     
-    /* Skip handshake messages (should not happen after secure established) */
+    /* Skip handshake messages */
     if (strstr(raw_msg, "ECDH_INIT") != NULL ||
         strstr(raw_msg, "ECDH_RESPONSE") != NULL ||
         strstr(raw_msg, "HANDSHAKE") != NULL) {
@@ -489,7 +549,7 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
     /* Check for SECURE: prefix */
     char* secure_start = strstr(raw_msg, "SECURE:");
     if (!secure_start) {
-        /* Plaintext message - return as-is (legacy support) */
+        /* Plaintext message - return as-is (for compatibility) */
         strncpy(msg, raw_msg, msg_size - 1);
         msg[msg_size - 1] = '\0';
         return true;
@@ -538,7 +598,7 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
     strncpy(tag_hex, tag_start, tag_len);
     tag_hex[tag_len] = '\0';
     
-    /* Convert hex to raw bytes, use raw key directly */
+    /* Convert hex to raw bytes */
     unsigned char nonce[12];
     unsigned char tag[16];
     
@@ -552,6 +612,9 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
         return false;
     }
     
+    /* Debug */
+    printf("[PLUG DEBUG] Received with nonce: %s\n", nonce_hex);
+    
     int ciphertext_len;
     unsigned char* ciphertext = orca_base64_decode(cipher_start, &ciphertext_len);
     if (!ciphertext) {
@@ -562,7 +625,7 @@ bool plug_receive_secure(TCPPlug* plug, char* msg, int msg_size) {
     unsigned char* plaintext;
     size_t plaintext_len;
     
-    /* Use raw key directly, not hex string */
+    /* Use raw key directly */
     int result = orca_aes_gcm_decrypt(ciphertext, ciphertext_len,
                                       plug->aes_key, nonce, tag,
                                       &plaintext, &plaintext_len);
@@ -614,7 +677,6 @@ bool plug_send_message(TCPPlug* plug, const char* msg) {
     return true;
 }
 
-/* Legacy secure message (deprecated - kept for API compatibility) */
 bool plug_send_secure_message(TCPPlug* plug, const char* msg, const char* key_hex) {
     (void)key_hex;  /* Ignored - use plug->aes_key instead */
     if (plug_ecdh_complete(plug)) {
@@ -676,7 +738,6 @@ bool plug_receive_message(TCPPlug* plug, char* msg, int msg_size, int timeout_ms
 
 bool plug_start_handshake(TCPPlug* plug, const char* public_key_hex) {
     (void)public_key_hex;
-    /* Legacy - not used with new ECDH */
     if (!plug || !plug->connected) return false;
     return plug_initiate_ecdh(plug);
 }
@@ -812,28 +873,37 @@ static void* send_loop(void* arg) {
 }
 
 /* ============================================================================
- * HANDSHAKE PARSER
+ * HANDSHAKE PARSER - FIXED
  * ============================================================================ */
 
 static bool plug_parse_handshake(TCPPlug* plug, const char* msg) {
-    /* ECDH_INIT:<pubkey> - Received by responder */
+    if (!plug || !msg) return false;
+    
+    /* ECDH_INIT:<pubkey> - Received by responder (server) */
     if (strncmp(msg, "ECDH_INIT:", 10) == 0) {
         const char* pubkey = msg + 10;
-        plug_respond_ecdh(plug, pubkey);
+        
+        /* Only respond if we are NOT the initiator (i.e., we are the server) */
+        if (!plug->ecdh_initiated) {
+            printf("[PLUG] Received ECDH_INIT, responding as server...\n");
+            plug_respond_ecdh(plug, pubkey);
+        } else {
+            printf("[PLUG] Ignoring ECDH_INIT - we are the initiator\n");
+        }
         return true;
     }
     
-    /* ECDH_RESPONSE:<pubkey> - Received by initiator */
+    /* ECDH_RESPONSE:<pubkey> - Received by initiator (client) */
     if (strncmp(msg, "ECDH_RESPONSE:", 14) == 0) {
         const char* pubkey = msg + 14;
         
-        /* ===== FIX: Only initiator can complete ===== */
-        if (!plug->ecdh_initiated) {
+        /* Only complete if we ARE the initiator */
+        if (plug->ecdh_initiated) {
+            printf("[PLUG] Received ECDH_RESPONSE, completing as client...\n");
+            plug_complete_ecdh(plug, pubkey);
+        } else {
             printf("[PLUG] Ignoring ECDH_RESPONSE - not initiator\n");
-            return true;
         }
-        
-        plug_complete_ecdh(plug, pubkey);
         return true;
     }
     
