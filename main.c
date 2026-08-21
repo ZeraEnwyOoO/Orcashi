@@ -1182,8 +1182,19 @@ int main(int argc, char* argv[]) {
         if (found) {
             printf("[ORCA] Sending friend request to %s at %s:%d...\n", id, p.ip, p.port);
             
+            /* DEBUG: Print identity info before sending */
+            printf("\n[DEBUG] ========================================\n");
+            printf("[DEBUG] Sending ADD_REQUEST_SECURE\n");
+            printf("[DEBUG] My ID: %s\n", g_orcashi->my_id);
+            printf("[DEBUG] My name: %s\n", g_orcashi->identity.name);
+            printf("[DEBUG] My created_at: %ld\n", (long)g_orcashi->identity.created_at);
+            printf("[DEBUG] My public_key length: %zu\n", strlen(g_orcashi->identity.public_key));
+            printf("[DEBUG] My signature length: %zu\n", strlen(g_orcashi->identity.signature));
+            printf("[DEBUG] My signature (first 50 chars): %.50s...\n", g_orcashi->identity.signature);
+            printf("[DEBUG] Target ID: %s\n", norm_id);
+            printf("[DEBUG] ========================================\n");
+            
             if (g_orcashi->identity.mode == ORCA_IDENTITY_MODE_SECURE) {
-                /* FIX: Added created_at parameter */
                 discovery_send_add_request_secure(g_orcashi->discovery, norm_id,
                                                   g_orcashi->my_id,
                                                   g_orcashi->local_ip,
