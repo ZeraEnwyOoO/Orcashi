@@ -895,6 +895,11 @@ int main(int argc, char* argv[]) {
     /* ===== SET DISCOVERY CALLBACKS ===== */
     discovery_set_on_accept_confirm(g_orcashi->discovery, on_accept_confirm_callback);
     
+    /* ===== SET DISCOVERY REGISTRY AND REQUEST MANAGER - FIXED ===== */
+    /* FIX: Use old style (no Discovery* parameter) */
+    discovery_set_registry(g_orcashi->registry);
+    discovery_set_request_manager(g_orcashi->requests);
+    
     /* ===== LOAD PEERS FROM DISK AND SYNC TO REGISTRY ===== */
     if (peer_list_load(g_peer_list) > 0) {
         printf("[ORCA] loaded %d peers from disk\n", peer_list_get_count(g_peer_list));
