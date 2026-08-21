@@ -17,7 +17,7 @@
 
 extern ORCASHI* g_orcashi;
 extern PeerList* g_peer_list;
-extern volatile int running;
+extern volatile int running;  // FIX: Add this line
 
 /* ============================================================================
  * Forward Declarations
@@ -707,7 +707,7 @@ static void* heartbeat_loop(void* arg) {
 }
 
 /* ============================================================================
- * CHAT LOOP - FIXED with /secure command
+ * CHAT LOOP - FIXED with /secure command and running variable
  * ============================================================================ */
 
 void chat_loop(void) {
@@ -729,7 +729,8 @@ void chat_loop(void) {
     fd_set fds;
     struct timeval tv;
     
-    while (running && orcashi_is_connected(g_orcashi)) {
+    /* FIX: Use g_orcashi->running instead of running */
+    while (g_orcashi && g_orcashi->running && orcashi_is_connected(g_orcashi)) {
         while (orcashi_receive_message(g_orcashi, msg, sizeof(msg), 1)) {
             if (plug_ecdh_complete(g_orcashi->plug)) {
                 printf("[%s] (secure) %s\n", orcashi_get_peer_id(g_orcashi), msg);
