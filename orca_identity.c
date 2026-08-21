@@ -188,7 +188,7 @@ int orca_identity_create(const char* name, const char* passcode,
 }
 
 /* ============================================================================
- * NEW: 3-DIGIT SECURE IDENTITY CREATION
+ * NEW: 3-DIGIT SECURE IDENTITY CREATION - FIXED WITH DEBUG
  * ============================================================================ */
 
 int orca_identity_create_secure_3digit(const char* id, const char* passcode,
@@ -304,7 +304,12 @@ int orca_identity_create_secure_3digit(const char* id, const char* passcode,
              identity_out->id, identity_out->name, identity_out->role,
              (long)identity_out->created_at);
     
-    printf("[DEBUG] Signing data: '%s'\n", data_to_sign);
+    printf("[DEBUG] ========================================\n");
+    printf("[DEBUG] Signing identity\n");
+    printf("[DEBUG] Data to sign: '%s'\n", data_to_sign);
+    printf("[DEBUG] Private key length: %zu\n", strlen(private_key));
+    printf("[DEBUG] Private key (first 50): %.50s...\n", private_key);
+    printf("[DEBUG] ========================================\n");
     
     char* signature = NULL;
     if (orca_rsa_sign_string(data_to_sign, private_key, &signature) < 0) {
@@ -316,14 +321,21 @@ int orca_identity_create_secure_3digit(const char* id, const char* passcode,
     strcpy(identity_out->signature, signature);
     free(signature);
     
+    printf("[DEBUG] Signature created, length: %zu\n", strlen(identity_out->signature));
+    printf("[DEBUG] Signature (first 50): %.50s...\n", identity_out->signature);
+    
     /* 7. Verify identity */
     if (!orca_identity_verify(identity_out)) {
         free(public_key);
         free(private_key);
+        printf("[DEBUG] Identity verification FAILED after creation!\n");
         set_identity_error("Identity verification failed after creation");
         return -1;
     }
     identity_out->verified = true;
+    
+    printf("[DEBUG] Identity verified successfully!\n");
+    printf("[DEBUG] ========================================\n");
     
     free(public_key);
     free(private_key);
@@ -624,6 +636,8 @@ bool orca_identity_verify(OrcaIdentity* identity) {
     snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%ld",
              identity->id, identity->name, identity->role,
              (long)identity->created_at);
+    
+    printf("[DEBUG] Verifying: '%s'\n", data_to_verify);
     
     return orca_rsa_verify_string(data_to_verify, identity->signature,
                                   identity->public_key);
