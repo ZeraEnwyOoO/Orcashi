@@ -17,6 +17,7 @@
 
 extern ORCASHI* g_orcashi;
 extern PeerList* g_peer_list;
+extern volatile int running;
 
 /* ============================================================================
  * Forward Declarations
