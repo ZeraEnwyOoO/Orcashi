@@ -621,9 +621,12 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
         
         char response[2048];
         if (g_my_secure) {
+            /* FIX: Use normalized ID without brackets */
+            char norm_id[64];
+            normalize_id(g_my_id, norm_id, sizeof(norm_id));
             snprintf(response, sizeof(response), 
                     "I_AM:SECURE:%s:%s:%s:%ld:%s:%d:%s:%s", 
-                    g_my_id,
+                    norm_id,
                     g_my_name,
                     g_my_role,
                     (long)g_my_created_at,
@@ -649,6 +652,7 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
 
 /* ============================================================================
  * handle_i_am - Store discovered peer in cache (NOT registry!)
+ * FIXED: Normalize ID before verification
  * ============================================================================ */
 static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* rest = msg + 5;
@@ -778,11 +782,15 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
         return;
     }
     
+    /* FIX: Normalize ID before verification */
+    char norm_id[64];
+    normalize_id(id, norm_id, sizeof(norm_id));
+    
     char data_to_verify[1024];
     snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%ld",
-             id, name, role, (long)created_at);
+             norm_id, name, role, (long)created_at);
     
-    DLOG("Verifying identity data: '%s'", data_to_verify);
+    DLOG("Verifying identity data (normalized): '%s'", data_to_verify);
     
     if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
         DLOG("Invalid identity signature from %s — REJECTED", id);
@@ -833,7 +841,7 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
 
 /* ============================================================================
  * handle_add_request - Handle friend request, push to pending queue
- * FIXED: Verify identity signature with created_at
+ * FIXED: Normalize ID before verification
  * ============================================================================ */
 static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_ip;
@@ -946,12 +954,16 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
         DLOG("  signature (first 50): %.50s...", signature);
         DLOG("========================================");
         
-        /* Verify identity signature: id|name|role|created_at */
+        /* FIX: Normalize ID before verification */
+        char norm_from_id[64];
+        normalize_id(from_id, norm_from_id, sizeof(norm_from_id));
+        
+        /* Verify identity signature: id|name|role|created_at (without brackets) */
         char identity_data[1024];
         snprintf(identity_data, sizeof(identity_data), "%s|%s|%s|%ld",
-                 from_id, from_name, "user", (long)created_at);
+                 norm_from_id, from_name, "user", (long)created_at);
         
-        DLOG("Verifying identity data: '%s'", identity_data);
+        DLOG("Verifying identity data (normalized): '%s'", identity_data);
         
         if (!orca_rsa_verify_string(identity_data, signature, public_key)) {
             DLOG("Invalid identity signature from %s — REJECTED", from_id);
@@ -1217,9 +1229,12 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
     if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
         char response[1024];
         if (g_my_secure) {
+            /* FIX: Use normalized ID without brackets */
+            char norm_id[64];
+            normalize_id(g_my_id, norm_id, sizeof(norm_id));
             snprintf(response, sizeof(response), 
                     "ORCA_PRESENCE:SECURE:%s:%s:%d:%s:%s:%s", 
-                    g_my_id, g_my_ip, g_my_port,
+                    norm_id, g_my_ip, g_my_port,
                     g_my_name, g_my_public_key, g_my_signature);
         } else {
             snprintf(response, sizeof(response), 
