@@ -652,7 +652,6 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
 
 /* ============================================================================
  * handle_i_am - Store discovered peer in cache (NOT registry!)
- * FIXED: Normalize ID before verification
  * ============================================================================ */
 static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip) {
     const char* rest = msg + 5;
@@ -841,7 +840,7 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
 
 /* ============================================================================
  * handle_add_request - Handle friend request, push to pending queue
- * FIXED: Normalize ID before verification
+ * FIXED: Use from_id with brackets (no normalization)
  * ============================================================================ */
 static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_ip;
@@ -954,16 +953,12 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
         DLOG("  signature (first 50): %.50s...", signature);
         DLOG("========================================");
         
-        /* FIX: Normalize ID before verification */
-        char norm_from_id[64];
-        normalize_id(from_id, norm_from_id, sizeof(norm_from_id));
-        
-        /* Verify identity signature: id|name|role|created_at (without brackets) */
+        /* FIX: Use from_id with brackets (no normalization!) */
         char identity_data[1024];
         snprintf(identity_data, sizeof(identity_data), "%s|%s|%s|%ld",
-                 norm_from_id, from_name, "user", (long)created_at);
+                 from_id, from_name, "user", (long)created_at);
         
-        DLOG("Verifying identity data (normalized): '%s'", identity_data);
+        DLOG("Verifying identity data: '%s'", identity_data);
         
         if (!orca_rsa_verify_string(identity_data, signature, public_key)) {
             DLOG("Invalid identity signature from %s — REJECTED", from_id);
@@ -1605,6 +1600,9 @@ void discovery_send_add_request(Discovery* disc, const char* target_id,
     discovery_send_add_request_with_ack(disc, target_id, my_id, my_ip, my_port);
 }
 
+/* ============================================================================
+ * discovery_send_add_request_secure - FIXED: DO NOT normalize my_id!
+ * ============================================================================ */
 void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
                                        const char* my_id, const char* my_ip,
                                        int my_port, const char* name,
@@ -1616,9 +1614,10 @@ void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
         return;
     }
     
-    char norm_target[DISCOVERY_MAX_ID_LEN], norm_my[DISCOVERY_MAX_ID_LEN];
+    /* FIX: Only normalize target_id, keep my_id with brackets */
+    char norm_target[DISCOVERY_MAX_ID_LEN];
     discovery_normalize_id(target_id, norm_target, sizeof(norm_target));
-    discovery_normalize_id(my_id, norm_my, sizeof(norm_my));
+    /* DO NOT normalize my_id - keep brackets for signature verification */
     
     DiscoveryPeerInfo peer;
     if (!discovery_find_peer(disc, target_id, &peer)) {
@@ -1629,7 +1628,7 @@ void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
     /* DEBUG */
     DLOG("========================================");
     DLOG("send_add_request_secure: Sending to %s", target_id);
-    DLOG("  my_id=%s", my_id);
+    DLOG("  my_id=%s (with brackets for signature)", my_id);
     DLOG("  name=%s", name);
     DLOG("  created_at=%ld", (long)created_at);
     DLOG("  public_key length=%zu", strlen(public_key));
@@ -1640,7 +1639,9 @@ void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
     char msg[4096];
     snprintf(msg, sizeof(msg),
              "ADD_REQUEST:SECURE:%s:%s:%s:%d:%s:%ld:%s:%s",
-             norm_target, norm_my, my_ip, my_port,
+             norm_target,      /* target_id without brackets */
+             my_id,            /* my_id WITH brackets for signature */
+             my_ip, my_port,
              name ? name : "",
              (long)created_at,
              public_key ? public_key : "",
