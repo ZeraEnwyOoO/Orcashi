@@ -165,13 +165,12 @@ void peer_list_destroy(PeerList* pl) {
     
     PLOG("peer_list_destroy: count=%d, dirty=%d", pl->count, pl->dirty);
     
-    /* Do NOT auto-save on destroy - persistence must be explicit */
     pthread_mutex_destroy(&pl->mutex);
     free(pl);
 }
 
 /* ============================================================================
- * Load
+ * Load - FIXED: Use line_copy to avoid buffer modification
  * ============================================================================ */
 
 int peer_list_load(PeerList* pl) {
@@ -204,15 +203,20 @@ int peer_list_load(PeerList* pl) {
         /* Skip empty lines */
         if (strlen(line) <= 1) continue;
         
+        /* FIX: Create a copy of line for parsing to avoid modifying the original */
+        char line_copy[8192];
+        strncpy(line_copy, line, sizeof(line_copy) - 1);
+        line_copy[sizeof(line_copy) - 1] = '\0';
+        
         /* Check for beginning of peer object */
-        if (strstr(line, "{") != NULL) {
+        if (strstr(line_copy, "{") != NULL) {
             memset(&entry, 0, sizeof(entry));
             in_peer = true;
             continue;
         }
         
         /* Check for end of peer object */
-        if (in_peer && strstr(line, "}") != NULL) {
+        if (in_peer && strstr(line_copy, "}") != NULL) {
             if (strlen(entry.id) > 0 && pl->count < PEER_LIST_MAX_PEERS) {
                 pl->peers[pl->count++] = entry;
                 loaded++;
@@ -227,8 +231,8 @@ int peer_list_load(PeerList* pl) {
         if (!in_peer) continue;
         
         /* Parse ID */
-        if (strstr(line, "\"id\":") != NULL) {
-            char* start = strstr(line, "\"id\":");
+        if (strstr(line_copy, "\"id\":") != NULL) {
+            char* start = strstr(line_copy, "\"id\":");
             if (start) {
                 start = strchr(start, '"');
                 if (start) {
@@ -246,8 +250,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse IP */
-        if (strstr(line, "\"ip\":") != NULL) {
-            char* start = strstr(line, "\"ip\":");
+        if (strstr(line_copy, "\"ip\":") != NULL) {
+            char* start = strstr(line_copy, "\"ip\":");
             if (start) {
                 start = strchr(start, '"');
                 if (start) {
@@ -265,8 +269,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Port */
-        if (strstr(line, "\"port\":") != NULL) {
-            char* start = strstr(line, "\"port\":");
+        if (strstr(line_copy, "\"port\":") != NULL) {
+            char* start = strstr(line_copy, "\"port\":");
             if (start) {
                 start = strchr(start, '"');
                 if (start) {
@@ -284,8 +288,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Online */
-        if (strstr(line, "\"online\":") != NULL) {
-            char* start = strstr(line, "\"online\":");
+        if (strstr(line_copy, "\"online\":") != NULL) {
+            char* start = strstr(line_copy, "\"online\":");
             if (start) {
                 start += 9;
                 while (*start == ' ' || *start == '\t') start++;
@@ -294,8 +298,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Status */
-        if (strstr(line, "\"status\":") != NULL) {
-            char* start = strstr(line, "\"status\":");
+        if (strstr(line_copy, "\"status\":") != NULL) {
+            char* start = strstr(line_copy, "\"status\":");
             if (start) {
                 start = strchr(start, '"');
                 if (start) {
@@ -313,8 +317,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Last Seen */
-        if (strstr(line, "\"last_seen\":") != NULL) {
-            char* start = strstr(line, "\"last_seen\":");
+        if (strstr(line_copy, "\"last_seen\":") != NULL) {
+            char* start = strstr(line_copy, "\"last_seen\":");
             if (start) {
                 start += 12;
                 while (*start == ' ' || *start == '\t') start++;
@@ -323,8 +327,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Mode */
-        if (strstr(line, "\"mode\":") != NULL) {
-            char* start = strstr(line, "\"mode\":");
+        if (strstr(line_copy, "\"mode\":") != NULL) {
+            char* start = strstr(line_copy, "\"mode\":");
             if (start) {
                 start += 7;
                 while (*start == ' ' || *start == '\t') start++;
@@ -333,8 +337,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Name */
-        if (strstr(line, "\"name\":") != NULL) {
-            char* start = strstr(line, "\"name\":");
+        if (strstr(line_copy, "\"name\":") != NULL) {
+            char* start = strstr(line_copy, "\"name\":");
             if (start) {
                 start = strchr(start, '"');
                 if (start) {
@@ -352,8 +356,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Public Key */
-        if (strstr(line, "\"public_key\":") != NULL) {
-            char* start = strstr(line, "\"public_key\":");
+        if (strstr(line_copy, "\"public_key\":") != NULL) {
+            char* start = strstr(line_copy, "\"public_key\":");
             if (start) {
                 start = strchr(start, '"');
                 if (start) {
@@ -371,8 +375,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Signature */
-        if (strstr(line, "\"signature\":") != NULL) {
-            char* start = strstr(line, "\"signature\":");
+        if (strstr(line_copy, "\"signature\":") != NULL) {
+            char* start = strstr(line_copy, "\"signature\":");
             if (start) {
                 start = strchr(start, '"');
                 if (start) {
@@ -390,8 +394,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Salt Hex */
-        if (strstr(line, "\"salt_hex\":") != NULL) {
-            char* start = strstr(line, "\"salt_hex\":");
+        if (strstr(line_copy, "\"salt_hex\":") != NULL) {
+            char* start = strstr(line_copy, "\"salt_hex\":");
             if (start) {
                 start = strchr(start, '"');
                 if (start) {
@@ -409,8 +413,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Created At */
-        if (strstr(line, "\"created_at\":") != NULL) {
-            char* start = strstr(line, "\"created_at\":");
+        if (strstr(line_copy, "\"created_at\":") != NULL) {
+            char* start = strstr(line_copy, "\"created_at\":");
             if (start) {
                 start += 13;
                 while (*start == ' ' || *start == '\t') start++;
@@ -419,8 +423,8 @@ int peer_list_load(PeerList* pl) {
         }
         
         /* Parse Verified */
-        if (strstr(line, "\"verified\":") != NULL) {
-            char* start = strstr(line, "\"verified\":");
+        if (strstr(line_copy, "\"verified\":") != NULL) {
+            char* start = strstr(line_copy, "\"verified\":");
             if (start) {
                 start += 11;
                 while (*start == ' ' || *start == '\t') start++;
