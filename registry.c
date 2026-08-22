@@ -66,16 +66,16 @@ void registry_destroy(Registry* reg) {
     
     RLOG("registry_destroy: peer_count=%d", reg->peer_count);
     
-    /* Do NOT save - persistence is handled by peer_list */
     pthread_mutex_destroy(&reg->mutex);
     free(reg);
 }
 
 /* ============================================================================
- * Registration
+ * Registration - FIXED to store all fields properly
  * ============================================================================ */
 
-bool registry_register_peer(Registry* reg, const char* id, const char* ip, const char* port) {
+bool registry_register_peer(Registry* reg, const char* id, 
+                            const char* ip, const char* port) {
     if (!reg || !id || !ip || !port) {
         RLOG("registry_register_peer: NULL parameter");
         return false;
@@ -125,7 +125,8 @@ bool registry_register_peer(Registry* reg, const char* id, const char* ip, const
     return true;
 }
 
-bool registry_register_secure(Registry* reg, const char* id, const char* ip, const char* port,
+bool registry_register_secure(Registry* reg, const char* id,
+                              const char* ip, const char* port,
                               const char* name, const char* public_key,
                               const char* signature, const char* salt_hex) {
     if (!reg || !id || !ip || !port) {
@@ -183,7 +184,81 @@ bool registry_register_secure(Registry* reg, const char* id, const char* ip, con
 }
 
 /* ============================================================================
- * Query
+ * Status Operations
+ * ============================================================================ */
+
+void registry_update_status(Registry* reg, const char* id, const char* status) {
+    if (!reg || !id || !status) return;
+    
+    pthread_mutex_lock(&reg->mutex);
+    
+    RLOG("registry_update_status: id='%s', status='%s'", id, status);
+    
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (ids_match(reg->peers[i].id, id)) {
+            strcpy(reg->peers[i].status, status);
+            RLOG("registry_update_status: updated peer %s to '%s'", id, status);
+            pthread_mutex_unlock(&reg->mutex);
+            return;
+        }
+    }
+    
+    RLOG("registry_update_status: peer %s not found", id);
+    pthread_mutex_unlock(&reg->mutex);
+}
+
+const char* registry_get_status(Registry* reg, const char* id) {
+    if (!reg || !id) return NULL;
+    
+    pthread_mutex_lock(&reg->mutex);
+    
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (ids_match(reg->peers[i].id, id)) {
+            pthread_mutex_unlock(&reg->mutex);
+            return reg->peers[i].status;
+        }
+    }
+    
+    pthread_mutex_unlock(&reg->mutex);
+    return NULL;
+}
+
+bool registry_is_accepted(Registry* reg, const char* id) {
+    if (!reg || !id) return false;
+    
+    pthread_mutex_lock(&reg->mutex);
+    
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (ids_match(reg->peers[i].id, id) && 
+            strcmp(reg->peers[i].status, "accepted") == 0) {
+            pthread_mutex_unlock(&reg->mutex);
+            return true;
+        }
+    }
+    
+    pthread_mutex_unlock(&reg->mutex);
+    return false;
+}
+
+bool registry_is_pending(Registry* reg, const char* id) {
+    if (!reg || !id) return false;
+    
+    pthread_mutex_lock(&reg->mutex);
+    
+    for (int i = 0; i < reg->peer_count; i++) {
+        if (ids_match(reg->peers[i].id, id) && 
+            strcmp(reg->peers[i].status, "pending") == 0) {
+            pthread_mutex_unlock(&reg->mutex);
+            return true;
+        }
+    }
+    
+    pthread_mutex_unlock(&reg->mutex);
+    return false;
+}
+
+/* ============================================================================
+ * Query Operations
  * ============================================================================ */
 
 bool registry_get_peer(Registry* reg, const char* id, RegistryPeer* out_peer) {
@@ -243,28 +318,8 @@ bool registry_peer_exists(Registry* reg, const char* id) {
 }
 
 /* ============================================================================
- * Update
+ * Update Operations
  * ============================================================================ */
-
-void registry_update_status(Registry* reg, const char* id, const char* status) {
-    if (!reg || !id || !status) return;
-    
-    pthread_mutex_lock(&reg->mutex);
-    
-    RLOG("registry_update_status: id='%s', status='%s'", id, status);
-    
-    for (int i = 0; i < reg->peer_count; i++) {
-        if (ids_match(reg->peers[i].id, id)) {
-            strcpy(reg->peers[i].status, status);
-            RLOG("registry_update_status: updated peer %s to '%s'", id, status);
-            pthread_mutex_unlock(&reg->mutex);
-            return;
-        }
-    }
-    
-    RLOG("registry_update_status: peer %s not found", id);
-    pthread_mutex_unlock(&reg->mutex);
-}
 
 void registry_update_peer(Registry* reg, const char* id, const char* ip, const char* port) {
     if (!reg || !id || !ip || !port) return;
@@ -310,7 +365,7 @@ void registry_set_online(Registry* reg, const char* id, bool online) {
 }
 
 /* ============================================================================
- * List
+ * List Operations
  * ============================================================================ */
 
 int registry_get_all_peers(Registry* reg, RegistryPeer* peers, int max_peers) {
@@ -335,6 +390,8 @@ int registry_get_accepted_peers(Registry* reg, RegistryPeer* peers, int max_peer
     
     int count = 0;
     for (int i = 0; i < reg->peer_count && count < max_peers; i++) {
+        RLOG("registry_get_accepted_peers: peer[%d] id='%s' status='%s' mode=%d", 
+             i, reg->peers[i].id, reg->peers[i].status, reg->peers[i].mode);
         if (strcmp(reg->peers[i].status, "accepted") == 0) {
             peers[count++] = reg->peers[i];
         }
@@ -380,7 +437,7 @@ int registry_get_secure_peers(Registry* reg, RegistryPeer* peers, int max_peers)
 }
 
 /* ============================================================================
- * Remove
+ * Remove Operations
  * ============================================================================ */
 
 bool registry_remove_peer(Registry* reg, const char* id) {
@@ -418,4 +475,30 @@ bool registry_is_secure(const RegistryPeer* peer) {
 const char* registry_get_mode_string(const RegistryPeer* peer) {
     if (!peer) return "unknown";
     return peer->mode == REG_MODE_SECURE ? "secure" : "normal";
+}
+
+bool registry_normalize_id(const char* input, char* output, size_t output_size) {
+    if (!input || !output || output_size == 0) return false;
+    
+    size_t i = 0, j = 0;
+    size_t len = strlen(input);
+    
+    for (i = 0; i < len && j < output_size - 1; i++) {
+        if (input[i] != '<' && input[i] != '>') {
+            output[j++] = input[i];
+        }
+    }
+    output[j] = '\0';
+    
+    return j > 0;
+}
+
+bool registry_is_same_id(const char* id1, const char* id2) {
+    if (!id1 || !id2) return false;
+    
+    char n1[64], n2[64];
+    if (!registry_normalize_id(id1, n1, sizeof(n1))) return false;
+    if (!registry_normalize_id(id2, n2, sizeof(n2))) return false;
+    
+    return strcmp(n1, n2) == 0;
 }
