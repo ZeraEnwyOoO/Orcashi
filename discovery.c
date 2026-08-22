@@ -621,7 +621,6 @@ static void handle_who_has(Discovery* disc, const char* msg, const char* sender_
         
         char response[2048];
         if (g_my_secure) {
-            /* FIX: Use normalized ID without brackets */
             char norm_id[64];
             normalize_id(g_my_id, norm_id, sizeof(norm_id));
             snprintf(response, sizeof(response), 
@@ -781,7 +780,6 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
         return;
     }
     
-    /* FIX: Normalize ID before verification */
     char norm_id[64];
     normalize_id(id, norm_id, sizeof(norm_id));
     
@@ -840,7 +838,7 @@ static void handle_i_am(Discovery* disc, const char* msg, const char* sender_ip)
 
 /* ============================================================================
  * handle_add_request - Handle friend request, push to pending queue
- * FIXED: Use from_id with brackets (no normalization)
+ * FIXED: Normalize from_id before verification (matching sign)
  * ============================================================================ */
 static void handle_add_request(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_ip;
@@ -953,12 +951,16 @@ static void handle_add_request(Discovery* disc, const char* msg, const char* sen
         DLOG("  signature (first 50): %.50s...", signature);
         DLOG("========================================");
         
-        /* FIX: Use from_id with brackets (no normalization!) */
+        /* FIX: Normalize from_id before verification (matching sign) */
+        char norm_from_id[64];
+        normalize_id(from_id, norm_from_id, sizeof(norm_from_id));
+        
         char identity_data[1024];
         snprintf(identity_data, sizeof(identity_data), "%s|%s|%s|%ld",
-                 from_id, from_name, "user", (long)created_at);
+                 norm_from_id, from_name, "user", (long)created_at);
         
-        DLOG("Verifying identity data: '%s'", identity_data);
+        DLOG("Verifying identity data (normalized): '%s'", identity_data);
+        DLOG("  Raw from_id: '%s'", from_id);
         
         if (!orca_rsa_verify_string(identity_data, signature, public_key)) {
             DLOG("Invalid identity signature from %s — REJECTED", from_id);
@@ -1224,7 +1226,6 @@ static void handle_search(Discovery* disc, const char* msg, const char* sender_i
     if (strlen(norm_my) > 0 && strcmp(norm_search, norm_my) == 0) {
         char response[1024];
         if (g_my_secure) {
-            /* FIX: Use normalized ID without brackets */
             char norm_id[64];
             normalize_id(g_my_id, norm_id, sizeof(norm_id));
             snprintf(response, sizeof(response), 
@@ -1600,9 +1601,6 @@ void discovery_send_add_request(Discovery* disc, const char* target_id,
     discovery_send_add_request_with_ack(disc, target_id, my_id, my_ip, my_port);
 }
 
-/* ============================================================================
- * discovery_send_add_request_secure - FIXED: DO NOT normalize my_id!
- * ============================================================================ */
 void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
                                        const char* my_id, const char* my_ip,
                                        int my_port, const char* name,
@@ -1614,10 +1612,9 @@ void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
         return;
     }
     
-    /* FIX: Only normalize target_id, keep my_id with brackets */
+    /* Only normalize target_id, keep my_id with brackets for signing */
     char norm_target[DISCOVERY_MAX_ID_LEN];
     discovery_normalize_id(target_id, norm_target, sizeof(norm_target));
-    /* DO NOT normalize my_id - keep brackets for signature verification */
     
     DiscoveryPeerInfo peer;
     if (!discovery_find_peer(disc, target_id, &peer)) {
@@ -1628,7 +1625,7 @@ void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
     /* DEBUG */
     DLOG("========================================");
     DLOG("send_add_request_secure: Sending to %s", target_id);
-    DLOG("  my_id=%s (with brackets for signature)", my_id);
+    DLOG("  my_id=%s", my_id);
     DLOG("  name=%s", name);
     DLOG("  created_at=%ld", (long)created_at);
     DLOG("  public_key length=%zu", strlen(public_key));
@@ -1640,7 +1637,7 @@ void discovery_send_add_request_secure(Discovery* disc, const char* target_id,
     snprintf(msg, sizeof(msg),
              "ADD_REQUEST:SECURE:%s:%s:%s:%d:%s:%ld:%s:%s",
              norm_target,      /* target_id without brackets */
-             my_id,            /* my_id WITH brackets for signature */
+             my_id,            /* my_id WITH brackets for signing */
              my_ip, my_port,
              name ? name : "",
              (long)created_at,
