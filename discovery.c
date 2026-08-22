@@ -1089,6 +1089,7 @@ static void handle_add_request_ack(Discovery* disc, const char* msg) {
 
 /* ============================================================================
  * handle_accept_confirm - Handle ACCEPT_CONFIRM from peer
+ * FIXED: Normalize from_id before verification and handle secure mode properly
  * ============================================================================ */
 static void handle_accept_confirm(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_port;
@@ -1101,14 +1102,22 @@ static void handle_accept_confirm(Discovery* disc, const char* msg, const char* 
         rest += 7;
     }
     
+    /* For secure: target_id:from_id:from_ip:from_port:name:public_key:signature */
+    /* For normal: target_id:from_id:from_ip:from_port */
+    
     const char* colon1 = strchr(rest, ':');
     const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
     const char* colon3 = colon2 ? strchr(colon2 + 1, ':') : NULL;
+    const char* colon4 = colon3 ? strchr(colon3 + 1, ':') : NULL;
     
-    if (!colon1 || !colon2 || !colon3) return;
+    if (!colon1 || !colon2 || !colon3) {
+        DLOG("ACCEPT_CONFIRM: malformed message");
+        return;
+    }
     
     char target_id[64], from_id[64], from_ip[INET_ADDRSTRLEN];
     int from_port = 0;
+    char from_name[128] = {0};
     char public_key[ORCA_PUBKEY_LEN] = {0};
     char signature[ORCA_SIG_LEN] = {0};
     
@@ -1124,22 +1133,45 @@ static void handle_accept_confirm(Discovery* disc, const char* msg, const char* 
     strncpy(from_ip, colon2 + 1, len);
     from_ip[len] = '\0';
     
-    from_port = atoi(colon3 + 1);
-    
+    const char* port_start = colon3 + 1;
     if (is_secure) {
-        const char* secure_rest = colon3 + 1;
-        const char* pk_start = strchr(secure_rest, ':');
-        if (pk_start) {
-            const char* sig_start = strchr(pk_start + 1, ':');
-            if (sig_start) {
-                int pk_len = sig_start - pk_start - 1;
-                if (pk_len < (int)sizeof(public_key)) {
-                    strncpy(public_key, pk_start + 1, pk_len);
-                    public_key[pk_len] = '\0';
-                }
-                strcpy(signature, sig_start + 1);
-            }
+        /* Secure format: target_id:from_id:from_ip:from_port:name:public_key:signature */
+        const char* colon5 = strchr(port_start, ':');
+        if (!colon5) {
+            DLOG("ACCEPT_CONFIRM: missing port separator");
+            return;
         }
+        from_port = atoi(port_start);
+        
+        const char* name_start = colon5 + 1;
+        const char* colon6 = strchr(name_start, ':');
+        if (!colon6) {
+            DLOG("ACCEPT_CONFIRM: missing name separator");
+            return;
+        }
+        len = colon6 - name_start;
+        if (len < (int)sizeof(from_name)) {
+            strncpy(from_name, name_start, len);
+            from_name[len] = '\0';
+        }
+        
+        const char* pk_start = colon6 + 1;
+        const char* colon7 = strchr(pk_start, ':');
+        if (!colon7) {
+            DLOG("ACCEPT_CONFIRM: missing public_key separator");
+            return;
+        }
+        len = colon7 - pk_start;
+        if (len < (int)sizeof(public_key)) {
+            strncpy(public_key, pk_start, len);
+            public_key[len] = '\0';
+        }
+        
+        const char* sig_start = colon7 + 1;
+        strncpy(signature, sig_start, sizeof(signature) - 1);
+        signature[sizeof(signature) - 1] = '\0';
+    } else {
+        from_port = atoi(port_start);
     }
     
     char norm_target[64], norm_my[64];
@@ -1159,9 +1191,17 @@ static void handle_accept_confirm(Discovery* disc, const char* msg, const char* 
             return;
         }
         
+        /* FIX: Normalize from_id before verification */
+        char norm_from_id[64];
+        normalize_id(from_id, norm_from_id, sizeof(norm_from_id));
+        
+        /* Build canonical data for verification */
         char data_to_verify[1024];
         snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%d",
-                 from_id, from_ip, "9000", (int)time(NULL));
+                 norm_from_id, from_ip, "9000", (int)time(NULL));
+        
+        DLOG("Verifying ACCEPT_CONFIRM data (normalized): '%s'", data_to_verify);
+        DLOG("  Raw from_id: '%s'", from_id);
         
         if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
             DLOG("ACCEPT_CONFIRM: invalid signature from %s", from_id);
@@ -1695,9 +1735,11 @@ void discovery_send_accept_confirm_secure(Discovery* disc, const char* target_id
     }
     
     char msg[2048];
+    /* FIX: Include name in secure accept confirm for verification */
     snprintf(msg, sizeof(msg),
-             "ACCEPT_CONFIRM:SECURE:%s:%s:%s:%d:%s:%s",
+             "ACCEPT_CONFIRM:SECURE:%s:%s:%s:%d:%s:%s:%s",
              norm_target, norm_my, my_ip, my_port,
+             g_my_name,
              public_key ? public_key : "",
              signature ? signature : "");
     
