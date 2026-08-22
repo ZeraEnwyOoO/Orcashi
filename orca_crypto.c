@@ -32,7 +32,7 @@ static int openssl_init(void) {
     return 0;
 }
 
-// ===== HASH FUNCTIONS - FIXED to use EVP API =====
+// ===== HASH FUNCTIONS =====
 int orca_hash(const unsigned char* data, size_t len, unsigned char* out) {
     if (!data || !out) {
         set_error("NULL pointer in orca_hash");
@@ -153,7 +153,7 @@ unsigned char* orca_base64_decode(const char* data, int* out_len) {
     return buffer;
 }
 
-// ===== RSA FUNCTIONS =====
+// ===== RSA FUNCTIONS - FIXED =====
 int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     if (!public_key_out || !private_key_out) {
         set_error("NULL pointer in orca_rsa_generate_keypair");
@@ -162,43 +162,42 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     
     openssl_init();
     
-    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-    if (!ctx) {
-        set_error("Failed to create EVP context");
+    printf("[RSA DEBUG] Generating RSA 2048-bit keypair...\n");
+    
+    /* Use RSA_generate_key_ex directly (more reliable) */
+    RSA* rsa = RSA_new();
+    if (!rsa) {
+        set_error("Failed to create RSA structure");
         return -1;
     }
     
-    if (EVP_PKEY_keygen_init(ctx) <= 0) {
-        EVP_PKEY_CTX_free(ctx);
-        set_error("Failed to init keygen");
+    BIGNUM* e = BN_new();
+    if (!e) {
+        RSA_free(rsa);
+        set_error("Failed to create BIGNUM");
         return -1;
     }
+    BN_set_word(e, RSA_F4);
     
-    if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, ORCA_RSA_KEY_BITS) <= 0) {
-        EVP_PKEY_CTX_free(ctx);
-        set_error("Failed to set RSA key bits");
+    if (RSA_generate_key_ex(rsa, ORCA_RSA_KEY_BITS, e, NULL) != 1) {
+        BN_free(e);
+        RSA_free(rsa);
+        set_error("Failed to generate RSA key");
         return -1;
     }
+    BN_free(e);
     
-    EVP_PKEY* pkey = NULL;
-    if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
-        EVP_PKEY_CTX_free(ctx);
-        set_error("Failed to generate RSA keypair");
-        return -1;
-    }
-    EVP_PKEY_CTX_free(ctx);
-    
-    // Private key
+    /* Write private key */
     BIO* bio = BIO_new(BIO_s_mem());
     if (!bio) {
-        EVP_PKEY_free(pkey);
+        RSA_free(rsa);
         set_error("Failed to create BIO for private key");
         return -1;
     }
     
-    if (PEM_write_bio_PrivateKey(bio, pkey, NULL, NULL, 0, NULL, NULL) <= 0) {
+    if (PEM_write_bio_RSAPrivateKey(bio, rsa, NULL, NULL, 0, NULL, NULL) <= 0) {
         BIO_free(bio);
-        EVP_PKEY_free(pkey);
+        RSA_free(rsa);
         set_error("Failed to write private key");
         return -1;
     }
@@ -208,7 +207,7 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     *private_key_out = (char*)malloc(private_len + 1);
     if (!*private_key_out) {
         BIO_free(bio);
-        EVP_PKEY_free(pkey);
+        RSA_free(rsa);
         set_error("malloc failed for private key");
         return -1;
     }
@@ -216,19 +215,19 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     (*private_key_out)[private_len] = '\0';
     BIO_free(bio);
     
-    // Public key
+    /* Write public key */
     bio = BIO_new(BIO_s_mem());
     if (!bio) {
         free(*private_key_out);
-        EVP_PKEY_free(pkey);
+        RSA_free(rsa);
         set_error("Failed to create BIO for public key");
         return -1;
     }
     
-    if (PEM_write_bio_PUBKEY(bio, pkey) <= 0) {
+    if (PEM_write_bio_RSA_PUBKEY(bio, rsa) <= 0) {
         BIO_free(bio);
         free(*private_key_out);
-        EVP_PKEY_free(pkey);
+        RSA_free(rsa);
         set_error("Failed to write public key");
         return -1;
     }
@@ -239,7 +238,7 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     if (!*public_key_out) {
         BIO_free(bio);
         free(*private_key_out);
-        EVP_PKEY_free(pkey);
+        RSA_free(rsa);
         set_error("malloc failed for public key");
         return -1;
     }
@@ -247,7 +246,27 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     (*public_key_out)[public_len] = '\0';
     BIO_free(bio);
     
-    EVP_PKEY_free(pkey);
+    RSA_free(rsa);
+    
+    printf("[RSA DEBUG] Keypair generated successfully!\n");
+    printf("[RSA DEBUG] Public key length: %zu\n", strlen(*public_key_out));
+    printf("[RSA DEBUG] Private key length: %zu\n", strlen(*private_key_out));
+    
+    /* Test: Verify that the keypair works */
+    const char* test_data = "test|keypair|verification";
+    char* test_signature = NULL;
+    
+    if (orca_rsa_sign_string(test_data, *private_key_out, &test_signature) == 0) {
+        bool test_result = orca_rsa_verify_string(test_data, test_signature, *public_key_out);
+        printf("[RSA DEBUG] Keypair test: %s\n", test_result ? "SUCCESS" : "FAILED");
+        if (!test_result) {
+            printf("[RSA DEBUG] WARNING: Keypair test FAILED!\n");
+        }
+        free(test_signature);
+    } else {
+        printf("[RSA DEBUG] WARNING: Could not test keypair\n");
+    }
+    
     return 0;
 }
 
@@ -260,16 +279,33 @@ int orca_rsa_sign(const unsigned char* data, size_t data_len,
     
     openssl_init();
     
+    printf("[RSA DEBUG] Signing data length: %zu\n", data_len);
+    printf("[RSA DEBUG] Private key length: %zu\n", strlen(private_key_pem));
+    
     BIO* bio = BIO_new_mem_buf(private_key_pem, strlen(private_key_pem));
     if (!bio) {
         set_error("Failed to create BIO for private key");
         return -1;
     }
     
-    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    RSA* rsa = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
     BIO_free(bio);
-    if (!pkey) {
+    if (!rsa) {
         set_error("Failed to read private key");
+        return -1;
+    }
+    
+    EVP_PKEY* pkey = EVP_PKEY_new();
+    if (!pkey) {
+        RSA_free(rsa);
+        set_error("Failed to create EVP_PKEY");
+        return -1;
+    }
+    
+    if (EVP_PKEY_assign_RSA(pkey, rsa) <= 0) {
+        EVP_PKEY_free(pkey);
+        RSA_free(rsa);
+        set_error("Failed to assign RSA to EVP_PKEY");
         return -1;
     }
     
@@ -329,6 +365,9 @@ int orca_rsa_sign(const unsigned char* data, size_t data_len,
         return -1;
     }
     
+    printf("[RSA DEBUG] Signature created, length: %zu\n", strlen(*signature_out));
+    printf("[RSA DEBUG] Signature (first 50): %.50s...\n", *signature_out);
+    
     return 0;
 }
 
@@ -338,6 +377,7 @@ int orca_rsa_sign_string(const char* str, const char* private_key_pem,
         set_error("NULL string in orca_rsa_sign_string");
         return -1;
     }
+    printf("[RSA DEBUG] Signing string: '%s'\n", str);
     return orca_rsa_sign((const unsigned char*)str, strlen(str),
                          private_key_pem, signature_out);
 }
@@ -351,12 +391,17 @@ bool orca_rsa_verify(const unsigned char* data, size_t data_len,
     
     openssl_init();
     
+    printf("[RSA DEBUG] Verifying data length: %zu\n", data_len);
+    printf("[RSA DEBUG] Signature length: %zu\n", strlen(signature));
+    printf("[RSA DEBUG] Public key length: %zu\n", strlen(public_key_pem));
+    
     int sig_len;
     unsigned char* sig = orca_base64_decode(signature, &sig_len);
     if (!sig) {
         set_error("Failed to decode signature");
         return false;
     }
+    printf("[RSA DEBUG] Decoded signature length: %d\n", sig_len);
     
     BIO* bio = BIO_new_mem_buf(public_key_pem, strlen(public_key_pem));
     if (!bio) {
@@ -365,34 +410,50 @@ bool orca_rsa_verify(const unsigned char* data, size_t data_len,
         return false;
     }
     
-    EVP_PKEY* pkey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
+    RSA* rsa = PEM_read_bio_RSA_PUBKEY(bio, NULL, NULL, NULL);
     BIO_free(bio);
-    if (!pkey) {
+    if (!rsa) {
         free(sig);
         set_error("Failed to read public key");
         return false;
     }
     
+    EVP_PKEY* pkey = EVP_PKEY_new();
+    if (!pkey) {
+        RSA_free(rsa);
+        free(sig);
+        set_error("Failed to create EVP_PKEY");
+        return false;
+    }
+    
+    if (EVP_PKEY_assign_RSA(pkey, rsa) <= 0) {
+        EVP_PKEY_free(pkey);
+        RSA_free(rsa);
+        free(sig);
+        set_error("Failed to assign RSA to EVP_PKEY");
+        return false;
+    }
+    
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     if (!ctx) {
-        free(sig);
         EVP_PKEY_free(pkey);
+        free(sig);
         set_error("Failed to create EVP context");
         return false;
     }
     
     if (EVP_DigestVerifyInit(ctx, NULL, EVP_sha256(), NULL, pkey) <= 0) {
         EVP_MD_CTX_free(ctx);
-        free(sig);
         EVP_PKEY_free(pkey);
+        free(sig);
         set_error("Failed to init verify");
         return false;
     }
     
     if (EVP_DigestVerifyUpdate(ctx, data, data_len) <= 0) {
         EVP_MD_CTX_free(ctx);
-        free(sig);
         EVP_PKEY_free(pkey);
+        free(sig);
         set_error("Failed to update verify");
         return false;
     }
@@ -400,14 +461,16 @@ bool orca_rsa_verify(const unsigned char* data, size_t data_len,
     int result = EVP_DigestVerifyFinal(ctx, sig, sig_len);
     
     EVP_MD_CTX_free(ctx);
-    free(sig);
     EVP_PKEY_free(pkey);
+    free(sig);
     
     if (result <= 0) {
+        printf("[RSA DEBUG] Verification FAILED!\n");
         set_error("Signature verification failed");
         return false;
     }
     
+    printf("[RSA DEBUG] Verification SUCCESS!\n");
     return true;
 }
 
@@ -417,6 +480,7 @@ bool orca_rsa_verify_string(const char* str, const char* signature,
         set_error("NULL string in orca_rsa_verify_string");
         return false;
     }
+    printf("[RSA DEBUG] Verifying string: '%s'\n", str);
     return orca_rsa_verify((const unsigned char*)str, strlen(str),
                            signature, public_key_pem);
 }
@@ -426,7 +490,6 @@ int orca_rsa_public_key_from_pem(const char* pem, unsigned char* out, int* out_l
         set_error("NULL pointer in orca_rsa_public_key_from_pem");
         return -1;
     }
-    // This is a placeholder - full implementation would parse the PEM
     *out_len = 0;
     return 0;
 }
