@@ -187,17 +187,31 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     }
     BN_free(e);
     
-    /* Write private key */
+    /* Write private key as EVP_PKEY format */
+    EVP_PKEY* pkey = EVP_PKEY_new();
+    if (!pkey) {
+        RSA_free(rsa);
+        set_error("Failed to create EVP_PKEY");
+        return -1;
+    }
+    
+    if (EVP_PKEY_assign_RSA(pkey, rsa) <= 0) {
+        EVP_PKEY_free(pkey);
+        RSA_free(rsa);
+        set_error("Failed to assign RSA to EVP_PKEY");
+        return -1;
+    }
+    
     BIO* bio = BIO_new(BIO_s_mem());
     if (!bio) {
-        RSA_free(rsa);
+        EVP_PKEY_free(pkey);
         set_error("Failed to create BIO for private key");
         return -1;
     }
     
-    if (PEM_write_bio_RSAPrivateKey(bio, rsa, NULL, NULL, 0, NULL, NULL) <= 0) {
+    if (PEM_write_bio_PrivateKey(bio, pkey, NULL, NULL, 0, NULL, NULL) <= 0) {
         BIO_free(bio);
-        RSA_free(rsa);
+        EVP_PKEY_free(pkey);
         set_error("Failed to write private key");
         return -1;
     }
@@ -207,7 +221,7 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     *private_key_out = (char*)malloc(private_len + 1);
     if (!*private_key_out) {
         BIO_free(bio);
-        RSA_free(rsa);
+        EVP_PKEY_free(pkey);
         set_error("malloc failed for private key");
         return -1;
     }
@@ -219,15 +233,15 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     bio = BIO_new(BIO_s_mem());
     if (!bio) {
         free(*private_key_out);
-        RSA_free(rsa);
+        EVP_PKEY_free(pkey);
         set_error("Failed to create BIO for public key");
         return -1;
     }
     
-    if (PEM_write_bio_RSA_PUBKEY(bio, rsa) <= 0) {
+    if (PEM_write_bio_PUBKEY(bio, pkey) <= 0) {
         BIO_free(bio);
         free(*private_key_out);
-        RSA_free(rsa);
+        EVP_PKEY_free(pkey);
         set_error("Failed to write public key");
         return -1;
     }
@@ -238,7 +252,7 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     if (!*public_key_out) {
         BIO_free(bio);
         free(*private_key_out);
-        RSA_free(rsa);
+        EVP_PKEY_free(pkey);
         set_error("malloc failed for public key");
         return -1;
     }
@@ -246,7 +260,7 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     (*public_key_out)[public_len] = '\0';
     BIO_free(bio);
     
-    RSA_free(rsa);
+    EVP_PKEY_free(pkey);
     
     printf("[RSA DEBUG] Keypair generated successfully!\n");
     printf("[RSA DEBUG] Public key length: %zu\n", strlen(*public_key_out));
@@ -282,30 +296,17 @@ int orca_rsa_sign(const unsigned char* data, size_t data_len,
     printf("[RSA DEBUG] Signing data length: %zu\n", data_len);
     printf("[RSA DEBUG] Private key length: %zu\n", strlen(private_key_pem));
     
+    /* Use EVP_PKEY API for consistency with keypair generation */
     BIO* bio = BIO_new_mem_buf(private_key_pem, strlen(private_key_pem));
     if (!bio) {
         set_error("Failed to create BIO for private key");
         return -1;
     }
     
-    RSA* rsa = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
+    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
     BIO_free(bio);
-    if (!rsa) {
-        set_error("Failed to read private key");
-        return -1;
-    }
-    
-    EVP_PKEY* pkey = EVP_PKEY_new();
     if (!pkey) {
-        RSA_free(rsa);
-        set_error("Failed to create EVP_PKEY");
-        return -1;
-    }
-    
-    if (EVP_PKEY_assign_RSA(pkey, rsa) <= 0) {
-        EVP_PKEY_free(pkey);
-        RSA_free(rsa);
-        set_error("Failed to assign RSA to EVP_PKEY");
+        set_error("Failed to read private key");
         return -1;
     }
     
@@ -403,6 +404,7 @@ bool orca_rsa_verify(const unsigned char* data, size_t data_len,
     }
     printf("[RSA DEBUG] Decoded signature length: %d\n", sig_len);
     
+    /* Use EVP_PKEY API for consistency with keypair generation */
     BIO* bio = BIO_new_mem_buf(public_key_pem, strlen(public_key_pem));
     if (!bio) {
         free(sig);
@@ -410,27 +412,11 @@ bool orca_rsa_verify(const unsigned char* data, size_t data_len,
         return false;
     }
     
-    RSA* rsa = PEM_read_bio_RSA_PUBKEY(bio, NULL, NULL, NULL);
+    EVP_PKEY* pkey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
     BIO_free(bio);
-    if (!rsa) {
+    if (!pkey) {
         free(sig);
         set_error("Failed to read public key");
-        return false;
-    }
-    
-    EVP_PKEY* pkey = EVP_PKEY_new();
-    if (!pkey) {
-        RSA_free(rsa);
-        free(sig);
-        set_error("Failed to create EVP_PKEY");
-        return false;
-    }
-    
-    if (EVP_PKEY_assign_RSA(pkey, rsa) <= 0) {
-        EVP_PKEY_free(pkey);
-        RSA_free(rsa);
-        free(sig);
-        set_error("Failed to assign RSA to EVP_PKEY");
         return false;
     }
     
@@ -933,6 +919,7 @@ int orca_hex_to_bytes(const char* hex, unsigned char* bytes_out, size_t bytes_le
     return 0;
 }
 
+//skibidi
 char* orca_bytes_to_hex(const unsigned char* bytes, size_t bytes_len, char* hex_out) {
     if (!bytes || !hex_out) return NULL;
     
