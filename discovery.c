@@ -1089,7 +1089,7 @@ static void handle_add_request_ack(Discovery* disc, const char* msg) {
 
 /* ============================================================================
  * handle_accept_confirm - Handle ACCEPT_CONFIRM from peer
- * FIXED: Normalize from_id before verification and handle secure mode properly
+ * FIXED: Use identity signature (id|name|user|created_at) for verification
  * ============================================================================ */
 static void handle_accept_confirm(Discovery* disc, const char* msg, const char* sender_ip, int sender_port) {
     (void)sender_port;
@@ -1102,13 +1102,12 @@ static void handle_accept_confirm(Discovery* disc, const char* msg, const char* 
         rest += 7;
     }
     
-    /* For secure: target_id:from_id:from_ip:from_port:name:public_key:signature */
+    /* For secure: target_id:from_id:from_ip:from_port:name:created_at:public_key:signature */
     /* For normal: target_id:from_id:from_ip:from_port */
     
     const char* colon1 = strchr(rest, ':');
     const char* colon2 = colon1 ? strchr(colon1 + 1, ':') : NULL;
     const char* colon3 = colon2 ? strchr(colon2 + 1, ':') : NULL;
-    const char* colon4 = colon3 ? strchr(colon3 + 1, ':') : NULL;
     
     if (!colon1 || !colon2 || !colon3) {
         DLOG("ACCEPT_CONFIRM: malformed message");
@@ -1118,6 +1117,7 @@ static void handle_accept_confirm(Discovery* disc, const char* msg, const char* 
     char target_id[64], from_id[64], from_ip[INET_ADDRSTRLEN];
     int from_port = 0;
     char from_name[128] = {0};
+    time_t created_at = 0;
     char public_key[ORCA_PUBKEY_LEN] = {0};
     char signature[ORCA_SIG_LEN] = {0};
     
@@ -1135,7 +1135,7 @@ static void handle_accept_confirm(Discovery* disc, const char* msg, const char* 
     
     const char* port_start = colon3 + 1;
     if (is_secure) {
-        /* Secure format: target_id:from_id:from_ip:from_port:name:public_key:signature */
+        /* Secure format: target_id:from_id:from_ip:from_port:name:created_at:public_key:signature */
         const char* colon5 = strchr(port_start, ':');
         if (!colon5) {
             DLOG("ACCEPT_CONFIRM: missing port separator");
@@ -1155,19 +1155,34 @@ static void handle_accept_confirm(Discovery* disc, const char* msg, const char* 
             from_name[len] = '\0';
         }
         
-        const char* pk_start = colon6 + 1;
-        const char* colon7 = strchr(pk_start, ':');
+        /* Parse created_at */
+        const char* created_start = colon6 + 1;
+        const char* colon7 = strchr(created_start, ':');
         if (!colon7) {
+            DLOG("ACCEPT_CONFIRM: missing created_at separator");
+            return;
+        }
+        len = colon7 - created_start;
+        char created_str[32];
+        if (len < (int)sizeof(created_str)) {
+            strncpy(created_str, created_start, len);
+            created_str[len] = '\0';
+            created_at = atol(created_str);
+        }
+        
+        const char* pk_start = colon7 + 1;
+        const char* colon8 = strchr(pk_start, ':');
+        if (!colon8) {
             DLOG("ACCEPT_CONFIRM: missing public_key separator");
             return;
         }
-        len = colon7 - pk_start;
+        len = colon8 - pk_start;
         if (len < (int)sizeof(public_key)) {
             strncpy(public_key, pk_start, len);
             public_key[len] = '\0';
         }
         
-        const char* sig_start = colon7 + 1;
+        const char* sig_start = colon8 + 1;
         strncpy(signature, sig_start, sizeof(signature) - 1);
         signature[sizeof(signature) - 1] = '\0';
     } else {
@@ -1186,28 +1201,28 @@ static void handle_accept_confirm(Discovery* disc, const char* msg, const char* 
     DLOG("ACCEPT_CONFIRM from %s at %s:%d", from_id, sender_ip, from_port);
     
     if (is_secure) {
-        if (strlen(public_key) == 0 || strlen(signature) == 0) {
-            DLOG("ACCEPT_CONFIRM: missing public_key or signature");
+        if (strlen(public_key) == 0 || strlen(signature) == 0 || created_at == 0) {
+            DLOG("ACCEPT_CONFIRM: missing public_key, signature, or created_at");
             return;
         }
         
-        /* FIX: Normalize from_id before verification */
+        /* FIX: Verify identity signature (id|name|user|created_at) - same as ADD_REQUEST! */
         char norm_from_id[64];
         normalize_id(from_id, norm_from_id, sizeof(norm_from_id));
         
-        /* Build canonical data for verification */
-        char data_to_verify[1024];
-        snprintf(data_to_verify, sizeof(data_to_verify), "%s|%s|%s|%d",
-                 norm_from_id, from_ip, "9000", (int)time(NULL));
+        char identity_data[1024];
+        snprintf(identity_data, sizeof(identity_data), "%s|%s|%s|%ld",
+                 norm_from_id, from_name, "user", (long)created_at);
         
-        DLOG("Verifying ACCEPT_CONFIRM data (normalized): '%s'", data_to_verify);
+        DLOG("Verifying identity signature: '%s'", identity_data);
         DLOG("  Raw from_id: '%s'", from_id);
         
-        if (!orca_rsa_verify_string(data_to_verify, signature, public_key)) {
-            DLOG("ACCEPT_CONFIRM: invalid signature from %s", from_id);
+        if (!orca_rsa_verify_string(identity_data, signature, public_key)) {
+            DLOG("ACCEPT_CONFIRM: invalid identity signature from %s", from_id);
+            DLOG("  Expected data: %s", identity_data);
             return;
         }
-        DLOG("ACCEPT_CONFIRM: signature verified for %s", from_id);
+        DLOG("ACCEPT_CONFIRM: identity signature verified for %s", from_id);
     }
     
     /* ===== THREAD-SAFE: Set accept state with mutex ===== */
@@ -1734,12 +1749,13 @@ void discovery_send_accept_confirm_secure(Discovery* disc, const char* target_id
         return;
     }
     
+    /* FIX: Include name and created_at for identity signature verification */
     char msg[2048];
-    /* FIX: Include name in secure accept confirm for verification */
     snprintf(msg, sizeof(msg),
-             "ACCEPT_CONFIRM:SECURE:%s:%s:%s:%d:%s:%s:%s",
+             "ACCEPT_CONFIRM:SECURE:%s:%s:%s:%d:%s:%ld:%s:%s",
              norm_target, norm_my, my_ip, my_port,
              g_my_name,
+             (long)g_my_created_at,
              public_key ? public_key : "",
              signature ? signature : "");
     
