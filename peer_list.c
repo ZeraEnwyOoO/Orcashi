@@ -21,21 +21,18 @@
 #define PLOG(fmt, ...) ((void)0)
 #endif
 
-#define PEER_LIST_DEFAULT_PATH "/tmp/.orcashi/registry.json"
+#define PEER_LIST_DEFAULT_PATH "/tmp/.orcashi/"
 
 /* ============================================================================
- * ID Normalization (Single Source of Truth)
+ * ID Normalization
  * ============================================================================ */
 
 bool peer_list_normalize_id(const char* input, char* output, size_t output_size) {
-    if (!input || !output || output_size == 0) {
-        return false;
-    }
+    if (!input || !output || output_size == 0) return false;
     
     size_t i = 0, j = 0;
     size_t len = strlen(input);
     
-    /* Strip angle brackets */
     for (i = 0; i < len && j < output_size - 1; i++) {
         if (input[i] != '<' && input[i] != '>') {
             output[j++] = input[i];
@@ -43,16 +40,10 @@ bool peer_list_normalize_id(const char* input, char* output, size_t output_size)
     }
     output[j] = '\0';
     
-    /* Validate: must not be empty */
-    if (j == 0) {
-        return false;
-    }
+    if (j == 0) return false;
     
-    /* Validate: must contain only digits */
     for (i = 0; i < j; i++) {
-        if (!isdigit((unsigned char)output[i])) {
-            return false;
-        }
+        if (!isdigit((unsigned char)output[i])) return false;
     }
     
     return true;
@@ -60,13 +51,9 @@ bool peer_list_normalize_id(const char* input, char* output, size_t output_size)
 
 static bool peer_list_is_same_id(const char* id1, const char* id2) {
     if (!id1 || !id2) return false;
-    
-    char n1[PEER_LIST_MAX_ID_LEN];
-    char n2[PEER_LIST_MAX_ID_LEN];
-    
+    char n1[64], n2[64];
     if (!peer_list_normalize_id(id1, n1, sizeof(n1))) return false;
     if (!peer_list_normalize_id(id2, n2, sizeof(n2))) return false;
-    
     return strcmp(n1, n2) == 0;
 }
 
@@ -77,33 +64,23 @@ static bool peer_list_is_same_id(const char* id1, const char* id2) {
 static int ensure_directory(const char* path) {
     if (!path) return -1;
     
-    char dir[512];
-    strncpy(dir, path, sizeof(dir) - 1);
-    dir[sizeof(dir) - 1] = '\0';
-    
-    char* last_slash = strrchr(dir, '/');
-    if (last_slash) {
-        *last_slash = '\0';
-    }
-    
     struct stat st;
-    if (stat(dir, &st) == 0) {
+    if (stat(path, &st) == 0) {
         if (S_ISDIR(st.st_mode)) return 0;
-        PLOG("ensure_directory: %s exists but is not a directory", dir);
         return -1;
     }
     
-    if (mkdir(dir, 0700) != 0) {
-        PLOG("ensure_directory: failed to create %s: %s", dir, strerror(errno));
+    if (mkdir(path, 0700) != 0) {
+        PLOG("ensure_directory: failed to create %s: %s", path, strerror(errno));
         return -1;
     }
     
-    PLOG("ensure_directory: created %s", dir);
+    PLOG("ensure_directory: created %s", path);
     return 0;
 }
 
 /* ============================================================================
- * JSON Escape/Unescape
+ * JSON Escape
  * ============================================================================ */
 
 static void json_escape(const char* input, char* output, size_t out_size) {
@@ -136,6 +113,15 @@ static void json_escape(const char* input, char* output, size_t out_size) {
 }
 
 /* ============================================================================
+ * Generate Message ID
+ * ============================================================================ */
+
+static void generate_msg_id(char* id_out, size_t size) {
+    time_t now = time(NULL);
+    snprintf(id_out, size, "msg_%ld_%d", (long)now, rand() % 10000);
+}
+
+/* ============================================================================
  * Lifecycle
  * ============================================================================ */
 
@@ -146,8 +132,9 @@ PeerList* peer_list_create(void) {
         return NULL;
     }
     
-    strcpy(pl->file_path, PEER_LIST_DEFAULT_PATH);
-    pl->count = 0;
+    strcpy(pl->data_dir, PEER_LIST_DEFAULT_PATH);
+    pl->peer_count = 0;
+    pl->msg_count = 0;
     pl->dirty = false;
     
     if (pthread_mutex_init(&pl->mutex, NULL) != 0) {
@@ -156,21 +143,364 @@ PeerList* peer_list_create(void) {
         return NULL;
     }
     
-    PLOG("peer_list_create: created, path=%s", pl->file_path);
+    ensure_directory(pl->data_dir);
+    
+    PLOG("peer_list_create: created, dir=%s", pl->data_dir);
     return pl;
 }
 
 void peer_list_destroy(PeerList* pl) {
     if (!pl) return;
     
-    PLOG("peer_list_destroy: count=%d, dirty=%d", pl->count, pl->dirty);
+    PLOG("peer_list_destroy: peers=%d, msgs=%d, dirty=%d", 
+         pl->peer_count, pl->msg_count, pl->dirty);
     
     pthread_mutex_destroy(&pl->mutex);
     free(pl);
 }
 
 /* ============================================================================
- * Load - FIXED: Use line_copy to avoid buffer modification
+ * Peer Operations
+ * ============================================================================ */
+
+int peer_list_add_peer(PeerList* pl, const RegistryPeer* peer) {
+    if (!pl || !peer) return -1;
+    
+    char norm_id[64];
+    if (!peer_list_normalize_id(peer->id, norm_id, sizeof(norm_id))) {
+        PLOG("peer_list_add: invalid id '%s'", peer->id);
+        return -1;
+    }
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    /* Check if already exists */
+    for (int i = 0; i < pl->peer_count; i++) {
+        if (peer_list_is_same_id(pl->peers[i].id, peer->id)) {
+            /* Update existing entry */
+            PeerListEntry* entry = &pl->peers[i];
+            strncpy(entry->ip, peer->ip, sizeof(entry->ip) - 1);
+            entry->ip[sizeof(entry->ip) - 1] = '\0';
+            strncpy(entry->port, peer->port, sizeof(entry->port) - 1);
+            entry->port[sizeof(entry->port) - 1] = '\0';
+            entry->online = peer->online;
+            strncpy(entry->status, peer->status, sizeof(entry->status) - 1);
+            entry->status[sizeof(entry->status) - 1] = '\0';
+            entry->last_seen = time(NULL);
+            entry->mode = peer->mode;
+            strncpy(entry->name, peer->name, sizeof(entry->name) - 1);
+            entry->name[sizeof(entry->name) - 1] = '\0';
+            strncpy(entry->public_key, peer->public_key, sizeof(entry->public_key) - 1);
+            entry->public_key[sizeof(entry->public_key) - 1] = '\0';
+            strncpy(entry->signature, peer->signature, sizeof(entry->signature) - 1);
+            entry->signature[sizeof(entry->signature) - 1] = '\0';
+            entry->verified = peer->verified;
+            entry->created_at = peer->created_at;
+            pl->dirty = true;
+            PLOG("peer_list_add: updated peer %s", peer->id);
+            pthread_mutex_unlock(&pl->mutex);
+            return 0;
+        }
+    }
+    
+    if (pl->peer_count >= PEER_LIST_MAX_PEERS) {
+        PLOG("peer_list_add: list full");
+        pthread_mutex_unlock(&pl->mutex);
+        return -1;
+    }
+    
+    PeerListEntry* entry = &pl->peers[pl->peer_count++];
+    strncpy(entry->id, peer->id, sizeof(entry->id) - 1);
+    entry->id[sizeof(entry->id) - 1] = '\0';
+    strncpy(entry->ip, peer->ip, sizeof(entry->ip) - 1);
+    entry->ip[sizeof(entry->ip) - 1] = '\0';
+    strncpy(entry->port, peer->port, sizeof(entry->port) - 1);
+    entry->port[sizeof(entry->port) - 1] = '\0';
+    entry->online = peer->online;
+    strncpy(entry->status, peer->status, sizeof(entry->status) - 1);
+    entry->status[sizeof(entry->status) - 1] = '\0';
+    entry->last_seen = time(NULL);
+    entry->mode = peer->mode;
+    strncpy(entry->name, peer->name, sizeof(entry->name) - 1);
+    entry->name[sizeof(entry->name) - 1] = '\0';
+    strncpy(entry->public_key, peer->public_key, sizeof(entry->public_key) - 1);
+    entry->public_key[sizeof(entry->public_key) - 1] = '\0';
+    strncpy(entry->signature, peer->signature, sizeof(entry->signature) - 1);
+    entry->signature[sizeof(entry->signature) - 1] = '\0';
+    entry->verified = peer->verified;
+    entry->created_at = peer->created_at;
+    pl->dirty = true;
+    
+    PLOG("peer_list_add: added peer %s (count=%d)", peer->id, pl->peer_count);
+    pthread_mutex_unlock(&pl->mutex);
+    return 0;
+}
+
+int peer_list_update_peer(PeerList* pl, const char* id, const RegistryPeer* peer) {
+    if (!pl || !id || !peer) return -1;
+    pthread_mutex_lock(&pl->mutex);
+    
+    for (int i = 0; i < pl->peer_count; i++) {
+        if (peer_list_is_same_id(pl->peers[i].id, id)) {
+            PeerListEntry* entry = &pl->peers[i];
+            strncpy(entry->ip, peer->ip, sizeof(entry->ip) - 1);
+            entry->ip[sizeof(entry->ip) - 1] = '\0';
+            strncpy(entry->port, peer->port, sizeof(entry->port) - 1);
+            entry->port[sizeof(entry->port) - 1] = '\0';
+            entry->online = peer->online;
+            strncpy(entry->status, peer->status, sizeof(entry->status) - 1);
+            entry->status[sizeof(entry->status) - 1] = '\0';
+            entry->last_seen = time(NULL);
+            entry->mode = peer->mode;
+            strncpy(entry->name, peer->name, sizeof(entry->name) - 1);
+            entry->name[sizeof(entry->name) - 1] = '\0';
+            strncpy(entry->public_key, peer->public_key, sizeof(entry->public_key) - 1);
+            entry->public_key[sizeof(entry->public_key) - 1] = '\0';
+            strncpy(entry->signature, peer->signature, sizeof(entry->signature) - 1);
+            entry->signature[sizeof(entry->signature) - 1] = '\0';
+            entry->verified = peer->verified;
+            entry->created_at = peer->created_at;
+            pl->dirty = true;
+            PLOG("peer_list_update: updated peer %s", id);
+            pthread_mutex_unlock(&pl->mutex);
+            return 0;
+        }
+    }
+    
+    PLOG("peer_list_update: peer %s not found", id);
+    pthread_mutex_unlock(&pl->mutex);
+    return -1;
+}
+
+int peer_list_remove_peer(PeerList* pl, const char* id) {
+    if (!pl || !id) return -1;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    for (int i = 0; i < pl->peer_count; i++) {
+        if (peer_list_is_same_id(pl->peers[i].id, id)) {
+            for (int j = i; j < pl->peer_count - 1; j++) {
+                pl->peers[j] = pl->peers[j + 1];
+            }
+            pl->peer_count--;
+            pl->dirty = true;
+            PLOG("peer_list_remove: removed peer %s (count=%d)", id, pl->peer_count);
+            pthread_mutex_unlock(&pl->mutex);
+            return 0;
+        }
+    }
+    
+    PLOG("peer_list_remove: peer %s not found", id);
+    pthread_mutex_unlock(&pl->mutex);
+    return -1;
+}
+
+PeerListEntry* peer_list_find_peer(PeerList* pl, const char* id) {
+    if (!pl || !id) return NULL;
+    
+    pthread_mutex_lock(&pl->mutex);
+    for (int i = 0; i < pl->peer_count; i++) {
+        if (peer_list_is_same_id(pl->peers[i].id, id)) {
+            pthread_mutex_unlock(&pl->mutex);
+            return &pl->peers[i];
+        }
+    }
+    pthread_mutex_unlock(&pl->mutex);
+    return NULL;
+}
+
+int peer_list_get_accepted_peers(PeerList* pl, PeerListEntry* out, int max) {
+    if (!pl || !out || max <= 0) return 0;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    int count = 0;
+    for (int i = 0; i < pl->peer_count && count < max; i++) {
+        if (strcmp(pl->peers[i].status, "accepted") == 0) {
+            out[count++] = pl->peers[i];
+        }
+    }
+    
+    pthread_mutex_unlock(&pl->mutex);
+    return count;
+}
+
+bool peer_list_is_accepted(PeerList* pl, const char* id) {
+    if (!pl || !id) return false;
+    
+    pthread_mutex_lock(&pl->mutex);
+    for (int i = 0; i < pl->peer_count; i++) {
+        if (peer_list_is_same_id(pl->peers[i].id, id) &&
+            strcmp(pl->peers[i].status, "accepted") == 0) {
+            pthread_mutex_unlock(&pl->mutex);
+            return true;
+        }
+    }
+    pthread_mutex_unlock(&pl->mutex);
+    return false;
+}
+
+/* ============================================================================
+ * Message Queue Operations
+ * ============================================================================ */
+
+int peer_list_queue_message(PeerList* pl, const char* to_id, 
+                            const char* payload, bool encrypted) {
+    if (!pl || !to_id || !payload) return -1;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    if (pl->msg_count >= PEER_LIST_MAX_MSGS) {
+        PLOG("peer_list_queue_message: queue full");
+        pthread_mutex_unlock(&pl->mutex);
+        return -1;
+    }
+    
+    QueuedMessage* msg = &pl->messages[pl->msg_count++];
+    generate_msg_id(msg->msg_id, sizeof(msg->msg_id));
+    strncpy(msg->to_id, to_id, sizeof(msg->to_id) - 1);
+    msg->to_id[sizeof(msg->to_id) - 1] = '\0';
+    strncpy(msg->payload, payload, sizeof(msg->payload) - 1);
+    msg->payload[sizeof(msg->payload) - 1] = '\0';
+    msg->timestamp = time(NULL);
+    msg->status = MSG_STATUS_PENDING;
+    msg->encrypted = encrypted;
+    msg->retry_count = 0;
+    msg->delivered_at = 0;
+    
+    PLOG("peer_list_queue_message: queued message %s for %s", msg->msg_id, to_id);
+    
+    pthread_mutex_unlock(&pl->mutex);
+    return 0;
+}
+
+int peer_list_get_pending_messages(PeerList* pl, const char* to_id,
+                                   QueuedMessage* out, int max) {
+    if (!pl || !out || max <= 0) return 0;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    int count = 0;
+    for (int i = 0; i < pl->msg_count && count < max; i++) {
+        if (strcmp(pl->messages[i].to_id, to_id) == 0 &&
+            pl->messages[i].status == MSG_STATUS_PENDING) {
+            out[count++] = pl->messages[i];
+        }
+    }
+    
+    pthread_mutex_unlock(&pl->mutex);
+    return count;
+}
+
+int peer_list_get_all_pending_messages(PeerList* pl, QueuedMessage* out, int max) {
+    if (!pl || !out || max <= 0) return 0;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    int count = 0;
+    for (int i = 0; i < pl->msg_count && count < max; i++) {
+        if (pl->messages[i].status == MSG_STATUS_PENDING) {
+            out[count++] = pl->messages[i];
+        }
+    }
+    
+    pthread_mutex_unlock(&pl->mutex);
+    return count;
+}
+
+int peer_list_mark_message_delivered(PeerList* pl, const char* msg_id) {
+    if (!pl || !msg_id) return -1;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    for (int i = 0; i < pl->msg_count; i++) {
+        if (strcmp(pl->messages[i].msg_id, msg_id) == 0) {
+            pl->messages[i].status = MSG_STATUS_DELIVERED;
+            pl->messages[i].delivered_at = time(NULL);
+            PLOG("peer_list_mark_message_delivered: %s", msg_id);
+            pthread_mutex_unlock(&pl->mutex);
+            return 0;
+        }
+    }
+    
+    pthread_mutex_unlock(&pl->mutex);
+    return -1;
+}
+
+int peer_list_mark_message_sent(PeerList* pl, const char* msg_id) {
+    if (!pl || !msg_id) return -1;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    for (int i = 0; i < pl->msg_count; i++) {
+        if (strcmp(pl->messages[i].msg_id, msg_id) == 0) {
+            pl->messages[i].status = MSG_STATUS_SENT;
+            PLOG("peer_list_mark_message_sent: %s", msg_id);
+            pthread_mutex_unlock(&pl->mutex);
+            return 0;
+        }
+    }
+    
+    pthread_mutex_unlock(&pl->mutex);
+    return -1;
+}
+
+int peer_list_mark_message_failed(PeerList* pl, const char* msg_id) {
+    if (!pl || !msg_id) return -1;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    for (int i = 0; i < pl->msg_count; i++) {
+        if (strcmp(pl->messages[i].msg_id, msg_id) == 0) {
+            pl->messages[i].status = MSG_STATUS_FAILED;
+            pl->messages[i].retry_count++;
+            PLOG("peer_list_mark_message_failed: %s (retry %d)", 
+                 msg_id, pl->messages[i].retry_count);
+            pthread_mutex_unlock(&pl->mutex);
+            return 0;
+        }
+    }
+    
+    pthread_mutex_unlock(&pl->mutex);
+    return -1;
+}
+
+int peer_list_get_pending_count(PeerList* pl, const char* to_id) {
+    if (!pl || !to_id) return 0;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    int count = 0;
+    for (int i = 0; i < pl->msg_count; i++) {
+        if (strcmp(pl->messages[i].to_id, to_id) == 0 &&
+            pl->messages[i].status == MSG_STATUS_PENDING) {
+            count++;
+        }
+    }
+    
+    pthread_mutex_unlock(&pl->mutex);
+    return count;
+}
+
+bool peer_list_has_pending_messages(PeerList* pl, const char* to_id) {
+    if (!pl || !to_id) return false;
+    
+    pthread_mutex_lock(&pl->mutex);
+    
+    for (int i = 0; i < pl->msg_count; i++) {
+        if (strcmp(pl->messages[i].to_id, to_id) == 0 &&
+            pl->messages[i].status == MSG_STATUS_PENDING) {
+            pthread_mutex_unlock(&pl->mutex);
+            return true;
+        }
+    }
+    
+    pthread_mutex_unlock(&pl->mutex);
+    return false;
+}
+
+/* ============================================================================
+ * Load / Save - Using sscanf() NO BUFFER MODIFICATION!
  * ============================================================================ */
 
 int peer_list_load(PeerList* pl) {
@@ -178,13 +508,15 @@ int peer_list_load(PeerList* pl) {
     
     pthread_mutex_lock(&pl->mutex);
     
-    PLOG("peer_list_load: loading from %s", pl->file_path);
+    char file_path[512];
+    snprintf(file_path, sizeof(file_path), "%s/peers.json", pl->data_dir);
     
-    /* Reset state */
-    pl->count = 0;
+    PLOG("peer_list_load: loading from %s", file_path);
+    
+    pl->peer_count = 0;
     pl->dirty = false;
     
-    FILE* f = fopen(pl->file_path, "r");
+    FILE* f = fopen(file_path, "r");
     if (!f) {
         PLOG("peer_list_load: no file found, starting fresh");
         pthread_mutex_unlock(&pl->mutex);
@@ -196,272 +528,92 @@ int peer_list_load(PeerList* pl) {
     bool in_peer = false;
     int loaded = 0;
     
-    /* Initialize entry */
     memset(&entry, 0, sizeof(entry));
     
     while (fgets(line, sizeof(line), f)) {
-        /* Skip empty lines */
         if (strlen(line) <= 1) continue;
         
-        /* FIX: Create a copy of line for parsing to avoid modifying the original */
-        char line_copy[8192];
-        strncpy(line_copy, line, sizeof(line_copy) - 1);
-        line_copy[sizeof(line_copy) - 1] = '\0';
-        
         /* Check for beginning of peer object */
-        if (strstr(line_copy, "{") != NULL) {
+        if (strstr(line, "{") != NULL) {
             memset(&entry, 0, sizeof(entry));
             in_peer = true;
             continue;
         }
         
+        if (!in_peer) continue;
+        
+        /* ===== USING sscanf() - NO BUFFER MODIFICATION! ===== */
+        char id[64], status[16], ip[16], port[16];
+        char name[128], pubkey[4096], sig[512], salt[33];
+        int mode = 0, online = 0, verified = 0;
+        long last_seen = 0, created_at = 0;
+        
+        if (sscanf(line, " \"id\": \"%63[^\"]\"", id) == 1) {
+            strcpy(entry.id, id);
+        }
+        if (sscanf(line, " \"status\": \"%15[^\"]\"", status) == 1) {
+            strcpy(entry.status, status);
+        }
+        if (sscanf(line, " \"ip\": \"%15[^\"]\"", ip) == 1) {
+            strcpy(entry.ip, ip);
+        }
+        if (sscanf(line, " \"port\": \"%15[^\"]\"", port) == 1) {
+            strcpy(entry.port, port);
+        }
+        if (sscanf(line, " \"online\": %d", &online) == 1) {
+            entry.online = online;
+        }
+        if (sscanf(line, " \"mode\": %d", &mode) == 1) {
+            entry.mode = mode;
+        }
+        if (sscanf(line, " \"verified\": %d", &verified) == 1) {
+            entry.verified = verified;
+        }
+        if (sscanf(line, " \"last_seen\": %ld", &last_seen) == 1) {
+            entry.last_seen = last_seen;
+        }
+        if (sscanf(line, " \"created_at\": %ld", &created_at) == 1) {
+            entry.created_at = created_at;
+        }
+        if (sscanf(line, " \"name\": \"%127[^\"]\"", name) == 1) {
+            strcpy(entry.name, name);
+        }
+        
         /* Check for end of peer object */
-        if (in_peer && strstr(line_copy, "}") != NULL) {
-            if (strlen(entry.id) > 0 && pl->count < PEER_LIST_MAX_PEERS) {
-                pl->peers[pl->count++] = entry;
+        if (strstr(line, "}") != NULL) {
+            if (strlen(entry.id) > 0 && pl->peer_count < PEER_LIST_MAX_PEERS) {
+                pl->peers[pl->peer_count++] = entry;
                 loaded++;
                 PLOG("peer_list_load: loaded peer %s (status=%s)", 
                      entry.id, entry.status);
             }
             in_peer = false;
             memset(&entry, 0, sizeof(entry));
-            continue;
-        }
-        
-        if (!in_peer) continue;
-        
-        /* Parse ID */
-        if (strstr(line_copy, "\"id\":") != NULL) {
-            char* start = strstr(line_copy, "\"id\":");
-            if (start) {
-                start = strchr(start, '"');
-                if (start) {
-                    start++;
-                    char* end = strchr(start, '"');
-                    if (end) {
-                        int len = end - start;
-                        if (len > 0 && len < (int)sizeof(entry.id)) {
-                            strncpy(entry.id, start, len);
-                            entry.id[len] = '\0';
-                        }
-                    }
-                }
-            }
-        }
-        
-        /* Parse IP */
-        if (strstr(line_copy, "\"ip\":") != NULL) {
-            char* start = strstr(line_copy, "\"ip\":");
-            if (start) {
-                start = strchr(start, '"');
-                if (start) {
-                    start++;
-                    char* end = strchr(start, '"');
-                    if (end) {
-                        int len = end - start;
-                        if (len > 0 && len < (int)sizeof(entry.ip)) {
-                            strncpy(entry.ip, start, len);
-                            entry.ip[len] = '\0';
-                        }
-                    }
-                }
-            }
-        }
-        
-        /* Parse Port */
-        if (strstr(line_copy, "\"port\":") != NULL) {
-            char* start = strstr(line_copy, "\"port\":");
-            if (start) {
-                start = strchr(start, '"');
-                if (start) {
-                    start++;
-                    char* end = strchr(start, '"');
-                    if (end) {
-                        int len = end - start;
-                        if (len > 0 && len < (int)sizeof(entry.port)) {
-                            strncpy(entry.port, start, len);
-                            entry.port[len] = '\0';
-                        }
-                    }
-                }
-            }
-        }
-        
-        /* Parse Online */
-        if (strstr(line_copy, "\"online\":") != NULL) {
-            char* start = strstr(line_copy, "\"online\":");
-            if (start) {
-                start += 9;
-                while (*start == ' ' || *start == '\t') start++;
-                entry.online = (strstr(start, "true") != NULL);
-            }
-        }
-        
-        /* Parse Status */
-        if (strstr(line_copy, "\"status\":") != NULL) {
-            char* start = strstr(line_copy, "\"status\":");
-            if (start) {
-                start = strchr(start, '"');
-                if (start) {
-                    start++;
-                    char* end = strchr(start, '"');
-                    if (end) {
-                        int len = end - start;
-                        if (len > 0 && len < (int)sizeof(entry.status)) {
-                            strncpy(entry.status, start, len);
-                            entry.status[len] = '\0';
-                        }
-                    }
-                }
-            }
-        }
-        
-        /* Parse Last Seen */
-        if (strstr(line_copy, "\"last_seen\":") != NULL) {
-            char* start = strstr(line_copy, "\"last_seen\":");
-            if (start) {
-                start += 12;
-                while (*start == ' ' || *start == '\t') start++;
-                entry.last_seen = atol(start);
-            }
-        }
-        
-        /* Parse Mode */
-        if (strstr(line_copy, "\"mode\":") != NULL) {
-            char* start = strstr(line_copy, "\"mode\":");
-            if (start) {
-                start += 7;
-                while (*start == ' ' || *start == '\t') start++;
-                entry.mode = atoi(start);
-            }
-        }
-        
-        /* Parse Name */
-        if (strstr(line_copy, "\"name\":") != NULL) {
-            char* start = strstr(line_copy, "\"name\":");
-            if (start) {
-                start = strchr(start, '"');
-                if (start) {
-                    start++;
-                    char* end = strchr(start, '"');
-                    if (end) {
-                        int len = end - start;
-                        if (len > 0 && len < (int)sizeof(entry.name)) {
-                            strncpy(entry.name, start, len);
-                            entry.name[len] = '\0';
-                        }
-                    }
-                }
-            }
-        }
-        
-        /* Parse Public Key */
-        if (strstr(line_copy, "\"public_key\":") != NULL) {
-            char* start = strstr(line_copy, "\"public_key\":");
-            if (start) {
-                start = strchr(start, '"');
-                if (start) {
-                    start++;
-                    char* end = strchr(start, '"');
-                    if (end) {
-                        int len = end - start;
-                        if (len > 0 && len < (int)sizeof(entry.public_key)) {
-                            strncpy(entry.public_key, start, len);
-                            entry.public_key[len] = '\0';
-                        }
-                    }
-                }
-            }
-        }
-        
-        /* Parse Signature */
-        if (strstr(line_copy, "\"signature\":") != NULL) {
-            char* start = strstr(line_copy, "\"signature\":");
-            if (start) {
-                start = strchr(start, '"');
-                if (start) {
-                    start++;
-                    char* end = strchr(start, '"');
-                    if (end) {
-                        int len = end - start;
-                        if (len > 0 && len < (int)sizeof(entry.signature)) {
-                            strncpy(entry.signature, start, len);
-                            entry.signature[len] = '\0';
-                        }
-                    }
-                }
-            }
-        }
-        
-        /* Parse Salt Hex */
-        if (strstr(line_copy, "\"salt_hex\":") != NULL) {
-            char* start = strstr(line_copy, "\"salt_hex\":");
-            if (start) {
-                start = strchr(start, '"');
-                if (start) {
-                    start++;
-                    char* end = strchr(start, '"');
-                    if (end) {
-                        int len = end - start;
-                        if (len > 0 && len < (int)sizeof(entry.salt_hex)) {
-                            strncpy(entry.salt_hex, start, len);
-                            entry.salt_hex[len] = '\0';
-                        }
-                    }
-                }
-            }
-        }
-        
-        /* Parse Created At */
-        if (strstr(line_copy, "\"created_at\":") != NULL) {
-            char* start = strstr(line_copy, "\"created_at\":");
-            if (start) {
-                start += 13;
-                while (*start == ' ' || *start == '\t') start++;
-                entry.created_at = atol(start);
-            }
-        }
-        
-        /* Parse Verified */
-        if (strstr(line_copy, "\"verified\":") != NULL) {
-            char* start = strstr(line_copy, "\"verified\":");
-            if (start) {
-                start += 11;
-                while (*start == ' ' || *start == '\t') start++;
-                entry.verified = (strstr(start, "true") != NULL);
-            }
         }
     }
     
     fclose(f);
     
-    PLOG("peer_list_load: loaded %d peers, total count=%d", loaded, pl->count);
+    PLOG("peer_list_load: loaded %d peers, total count=%d", loaded, pl->peer_count);
     
     pthread_mutex_unlock(&pl->mutex);
-    return pl->count;
+    return pl->peer_count;
 }
-
-/* ============================================================================
- * Save - Atomic write using temporary file
- * ============================================================================ */
 
 int peer_list_save(PeerList* pl) {
     if (!pl) return -1;
     
     pthread_mutex_lock(&pl->mutex);
     
-    PLOG("peer_list_save: saving %d peers to %s", pl->count, pl->file_path);
+    char file_path[512];
+    snprintf(file_path, sizeof(file_path), "%s/peers.json", pl->data_dir);
     
-    /* Ensure directory exists */
-    if (ensure_directory(pl->file_path) < 0) {
-        PLOG("peer_list_save: failed to create directory");
-        pthread_mutex_unlock(&pl->mutex);
-        return -1;
-    }
+    PLOG("peer_list_save: saving %d peers to %s", pl->peer_count, file_path);
     
-    /* Write to temporary file first */
+    ensure_directory(pl->data_dir);
+    
     char tmp_path[512];
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", pl->file_path);
+    snprintf(tmp_path, sizeof(tmp_path), "%s/peers.json.tmp", pl->data_dir);
     
     FILE* f = fopen(tmp_path, "w");
     if (!f) {
@@ -472,7 +624,7 @@ int peer_list_save(PeerList* pl) {
     
     fprintf(f, "{\n  \"peers\": [\n");
     
-    for (int i = 0; i < pl->count; i++) {
+    for (int i = 0; i < pl->peer_count; i++) {
         if (i > 0) fprintf(f, ",\n");
         PeerListEntry* p = &pl->peers[i];
         
@@ -499,10 +651,7 @@ int peer_list_save(PeerList* pl) {
         fprintf(f, "      \"mode\": %d,\n", p->mode);
         fprintf(f, "      \"created_at\": %ld,\n", (long)p->created_at);
         fprintf(f, "      \"verified\": %s,\n", p->verified ? "true" : "false");
-        fprintf(f, "      \"name\": \"%s\",\n", escaped_name);
-        fprintf(f, "      \"public_key\": \"%s\",\n", escaped_pubkey);
-        fprintf(f, "      \"signature\": \"%s\",\n", escaped_sig);
-        fprintf(f, "      \"salt_hex\": \"%s\"\n", escaped_salt);
+        fprintf(f, "      \"name\": \"%s\"\n", escaped_name);
         fprintf(f, "    }");
     }
     
@@ -515,9 +664,8 @@ int peer_list_save(PeerList* pl) {
         return -1;
     }
     
-    /* Atomic rename */
-    if (rename(tmp_path, pl->file_path) != 0) {
-        PLOG("peer_list_save: failed to rename temp file: %s", strerror(errno));
+    if (rename(tmp_path, file_path) != 0) {
+        PLOG("peer_list_save: failed to rename: %s", strerror(errno));
         unlink(tmp_path);
         pthread_mutex_unlock(&pl->mutex);
         return -1;
@@ -530,306 +678,152 @@ int peer_list_save(PeerList* pl) {
     return 0;
 }
 
-/* ============================================================================
- * Query
- * ============================================================================ */
-
-int peer_list_get_count(PeerList* pl) {
-    if (!pl) return 0;
+int peer_list_load_messages(PeerList* pl) {
+    if (!pl) return -1;
+    
     pthread_mutex_lock(&pl->mutex);
-    int count = pl->count;
-    pthread_mutex_unlock(&pl->mutex);
-    return count;
-}
-
-PeerListEntry* peer_list_get(PeerList* pl, int index) {
-    if (!pl) return NULL;
-    pthread_mutex_lock(&pl->mutex);
-    if (index < 0 || index >= pl->count) {
+    
+    char file_path[512];
+    snprintf(file_path, sizeof(file_path), "%s/messages.json", pl->data_dir);
+    
+    PLOG("peer_list_load_messages: loading from %s", file_path);
+    
+    pl->msg_count = 0;
+    
+    FILE* f = fopen(file_path, "r");
+    if (!f) {
+        PLOG("peer_list_load_messages: no file found, starting fresh");
         pthread_mutex_unlock(&pl->mutex);
-        return NULL;
-    }
-    PeerListEntry* entry = &pl->peers[index];
-    pthread_mutex_unlock(&pl->mutex);
-    return entry;
-}
-
-PeerListEntry* peer_list_find(PeerList* pl, const char* id) {
-    if (!pl || !id) return NULL;
-    
-    char norm_id[PEER_LIST_MAX_ID_LEN];
-    if (!peer_list_normalize_id(id, norm_id, sizeof(norm_id))) {
-        return NULL;
+        return 0;
     }
     
-    pthread_mutex_lock(&pl->mutex);
+    char line[8192];
+    QueuedMessage msg;
+    bool in_msg = false;
+    int loaded = 0;
     
-    for (int i = 0; i < pl->count; i++) {
-        char existing_norm[PEER_LIST_MAX_ID_LEN];
-        if (!peer_list_normalize_id(pl->peers[i].id, existing_norm, 
-                                    sizeof(existing_norm))) {
+    memset(&msg, 0, sizeof(msg));
+    
+    while (fgets(line, sizeof(line), f)) {
+        if (strlen(line) <= 1) continue;
+        
+        if (strstr(line, "{") != NULL) {
+            memset(&msg, 0, sizeof(msg));
+            in_msg = true;
             continue;
         }
         
-        if (strcmp(existing_norm, norm_id) == 0) {
-            pthread_mutex_unlock(&pl->mutex);
-            return &pl->peers[i];
+        if (!in_msg) continue;
+        
+        /* Parse with sscanf() */
+        char msg_id[64], from_id[64], to_id[64];
+        char payload[4096];
+        int status = 0, encrypted = 0;
+        long timestamp = 0, delivered_at = 0;
+        
+        if (sscanf(line, " \"msg_id\": \"%63[^\"]\"", msg_id) == 1) {
+            strcpy(msg.msg_id, msg_id);
         }
-    }
-    
-    pthread_mutex_unlock(&pl->mutex);
-    return NULL;
-}
-
-/* ============================================================================
- * Modify
- * ============================================================================ */
-
-int peer_list_add(PeerList* pl, const RegistryPeer* peer) {
-    if (!pl || !peer) return -1;
-    
-    char norm_id[PEER_LIST_MAX_ID_LEN];
-    if (!peer_list_normalize_id(peer->id, norm_id, sizeof(norm_id))) {
-        PLOG("peer_list_add: invalid id '%s'", peer->id);
-        return -1;
-    }
-    
-    pthread_mutex_lock(&pl->mutex);
-    
-    /* Check if already exists */
-    for (int i = 0; i < pl->count; i++) {
-        char existing_norm[PEER_LIST_MAX_ID_LEN];
-        if (!peer_list_normalize_id(pl->peers[i].id, existing_norm, 
-                                    sizeof(existing_norm))) {
-            continue;
+        if (sscanf(line, " \"from_id\": \"%63[^\"]\"", from_id) == 1) {
+            strcpy(msg.from_id, from_id);
+        }
+        if (sscanf(line, " \"to_id\": \"%63[^\"]\"", to_id) == 1) {
+            strcpy(msg.to_id, to_id);
+        }
+        if (sscanf(line, " \"payload\": \"%4095[^\"]\"", payload) == 1) {
+            strcpy(msg.payload, payload);
+        }
+        if (sscanf(line, " \"status\": %d", &status) == 1) {
+            msg.status = status;
+        }
+        if (sscanf(line, " \"encrypted\": %d", &encrypted) == 1) {
+            msg.encrypted = encrypted;
+        }
+        if (sscanf(line, " \"timestamp\": %ld", &timestamp) == 1) {
+            msg.timestamp = timestamp;
+        }
+        if (sscanf(line, " \"delivered_at\": %ld", &delivered_at) == 1) {
+            msg.delivered_at = delivered_at;
         }
         
-        if (strcmp(existing_norm, norm_id) == 0) {
-            /* Update existing entry */
-            PeerListEntry* entry = &pl->peers[i];
-            strncpy(entry->ip, peer->ip, sizeof(entry->ip) - 1);
-            entry->ip[sizeof(entry->ip) - 1] = '\0';
-            
-            strncpy(entry->port, peer->port, sizeof(entry->port) - 1);
-            entry->port[sizeof(entry->port) - 1] = '\0';
-            
-            entry->online = peer->online;
-            
-            strncpy(entry->status, peer->status, sizeof(entry->status) - 1);
-            entry->status[sizeof(entry->status) - 1] = '\0';
-            
-            entry->last_seen = time(NULL);
-            entry->mode = peer->mode;
-            
-            strncpy(entry->name, peer->name, sizeof(entry->name) - 1);
-            entry->name[sizeof(entry->name) - 1] = '\0';
-            
-            strncpy(entry->public_key, peer->public_key, 
-                    sizeof(entry->public_key) - 1);
-            entry->public_key[sizeof(entry->public_key) - 1] = '\0';
-            
-            strncpy(entry->signature, peer->signature, 
-                    sizeof(entry->signature) - 1);
-            entry->signature[sizeof(entry->signature) - 1] = '\0';
-            
-            entry->verified = peer->verified;
-            entry->created_at = peer->created_at;
-            
-            pl->dirty = true;
-            PLOG("peer_list_add: updated peer %s", peer->id);
-            pthread_mutex_unlock(&pl->mutex);
-            return 0;
-        }
-    }
-    
-    /* Add new entry */
-    if (pl->count >= PEER_LIST_MAX_PEERS) {
-        PLOG("peer_list_add: list full");
-        pthread_mutex_unlock(&pl->mutex);
-        return -1;
-    }
-    
-    PeerListEntry* entry = &pl->peers[pl->count++];
-    
-    strncpy(entry->id, peer->id, sizeof(entry->id) - 1);
-    entry->id[sizeof(entry->id) - 1] = '\0';
-    
-    strncpy(entry->ip, peer->ip, sizeof(entry->ip) - 1);
-    entry->ip[sizeof(entry->ip) - 1] = '\0';
-    
-    strncpy(entry->port, peer->port, sizeof(entry->port) - 1);
-    entry->port[sizeof(entry->port) - 1] = '\0';
-    
-    entry->online = peer->online;
-    
-    strncpy(entry->status, peer->status, sizeof(entry->status) - 1);
-    entry->status[sizeof(entry->status) - 1] = '\0';
-    
-    entry->last_seen = time(NULL);
-    entry->mode = peer->mode;
-    
-    strncpy(entry->name, peer->name, sizeof(entry->name) - 1);
-    entry->name[sizeof(entry->name) - 1] = '\0';
-    
-    strncpy(entry->public_key, peer->public_key, 
-            sizeof(entry->public_key) - 1);
-    entry->public_key[sizeof(entry->public_key) - 1] = '\0';
-    
-    strncpy(entry->signature, peer->signature, 
-            sizeof(entry->signature) - 1);
-    entry->signature[sizeof(entry->signature) - 1] = '\0';
-    
-    entry->verified = peer->verified;
-    entry->created_at = peer->created_at;
-    
-    pl->dirty = true;
-    PLOG("peer_list_add: added peer %s (count=%d)", peer->id, pl->count);
-    
-    pthread_mutex_unlock(&pl->mutex);
-    return 0;
-}
-
-int peer_list_add_entry(PeerList* pl, const PeerListEntry* entry) {
-    if (!pl || !entry) return -1;
-    
-    char norm_id[PEER_LIST_MAX_ID_LEN];
-    if (!peer_list_normalize_id(entry->id, norm_id, sizeof(norm_id))) {
-        PLOG("peer_list_add_entry: invalid id '%s'", entry->id);
-        return -1;
-    }
-    
-    pthread_mutex_lock(&pl->mutex);
-    
-    /* Check if already exists */
-    for (int i = 0; i < pl->count; i++) {
-        char existing_norm[PEER_LIST_MAX_ID_LEN];
-        if (!peer_list_normalize_id(pl->peers[i].id, existing_norm, 
-                                    sizeof(existing_norm))) {
-            continue;
-        }
-        
-        if (strcmp(existing_norm, norm_id) == 0) {
-            pl->peers[i] = *entry;
-            pl->dirty = true;
-            PLOG("peer_list_add_entry: updated peer %s", entry->id);
-            pthread_mutex_unlock(&pl->mutex);
-            return 0;
-        }
-    }
-    
-    if (pl->count >= PEER_LIST_MAX_PEERS) {
-        PLOG("peer_list_add_entry: list full");
-        pthread_mutex_unlock(&pl->mutex);
-        return -1;
-    }
-    
-    pl->peers[pl->count++] = *entry;
-    pl->dirty = true;
-    PLOG("peer_list_add_entry: added peer %s (count=%d)", entry->id, pl->count);
-    
-    pthread_mutex_unlock(&pl->mutex);
-    return 0;
-}
-
-int peer_list_update(PeerList* pl, const char* id, const RegistryPeer* peer) {
-    if (!pl || !id || !peer) return -1;
-    
-    char norm_id[PEER_LIST_MAX_ID_LEN];
-    if (!peer_list_normalize_id(id, norm_id, sizeof(norm_id))) {
-        PLOG("peer_list_update: invalid id '%s'", id);
-        return -1;
-    }
-    
-    pthread_mutex_lock(&pl->mutex);
-    
-    for (int i = 0; i < pl->count; i++) {
-        char existing_norm[PEER_LIST_MAX_ID_LEN];
-        if (!peer_list_normalize_id(pl->peers[i].id, existing_norm, 
-                                    sizeof(existing_norm))) {
-            continue;
-        }
-        
-        if (strcmp(existing_norm, norm_id) == 0) {
-            PeerListEntry* entry = &pl->peers[i];
-            strncpy(entry->ip, peer->ip, sizeof(entry->ip) - 1);
-            entry->ip[sizeof(entry->ip) - 1] = '\0';
-            
-            strncpy(entry->port, peer->port, sizeof(entry->port) - 1);
-            entry->port[sizeof(entry->port) - 1] = '\0';
-            
-            entry->online = peer->online;
-            
-            strncpy(entry->status, peer->status, sizeof(entry->status) - 1);
-            entry->status[sizeof(entry->status) - 1] = '\0';
-            
-            entry->last_seen = time(NULL);
-            entry->mode = peer->mode;
-            
-            strncpy(entry->name, peer->name, sizeof(entry->name) - 1);
-            entry->name[sizeof(entry->name) - 1] = '\0';
-            
-            strncpy(entry->public_key, peer->public_key, 
-                    sizeof(entry->public_key) - 1);
-            entry->public_key[sizeof(entry->public_key) - 1] = '\0';
-            
-            entry->verified = peer->verified;
-            entry->created_at = peer->created_at;
-            
-            pl->dirty = true;
-            PLOG("peer_list_update: updated peer %s", id);
-            pthread_mutex_unlock(&pl->mutex);
-            return 0;
-        }
-    }
-    
-    PLOG("peer_list_update: peer %s not found", id);
-    pthread_mutex_unlock(&pl->mutex);
-    return -1;
-}
-
-int peer_list_remove(PeerList* pl, const char* id) {
-    if (!pl || !id) return -1;
-    
-    char norm_id[PEER_LIST_MAX_ID_LEN];
-    if (!peer_list_normalize_id(id, norm_id, sizeof(norm_id))) {
-        PLOG("peer_list_remove: invalid id '%s'", id);
-        return -1;
-    }
-    
-    pthread_mutex_lock(&pl->mutex);
-    
-    for (int i = 0; i < pl->count; i++) {
-        char existing_norm[PEER_LIST_MAX_ID_LEN];
-        if (!peer_list_normalize_id(pl->peers[i].id, existing_norm, 
-                                    sizeof(existing_norm))) {
-            continue;
-        }
-        
-        if (strcmp(existing_norm, norm_id) == 0) {
-            /* Shift remaining entries */
-            for (int j = i; j < pl->count - 1; j++) {
-                pl->peers[j] = pl->peers[j + 1];
+        if (strstr(line, "}") != NULL) {
+            if (strlen(msg.msg_id) > 0 && pl->msg_count < PEER_LIST_MAX_MSGS) {
+                pl->messages[pl->msg_count++] = msg;
+                loaded++;
             }
-            pl->count--;
-            pl->dirty = true;
-            PLOG("peer_list_remove: removed peer %s (count=%d)", id, pl->count);
-            pthread_mutex_unlock(&pl->mutex);
-            return 0;
+            in_msg = false;
+            memset(&msg, 0, sizeof(msg));
         }
     }
     
-    PLOG("peer_list_remove: peer %s not found", id);
+    fclose(f);
+    
+    PLOG("peer_list_load_messages: loaded %d messages", loaded);
     pthread_mutex_unlock(&pl->mutex);
-    return -1;
+    return pl->msg_count;
 }
 
-void peer_list_clear(PeerList* pl) {
-    if (!pl) return;
+int peer_list_save_messages(PeerList* pl) {
+    if (!pl) return -1;
+    
     pthread_mutex_lock(&pl->mutex);
-    pl->count = 0;
-    pl->dirty = true;
-    PLOG("peer_list_clear: cleared all peers");
+    
+    char file_path[512];
+    snprintf(file_path, sizeof(file_path), "%s/messages.json", pl->data_dir);
+    
+    PLOG("peer_list_save_messages: saving %d messages", pl->msg_count);
+    
+    ensure_directory(pl->data_dir);
+    
+    char tmp_path[512];
+    snprintf(tmp_path, sizeof(tmp_path), "%s/messages.json.tmp", pl->data_dir);
+    
+    FILE* f = fopen(tmp_path, "w");
+    if (!f) {
+        PLOG("peer_list_save_messages: failed to open temp file");
+        pthread_mutex_unlock(&pl->mutex);
+        return -1;
+    }
+    
+    fprintf(f, "{\n  \"messages\": [\n");
+    
+    for (int i = 0; i < pl->msg_count; i++) {
+        if (i > 0) fprintf(f, ",\n");
+        QueuedMessage* m = &pl->messages[i];
+        
+        char escaped_payload[8192];
+        json_escape(m->payload, escaped_payload, sizeof(escaped_payload));
+        
+        fprintf(f, "    {\n");
+        fprintf(f, "      \"msg_id\": \"%s\",\n", m->msg_id);
+        fprintf(f, "      \"from_id\": \"%s\",\n", m->from_id);
+        fprintf(f, "      \"to_id\": \"%s\",\n", m->to_id);
+        fprintf(f, "      \"payload\": \"%s\",\n", escaped_payload);
+        fprintf(f, "      \"timestamp\": %ld,\n", (long)m->timestamp);
+        fprintf(f, "      \"status\": %d,\n", m->status);
+        fprintf(f, "      \"encrypted\": %d,\n", m->encrypted ? 1 : 0);
+        fprintf(f, "      \"delivered_at\": %ld,\n", (long)m->delivered_at);
+        fprintf(f, "      \"retry_count\": %d\n", m->retry_count);
+        fprintf(f, "    }");
+    }
+    
+    fprintf(f, "\n  ]\n}\n");
+    
+    if (fclose(f) != 0) {
+        unlink(tmp_path);
+        pthread_mutex_unlock(&pl->mutex);
+        return -1;
+    }
+    
+    if (rename(tmp_path, file_path) != 0) {
+        unlink(tmp_path);
+        pthread_mutex_unlock(&pl->mutex);
+        return -1;
+    }
+    
+    PLOG("peer_list_save_messages: saved successfully");
     pthread_mutex_unlock(&pl->mutex);
+    return 0;
 }
 
 /* ============================================================================
@@ -842,26 +836,32 @@ int peer_list_sync_to_registry(PeerList* pl, Registry* reg) {
     pthread_mutex_lock(&pl->mutex);
     
     int synced = 0;
-    for (int i = 0; i < pl->count; i++) {
+    for (int i = 0; i < pl->peer_count; i++) {
         PeerListEntry* entry = &pl->peers[i];
-        
-        /* Skip entries with empty or invalid IDs */
         if (strlen(entry->id) == 0) continue;
         
-        /* Register in registry */
+        RegistryPeer peer;
+        memset(&peer, 0, sizeof(peer));
+        strcpy(peer.id, entry->id);
+        strcpy(peer.ip, entry->ip);
+        strcpy(peer.port, entry->port);
+        peer.online = entry->online;
+        strcpy(peer.status, entry->status);
+        peer.mode = entry->mode;
+        strcpy(peer.name, entry->name);
+        strcpy(peer.public_key, entry->public_key);
+        strcpy(peer.signature, entry->signature);
+        peer.verified = entry->verified;
+        peer.created_at = entry->created_at;
+        
         if (registry_register_peer(reg, entry->id, entry->ip, entry->port)) {
-            /* Update status to match persistent state */
-            if (strlen(entry->status) > 0) {
-                registry_update_status(reg, entry->id, entry->status);
-            }
+            registry_update_status(reg, entry->id, entry->status);
             synced++;
-            PLOG("peer_list_sync_to_registry: synced peer %s (status=%s)", 
-                 entry->id, entry->status);
+            PLOG("peer_list_sync_to_registry: synced peer %s", entry->id);
         }
     }
     
     PLOG("peer_list_sync_to_registry: synced %d peers", synced);
-    
     pthread_mutex_unlock(&pl->mutex);
     return synced;
 }
@@ -883,7 +883,7 @@ int peer_list_sync_from_registry(PeerList* pl, Registry* reg) {
     for (int i = 0; i < count; i++) {
         /* Check if already exists */
         int found = -1;
-        for (int j = 0; j < pl->count; j++) {
+        for (int j = 0; j < pl->peer_count; j++) {
             if (peer_list_is_same_id(pl->peers[j].id, peers[i].id)) {
                 found = j;
                 break;
@@ -891,74 +891,40 @@ int peer_list_sync_from_registry(PeerList* pl, Registry* reg) {
         }
         
         if (found >= 0) {
-            /* Update existing */
             PeerListEntry* entry = &pl->peers[found];
-            strncpy(entry->ip, peers[i].ip, sizeof(entry->ip) - 1);
-            entry->ip[sizeof(entry->ip) - 1] = '\0';
-            
-            strncpy(entry->port, peers[i].port, sizeof(entry->port) - 1);
-            entry->port[sizeof(entry->port) - 1] = '\0';
-            
+            strcpy(entry->ip, peers[i].ip);
+            strcpy(entry->port, peers[i].port);
             entry->online = peers[i].online;
-            
-            strncpy(entry->status, peers[i].status, sizeof(entry->status) - 1);
-            entry->status[sizeof(entry->status) - 1] = '\0';
-            
+            strcpy(entry->status, peers[i].status);
             entry->last_seen = peers[i].last_seen;
             entry->mode = peers[i].mode;
-            
-            strncpy(entry->name, peers[i].name, sizeof(entry->name) - 1);
-            entry->name[sizeof(entry->name) - 1] = '\0';
-            
-            strncpy(entry->public_key, peers[i].public_key, 
-                    sizeof(entry->public_key) - 1);
-            entry->public_key[sizeof(entry->public_key) - 1] = '\0';
-            
+            strcpy(entry->name, peers[i].name);
+            strcpy(entry->public_key, peers[i].public_key);
+            strcpy(entry->signature, peers[i].signature);
             entry->verified = peers[i].verified;
             entry->created_at = peers[i].created_at;
-            
             synced++;
-        } else if (pl->count < PEER_LIST_MAX_PEERS) {
-            /* Add new */
-            PeerListEntry* entry = &pl->peers[pl->count++];
-            
-            strncpy(entry->id, peers[i].id, sizeof(entry->id) - 1);
-            entry->id[sizeof(entry->id) - 1] = '\0';
-            
-            strncpy(entry->ip, peers[i].ip, sizeof(entry->ip) - 1);
-            entry->ip[sizeof(entry->ip) - 1] = '\0';
-            
-            strncpy(entry->port, peers[i].port, sizeof(entry->port) - 1);
-            entry->port[sizeof(entry->port) - 1] = '\0';
-            
+        } else if (pl->peer_count < PEER_LIST_MAX_PEERS) {
+            PeerListEntry* entry = &pl->peers[pl->peer_count++];
+            strcpy(entry->id, peers[i].id);
+            strcpy(entry->ip, peers[i].ip);
+            strcpy(entry->port, peers[i].port);
             entry->online = peers[i].online;
-            
-            strncpy(entry->status, peers[i].status, sizeof(entry->status) - 1);
-            entry->status[sizeof(entry->status) - 1] = '\0';
-            
+            strcpy(entry->status, peers[i].status);
             entry->last_seen = peers[i].last_seen;
             entry->mode = peers[i].mode;
-            
-            strncpy(entry->name, peers[i].name, sizeof(entry->name) - 1);
-            entry->name[sizeof(entry->name) - 1] = '\0';
-            
-            strncpy(entry->public_key, peers[i].public_key, 
-                    sizeof(entry->public_key) - 1);
-            entry->public_key[sizeof(entry->public_key) - 1] = '\0';
-            
+            strcpy(entry->name, peers[i].name);
+            strcpy(entry->public_key, peers[i].public_key);
+            strcpy(entry->signature, peers[i].signature);
             entry->verified = peers[i].verified;
             entry->created_at = peers[i].created_at;
-            
             synced++;
         }
     }
     
-    if (synced > 0) {
-        pl->dirty = true;
-    }
+    if (synced > 0) pl->dirty = true;
     
-    PLOG("peer_list_sync_from_registry: synced %d peers from registry", synced);
-    
+    PLOG("peer_list_sync_from_registry: synced %d peers", synced);
     pthread_mutex_unlock(&pl->mutex);
     return synced;
 }
@@ -982,4 +948,14 @@ bool peer_list_is_dirty(PeerList* pl) {
     bool dirty = pl->dirty;
     pthread_mutex_unlock(&pl->mutex);
     return dirty;
+}
+
+void peer_list_clear(PeerList* pl) {
+    if (!pl) return;
+    pthread_mutex_lock(&pl->mutex);
+    pl->peer_count = 0;
+    pl->msg_count = 0;
+    pl->dirty = true;
+    PLOG("peer_list_clear: cleared all data");
+    pthread_mutex_unlock(&pl->mutex);
 }
