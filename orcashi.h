@@ -1,5 +1,4 @@
- // orcashi.h - Full version with ORCA Identity and Crypto
-#ifndef ORCASHI_H
+ #ifndef ORCASHI_H
 #define ORCASHI_H
 
 #include <stdio.h>
@@ -9,147 +8,238 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
-#include <ifaddrs.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <errno.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
-#include "plug.h"
-#include "discovery.h"
-#include "registry.h"
-#include "request.h"
-#include "peer_cache.h"
-#include "endpoint.h"
-#include "nat_punch.h"
-#include "bootstrap.h"
-#include "dht_node.h"
+/* ============================================================================
+ * VERSION
+ * ============================================================================ */
+
+#define ORCASHI_VERSION "5.0.0"
+#define ORCASHI_NAME "Orcashi"
+#define ORCASHI_HOME "/tmp/.orcashi/"
+
+/* ============================================================================
+ * PORTS
+ * ============================================================================ */
+
+#define ORCASHI_P2P_PORT 9000
+#define ORCASHI_DHT_PORT 33446
+#define ORCASHI_PUNCH_PORT 33445
+
+/* ============================================================================
+ * INCLUDES - All V5 Components
+ * ============================================================================ */
+
+/* CLI Layer */
+#include "commands.h"
+
+/* Daemon Layer */
+#include "daemon.h"
+#include "event_loop.h"
+
+/* Core Layer (HEART) */
+#include "state_manager.h"
+
+/* P2P Layer */
+#include "p2p_manager.h"
+#include "punch.h"
+
+/* Crypto Layer */
 #include "orca_identity.h"
 #include "orca_crypto.h"
 #include "ecdh.h"
 #include "aes_gcm.h"
 
-#define ORCASHI_VERSION "4.0"
-#define ORCASHI_PORT 9000
-#define DISCOVERY_PORT 9001
-#define PUNCH_PORT 33445
-#define DHT_NODE_PORT 33446
-#define ORCASHI_HOME "/tmp/.orcashi/"
-#define ID_FILE ORCASHI_HOME "id"
+/* DHT Layer */
+#include "dht_node.h"
+#include "dht.h"
 
-typedef struct ORCASHI {
-    TCPPlug* plug;
-    Discovery* discovery;
-    Registry* registry;
-    RequestManager* requests;
-    PeerCache* cache;
-    EndpointRegistry* endpoints;
-    PunchState* punch;
-    DHTNode* dht;
-    
+/* Utilities */
+#include "mixed_id.h"
+#include "logger.h"
+
+/* ============================================================================
+ * MAIN ORCASHI STRUCTURE
+ * ============================================================================ */
+
+typedef struct {
     /* Identity */
-    OrcaIdentity identity;
+    char id[64];
+    char name[128];
     bool has_identity;
-    char my_id[64];
-    char peer_id[64];
+    bool is_secure;
+    
+    /* Network */
     char local_ip[INET_ADDRSTRLEN];
-    char peer_ip[INET_ADDRSTRLEN];
+    char public_ip[INET_ADDRSTRLEN];
+    int p2p_port;
+    int dht_port;
     
-    /* Secure Session */
-    OrcaECDSession* session;
-    unsigned char shared_secret[ORCA_AES_GCM_KEY_LEN];
-    bool session_established;
-    char peer_public_key_hex[65];
+    /* State */
+    bool initialized;
+    bool daemon_running;
+    bool is_listening;
+    time_t start_time;
     
-    bool connected;
-    bool running;
-    bool registered;
-    
-    pthread_t heartbeat_thread;
-    bool heartbeat_thread_created;
-    pthread_mutex_t mutex;
-    
-    void (*on_peer_found)(const char* id, const char* ip);
+    /* Callbacks */
+    void (*on_peer_found)(const char* id, const char* ip, int port);
     void (*on_message_received)(const char* from, const char* msg);
     void (*on_status_change)(const char* status);
+    void (*on_call_received)(const char* from, int room);
     
-} ORCASHI;
+} Orcashi;
 
 /* ============================================================================
- * Lifecycle
+ * LIFECYCLE FUNCTIONS
  * ============================================================================ */
 
-ORCASHI* orcashi_create(void);
-void orcashi_destroy(ORCASHI* orcashi);
-bool orcashi_init(ORCASHI* orcashi);
+/* Initialize Orcashi */
+int orcashi_init(Orcashi* orcashi);
+
+/* Initialize with custom config */
+int orcashi_init_with_config(Orcashi* orcashi, const char* config_path);
+
+/* Cleanup Orcashi */
+void orcashi_cleanup(Orcashi* orcashi);
 
 /* ============================================================================
- * Room Management
+ * DAEMON FUNCTIONS
  * ============================================================================ */
 
-bool orcashi_create_room(ORCASHI* orcashi, int port);
-bool orcashi_join_room(ORCASHI* orcashi, const char* ip, int port);
+/* Start background daemon */
+int orcashi_start_daemon(Orcashi* orcashi);
+
+/* Stop background daemon */
+int orcashi_stop_daemon(Orcashi* orcashi);
+
+/* Check if daemon is running */
+bool orcashi_is_daemon_running(Orcashi* orcashi);
 
 /* ============================================================================
- * Messaging
+ * IDENTITY FUNCTIONS
  * ============================================================================ */
 
-bool orcashi_send_message(ORCASHI* orcashi, const char* msg);
-bool orcashi_send_secure_message(ORCASHI* orcashi, const char* msg);
-bool orcashi_receive_message(ORCASHI* orcashi, char* msg, int msg_size, int timeout_ms);
+/* Register identity */
+int orcashi_register_identity(Orcashi* orcashi, const char* passcode);
+
+/* Load identity */
+int orcashi_load_identity(Orcashi* orcashi, const char* passcode);
+
+/* Show identity info */
+void orcashi_print_identity(Orcashi* orcashi);
 
 /* ============================================================================
- * Connection
+ * PEER FUNCTIONS
  * ============================================================================ */
 
-bool orcashi_is_connected(ORCASHI* orcashi);
-void orcashi_disconnect(ORCASHI* orcashi);
+/* Search for peer */
+int orcashi_search_peer(Orcashi* orcashi, const char* peer_id);
+
+/* Add peer (send friend request) */
+int orcashi_add_peer(Orcashi* orcashi, const char* peer_id);
+
+/* Accept peer request */
+int orcashi_accept_peer(Orcashi* orcashi, const char* peer_id);
+
+/* Reject peer request */
+int orcashi_reject_peer(Orcashi* orcashi, const char* peer_id);
+
+/* Remove peer */
+int orcashi_remove_peer(Orcashi* orcashi, const char* peer_id);
+
+/* List peers */
+void orcashi_list_peers(Orcashi* orcashi);
 
 /* ============================================================================
- * Identity
+ * CHAT FUNCTIONS
  * ============================================================================ */
 
-const char* orcashi_get_my_id(ORCASHI* orcashi);
-const char* orcashi_get_peer_id(ORCASHI* orcashi);
-const char* orcashi_get_peer_ip(ORCASHI* orcashi);
-bool orcashi_load_identity(ORCASHI* orcashi, const char* passcode);
-bool orcashi_has_identity(ORCASHI* orcashi);
+/* Start chat with peer */
+int orcashi_chat_start(Orcashi* orcashi, const char* peer_id);
+
+/* Send message in chat */
+int orcashi_chat_send(Orcashi* orcashi, const char* peer_id, const char* message);
+
+/* Send ghost message */
+int orcashi_ghost_send(Orcashi* orcashi, const char* peer_id, const char* message);
 
 /* ============================================================================
- * Secure Connection
+ * VOICE CALL FUNCTIONS (Ghost Call)
  * ============================================================================ */
 
-bool orcashi_init_secure_session(ORCASHI* orcashi);
-bool orcashi_complete_secure_session(ORCASHI* orcashi, const char* peer_public_key_hex);
-bool orcashi_session_established(ORCASHI* orcashi);
+/* Start voice call */
+int orcashi_call_start(Orcashi* orcashi, const char* peer_id);
+
+/* Answer voice call */
+int orcashi_call_answer(Orcashi* orcashi, const char* caller_id, int room);
+
+/* Check if call is active */
+bool orcashi_call_is_active(Orcashi* orcashi);
 
 /* ============================================================================
- * Peer Management
+ * NOTE FUNCTIONS (Orcanote)
  * ============================================================================ */
 
-bool orcashi_register_identity(ORCASHI* orcashi);
-bool orcashi_connect_peer(ORCASHI* orcashi, const char* id);
-void orcashi_show_peers(ORCASHI* orcashi);
+/* Add note to time capsule */
+int orcashi_note_add(Orcashi* orcashi, const char* content);
+
+/* View all notes */
+void orcashi_note_view(Orcashi* orcashi);
+
+/* Find note by hash */
+int orcashi_note_find(Orcashi* orcashi, const char* hash);
 
 /* ============================================================================
- * Callbacks
+ * MIXED ID FUNCTIONS
  * ============================================================================ */
 
-void orcashi_set_callbacks(ORCASHI* orcashi,
-                          void (*on_peer_found)(const char*, const char*),
-                          void (*on_message_received)(const char*, const char*),
-                          void (*on_status_change)(const char*));
+/* Get Mixed ID for current identity */
+int orcashi_get_mixed_id(Orcashi* orcashi, char* out, size_t size);
+
+/* Connect via Mixed ID */
+int orcashi_connect_mixed_id(Orcashi* orcashi, const char* mixed_id);
 
 /* ============================================================================
- * Utility
+ * UTILITY FUNCTIONS
  * ============================================================================ */
 
-char* orcashi_generate_id(void);
+/* Get local IP */
 char* orcashi_get_local_ip(void);
+
+/* Get public IP */
+char* orcashi_get_public_ip(void);
+
+/* Generate ID */
+char* orcashi_generate_id(void);
+
+/* Bytes to hex */
 char* orcashi_bytes_to_hex(const unsigned char* bytes, int len);
-bool orcashi_save_ip(const char* ip);
+
+/* ============================================================================
+ * CALLBACK SETTERS
+ * ============================================================================ */
+
+void orcashi_set_on_peer_found(Orcashi* orcashi, 
+                                void (*callback)(const char*, const char*, int));
+
+void orcashi_set_on_message_received(Orcashi* orcashi,
+                                      void (*callback)(const char*, const char*));
+
+void orcashi_set_on_status_change(Orcashi* orcashi,
+                                   void (*callback)(const char*));
+
+void orcashi_set_on_call_received(Orcashi* orcashi,
+                                   void (*callback)(const char*, int));
+
+/* ============================================================================
+ * DEBUG FUNCTIONS
+ * ============================================================================ */
+
+void orcashi_debug_print(Orcashi* orcashi);
+void orcashi_debug_dump_state(Orcashi* orcashi);
 
 #endif /* ORCASHI_H */
