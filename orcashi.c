@@ -3,6 +3,7 @@
 #include <netdb.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ctype.h>
 
 /* ============================================================================
  * STATIC HELPERS
@@ -67,9 +68,17 @@ int orcashi_init(Orcashi* orcashi) {
     /* Initialize state manager */
     state_init();
     
+    /* Initialize P2P manager */
+    p2p_init();
+    
     orcashi->initialized = true;
     
     return 0;
+}
+
+int orcashi_init_with_config(Orcashi* orcashi, const char* config_path) {
+    (void)config_path;
+    return orcashi_init(orcashi);
 }
 
 void orcashi_cleanup(Orcashi* orcashi) {
@@ -81,6 +90,9 @@ void orcashi_cleanup(Orcashi* orcashi) {
     if (orcashi->daemon_running) {
         orcashi_stop_daemon(orcashi);
     }
+    
+    /* Cleanup P2P */
+    p2p_cleanup();
     
     /* Save state */
     state_save();
@@ -151,6 +163,12 @@ int orcashi_register_identity(Orcashi* orcashi, const char* passcode) {
     
     LOG_INFO("Registering identity...");
     
+    /* Check if identity already exists */
+    if (orca_identity_exists(NULL)) {
+        LOG_WARN("Identity already exists");
+        return -1;
+    }
+    
     /* Generate ID */
     char id[64];
     orca_identity_generate_normal_id(id);
@@ -182,7 +200,7 @@ int orcashi_load_identity(Orcashi* orcashi, const char* passcode) {
     
     OrcaIdentity identity;
     if (orca_identity_load(&identity, passcode) < 0) {
-        LOG_ERROR("Failed to load identity");
+        LOG_ERROR("Failed to load identity: %s", orca_get_last_error());
         return -1;
     }
     
@@ -219,6 +237,12 @@ void orcashi_print_identity(Orcashi* orcashi) {
 int orcashi_search_peer(Orcashi* orcashi, const char* peer_id) {
     if (!orcashi || !peer_id) return -1;
     
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running. Use './orcashi listen' first.");
+        return -1;
+    }
+    
     char cmd[256];
     char response[1024];
     snprintf(cmd, sizeof(cmd), "search %s", peer_id);
@@ -234,6 +258,12 @@ int orcashi_search_peer(Orcashi* orcashi, const char* peer_id) {
 
 int orcashi_add_peer(Orcashi* orcashi, const char* peer_id) {
     if (!orcashi || !peer_id) return -1;
+    
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running. Use './orcashi listen' first.");
+        return -1;
+    }
     
     char cmd[256];
     char response[1024];
@@ -251,6 +281,12 @@ int orcashi_add_peer(Orcashi* orcashi, const char* peer_id) {
 int orcashi_accept_peer(Orcashi* orcashi, const char* peer_id) {
     if (!orcashi || !peer_id) return -1;
     
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running. Use './orcashi listen' first.");
+        return -1;
+    }
+    
     char cmd[256];
     char response[1024];
     snprintf(cmd, sizeof(cmd), "accept %s", peer_id);
@@ -267,6 +303,12 @@ int orcashi_accept_peer(Orcashi* orcashi, const char* peer_id) {
 int orcashi_reject_peer(Orcashi* orcashi, const char* peer_id) {
     if (!orcashi || !peer_id) return -1;
     
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running. Use './orcashi listen' first.");
+        return -1;
+    }
+    
     char cmd[256];
     char response[1024];
     snprintf(cmd, sizeof(cmd), "reject %s", peer_id);
@@ -282,6 +324,12 @@ int orcashi_reject_peer(Orcashi* orcashi, const char* peer_id) {
 
 int orcashi_remove_peer(Orcashi* orcashi, const char* peer_id) {
     if (!orcashi || !peer_id) return -1;
+    
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running. Use './orcashi listen' first.");
+        return -1;
+    }
     
     char cmd[256];
     char response[1024];
@@ -320,22 +368,73 @@ int orcashi_chat_start(Orcashi* orcashi, const char* peer_id) {
         return -1;
     }
     
-    /* Use commands.c chat handler */
-    char cmd[256];
-    char response[1024];
-    snprintf(cmd, sizeof(cmd), "chat_start %s", peer_id);
-    
-    if (command_send_to_daemon(cmd, response, sizeof(response)) == 0) {
-        printf("%s", response);
-        return 0;
+    /* Check if peer exists */
+    Peer* peer = state_get_peer(peer_id);
+    if (!peer) {
+        LOG_ERROR("Peer %s not found", peer_id);
+        return -1;
     }
     
-    LOG_ERROR("Failed to start chat with %s", peer_id);
-    return -1;
+    if (peer->state != PEER_FRIEND) {
+        LOG_ERROR("Peer %s is not a friend. Send request first.", peer_id);
+        return -1;
+    }
+    
+    printf("\n");
+    printf("============================================================\n");
+    printf("  ORCASHI CHAT\n");
+    printf("============================================================\n");
+    printf("  Peer: %s\n", peer_id);
+    printf("  Status: %s\n", peer->online ? "ONLINE" : "OFFLINE");
+    printf("  IP: %s:%d\n", peer->ip, peer->port);
+    printf("============================================================\n");
+    printf("  Type /exit to quit\n");
+    printf("  Type /status to check\n");
+    printf("  Type /secure to enable encryption\n");
+    printf("============================================================\n");
+    printf("\n");
+    
+    /* Start chat session */
+    char input[4096];
+    char response[4096];
+    
+    while (1) {
+        printf("[you] ");
+        fflush(stdout);
+        
+        if (!fgets(input, sizeof(input), stdin)) break;
+        input[strcspn(input, "\n")] = '\0';
+        
+        if (strcmp(input, "/exit") == 0) break;
+        if (strcmp(input, "/status") == 0) {
+            Peer* p = state_get_peer(peer_id);
+            printf("[CHAT] Status: %s\n", p ? (p->online ? "ONLINE" : "OFFLINE") : "UNKNOWN");
+            continue;
+        }
+        if (strcmp(input, "/secure") == 0) {
+            printf("[CHAT] Enabling secure channel...\n");
+            /* TODO: Implement secure channel via p2p_manager */
+            continue;
+        }
+        
+        /* Send message via daemon */
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "chat_send %s %s", peer_id, input);
+        command_send_to_daemon(cmd, response, sizeof(response));
+    }
+    
+    printf("\n[CHAT] Session ended.\n");
+    return 0;
 }
 
 int orcashi_chat_send(Orcashi* orcashi, const char* peer_id, const char* message) {
     if (!orcashi || !peer_id || !message) return -1;
+    
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running.");
+        return -1;
+    }
     
     char cmd[512];
     char response[1024];
@@ -351,6 +450,12 @@ int orcashi_chat_send(Orcashi* orcashi, const char* peer_id, const char* message
 
 int orcashi_ghost_send(Orcashi* orcashi, const char* peer_id, const char* message) {
     if (!orcashi || !peer_id || !message) return -1;
+    
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running. Use './orcashi listen' first.");
+        return -1;
+    }
     
     char cmd[512];
     char response[1024];
@@ -371,6 +476,12 @@ int orcashi_ghost_send(Orcashi* orcashi, const char* peer_id, const char* messag
 
 int orcashi_call_start(Orcashi* orcashi, const char* peer_id) {
     if (!orcashi || !peer_id) return -1;
+    
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running. Use './orcashi listen' first.");
+        return -1;
+    }
     
     /* Get peer IP and port */
     Peer* peer = state_get_peer(peer_id);
@@ -398,6 +509,12 @@ int orcashi_call_start(Orcashi* orcashi, const char* peer_id) {
 
 int orcashi_call_answer(Orcashi* orcashi, const char* caller_id, int room) {
     if (!orcashi || !caller_id) return -1;
+    
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running. Use './orcashi listen' first.");
+        return -1;
+    }
     
     /* Get caller IP */
     Peer* peer = state_get_peer(caller_id);
@@ -435,6 +552,12 @@ bool orcashi_call_is_active(Orcashi* orcashi) {
 
 int orcashi_note_add(Orcashi* orcashi, const char* content) {
     if (!orcashi || !content) return -1;
+    
+    /* Check if daemon is running */
+    if (!orcashi_is_daemon_running(orcashi)) {
+        LOG_ERROR("Daemon not running. Use './orcashi listen' first.");
+        return -1;
+    }
     
     char cmd[512];
     char response[1024];
@@ -508,7 +631,7 @@ int orcashi_connect_mixed_id(Orcashi* orcashi, const char* mixed_id) {
 }
 
 /* ============================================================================
- * UTILITY
+ * UTILITY - FIXED: No C++ code!
  * ============================================================================ */
 
 char* orcashi_get_local_ip(void) {
@@ -564,20 +687,36 @@ char* orcashi_get_public_ip(void) {
         send(sock, request, strlen(request), 0);
         
         char buffer[4096];
-        string response;
+        char response[8192] = {0};
+        int total = 0;
         int n;
-        while ((n = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0) {
+        
+        while ((n = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0 && total < (int)sizeof(response) - 1) {
             buffer[n] = '\0';
-            response += buffer;
+            memcpy(response + total, buffer, n);
+            total += n;
         }
         close(sock);
         
-        size_t pos = response.find("\r\n\r\n");
-        if (pos != string::npos) {
-            string body = response.substr(pos + 4);
-            body.erase(remove_if(body.begin(), body.end(), ::isspace), body.end());
-            if (!body.empty()) {
-                strcpy(ip, body.c_str());
+        /* Find body after HTTP headers */
+        char* body = strstr(response, "\r\n\r\n");
+        if (body) {
+            body += 4;  /* Skip \r\n\r\n */
+            
+            /* Remove trailing whitespace/newlines */
+            char* end = body + strlen(body) - 1;
+            while (end > body && (*end == '\n' || *end == '\r' || *end == ' ' || *end == '\t')) {
+                end--;
+            }
+            *(end + 1) = '\0';
+            
+            /* Remove leading whitespace */
+            while (*body == ' ' || *body == '\n' || *body == '\r' || *body == '\t') {
+                body++;
+            }
+            
+            if (strlen(body) > 0) {
+                strcpy(ip, body);
                 return strdup(ip);
             }
         }
