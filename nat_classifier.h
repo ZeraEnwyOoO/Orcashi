@@ -1,4 +1,4 @@
-#ifndef NAT_CLASSIFIER_H
+ #ifndef NAT_CLASSIFIER_H
 #define NAT_CLASSIFIER_H
 
 #include <stdbool.h>
@@ -6,10 +6,6 @@
 #include <time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-
-/* ============================================================================
- * NAT TYPES
- * ============================================================================ */
 
 typedef enum {
     NAT_UNKNOWN = 0,
@@ -19,56 +15,36 @@ typedef enum {
     NAT_SYMMETRIC
 } NATType;
 
-/* ============================================================================
- * NAT CLASSIFIER STATE
- * ============================================================================ */
-
 typedef struct {
     NATType type;
     char external_ip[INET_ADDRSTRLEN];
     int external_port;
     bool detected;
     time_t detection_time;
-    int confidence;          /* 0-100 */
-    char detected_via[64];   /* "dht", "stun", "manual" */
+    int confidence;
+    char detected_via[64];
 } NATClassifierResult;
 
-/* ============================================================================
- * NAT CLASSIFIER FUNCTIONS
- * ============================================================================ */
+/* DHT-based NAT detection (Tox style) */
+NATType nat_classify_via_dht(void* dht_node, const char* my_id);
 
-/* Detect NAT type using DHT (Tox-style) */
-NATType nat_classify_via_dht(void* dht_node);
-
-/* Detect NAT type using STUN (fallback) */
+/* STUN-based NAT detection (fallback) */
 NATType nat_classify_via_stun(void);
 
-/* Detect NAT type using UPnP */
+/* UPnP-based NAT detection */
 NATType nat_classify_via_upnp(void);
 
-/* ============================================================================
- * NAT DETECTION HELPERS
- * ============================================================================ */
-
-/* Check if IPv6 is available */
+/* IPv6 detection */
 bool nat_has_ipv6(void);
 
-/* Check if UPnP is available */
+/* UPnP availability */
 bool nat_has_upnp(void);
 
-/* Check if we're behind a firewall */
+/* Firewall detection */
 bool nat_is_firewalled(void);
-
-/* ============================================================================
- * NAT TYPE STRINGS
- * ============================================================================ */
 
 const char* nat_type_to_string(NATType type);
 
-/* ============================================================================
- * DEBUG
- * ============================================================================ */
-
 void nat_debug_print(NATClassifierResult* result);
 
-#endif /* NAT_CLASSIFIER_H */
+#endif
