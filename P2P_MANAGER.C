@@ -1,10 +1,19 @@
-#include "p2p_manager.h"
+ #include "p2p_manager.h"
 #include "dht_node.h"
 #include "state_manager.h"
 #include "event_loop.h"
 #include "orca_crypto.h"
 #include "ecdh.h"
 #include "aes_gcm.h"
+#include "nat_classifier.h"
+#include "strategy_selector.h"
+#include "parallel_runner.h"
+#include "ttl_punch.h"
+#include "simultaneous_open.h"
+#include "friend_relay.h"
+#include "turn_client.h"
+#include "upnp_client.h"
+#include "port_prediction.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +50,11 @@ static P2PPeer g_peers[P2P_MAX_PEERS];
 static int g_peer_count = 0;
 static pthread_mutex_t g_p2p_mutex = PTHREAD_MUTEX_INITIALIZER;
 static bool g_initialized = false;
+static NATType g_nat_type = NAT_UNKNOWN;
+static bool g_has_ipv6 = false;
+static bool g_has_upnp = false;
+static pthread_t g_listener_thread = 0;
+static bool g_listener_running = false;
 
 /* ============================================================================
  * UTILITY
@@ -74,6 +88,31 @@ static P2PPeer* find_peer(const char* id) {
     return NULL;
 }
 
+static P2PPeer* add_peer(const char* id) {
+    char norm_id[64];
+    normalize_id(id, norm_id, sizeof(norm_id));
+    
+    if (g_peer_count >= P2P_MAX_PEERS) return NULL;
+    
+    /* Check if exists */
+    for (int i = 0; i < g_peer_count; i++) {
+        char peer_norm[64];
+        normalize_id(g_peers[i].id, peer_norm, sizeof(peer_norm));
+        if (strcmp(peer_norm, norm_id) == 0) {
+            return &g_peers[i];
+        }
+    }
+    
+    P2PPeer* peer = &g_peers[g_peer_count++];
+    memset(peer, 0, sizeof(P2PPeer));
+    strcpy(peer->id, norm_id);
+    peer->state = P2P_STATE_DISCONNECTED;
+    peer->created_at = time(NULL);
+    peer->nat_type = NAT_UNKNOWN;
+    
+    return peer;
+}
+
 /* ============================================================================
  * INIT / CLEANUP
  * ============================================================================ */
@@ -83,6 +122,7 @@ int p2p_init(void) {
     
     PLOG("Initializing P2P manager");
     
+    /* Create UDP socket */
     g_p2p_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_p2p_socket < 0) {
         PLOG("Failed to create UDP socket: %s", strerror(errno));
@@ -105,8 +145,19 @@ int p2p_init(void) {
         return -1;
     }
     
+    /* Detect capabilities */
+    g_nat_type = p2p_detect_nat_type();
+    g_has_ipv6 = p2p_has_ipv6();
+    g_has_upnp = p2p_has_upnp();
+    
+    PLOG("NAT type: %d, IPv6: %d, UPnP: %d", g_nat_type, g_has_ipv6, g_has_upnp);
+    
     g_initialized = true;
     PLOG("P2P initialized on port %d", P2P_PORT);
+    
+    /* Start listener thread */
+    g_listener_running = true;
+    pthread_create(&g_listener_thread, NULL, p2p_listener_thread, NULL);
     
     return 0;
 }
@@ -115,6 +166,12 @@ void p2p_cleanup(void) {
     if (!g_initialized) return;
     
     PLOG("Cleaning up P2P manager");
+    
+    g_listener_running = false;
+    if (g_listener_thread) {
+        pthread_join(g_listener_thread, NULL);
+        g_listener_thread = 0;
+    }
     
     if (g_p2p_socket >= 0) {
         close(g_p2p_socket);
@@ -126,7 +183,44 @@ void p2p_cleanup(void) {
 }
 
 /* ============================================================================
- * P2P CONNECTION
+ * NAT DETECTION
+ * ============================================================================ */
+
+NATType p2p_detect_nat_type(void) {
+    PLOG("Detecting NAT type...");
+    
+    /* Use DHT-based NAT detection */
+    NATType type = nat_classify_via_dht(NULL);
+    
+    PLOG("NAT type detected: %d", type);
+    return type;
+}
+
+bool p2p_has_ipv6(void) {
+    int sock = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (sock < 0) return false;
+    
+    struct sockaddr_in6 addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin6_family = AF_INET6;
+    addr.sin6_port = htons(53);
+    inet_pton(AF_INET6, "2001:4860:4860::8888", &addr.sin6_addr);
+    
+    bool has = (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+    close(sock);
+    
+    PLOG("IPv6: %s", has ? "YES" : "NO");
+    return has;
+}
+
+bool p2p_has_upnp(void) {
+    bool has = upnp_detect();
+    PLOG("UPnP: %s", has ? "YES" : "NO");
+    return has;
+}
+
+/* ============================================================================
+ * P2P CONNECTION — MULTI-CANDIDATE RACING
  * ============================================================================ */
 
 int p2p_connect(const char* peer_id) {
@@ -147,38 +241,27 @@ int p2p_connect(const char* peer_id) {
         return 0;
     }
     
-    /* Lookup peer in DHT */
+    /* Get peer info from DHT */
     char ip[INET_ADDRSTRLEN];
     int port;
+    PeerCapability remote_cap = {0};
     
-    /* TODO: Call DHT lookup */
-    /* For now, use placeholder */
-    strcpy(ip, "127.0.0.1");
-    port = P2P_PORT;
-    
-    /* Create peer entry */
-    pthread_mutex_lock(&g_p2p_mutex);
-    
-    if (g_peer_count >= P2P_MAX_PEERS) {
-        pthread_mutex_unlock(&g_p2p_mutex);
+    if (!dht_node_lookup(NULL, norm_id, 10, ip, &port)) {
+        PLOG("Peer %s not found in DHT", norm_id);
         return -1;
     }
     
-    P2PPeer* peer = NULL;
+    /* Get peer capabilities */
+    p2p_get_peer_capability(norm_id, &remote_cap);
     
-    /* Find existing or create new */
-    for (int i = 0; i < g_peer_count; i++) {
-        char peer_norm[64];
-        normalize_id(g_peers[i].id, peer_norm, sizeof(peer_norm));
-        if (strcmp(peer_norm, norm_id) == 0) {
-            peer = &g_peers[i];
-            break;
-        }
-    }
+    PLOG("Peer %s at %s:%d, NAT: %d, IPv6: %d", 
+         norm_id, ip, port, remote_cap.nat_type, remote_cap.has_ipv6);
     
+    /* Create or update peer */
+    P2PPeer* peer = add_peer(norm_id);
     if (!peer) {
-        peer = &g_peers[g_peer_count++];
-        strcpy(peer->id, norm_id);
+        PLOG("Failed to add peer");
+        return -1;
     }
     
     strcpy(peer->ip, ip);
@@ -186,24 +269,59 @@ int p2p_connect(const char* peer_id) {
     peer->state = P2P_STATE_CONNECTING;
     peer->is_initiator = true;
     peer->last_activity = time(NULL);
+    peer->nat_type = remote_cap.nat_type;
+    peer->has_ipv6 = remote_cap.has_ipv6;
+    if (remote_cap.has_ipv6) {
+        strcpy(peer->ipv6, remote_cap.ipv6);
+    }
     
     memset(&peer->addr, 0, sizeof(peer->addr));
     peer->addr.sin_family = AF_INET;
     peer->addr.sin_port = htons(port);
     inet_pton(AF_INET, ip, &peer->addr.sin_addr);
     
-    pthread_mutex_unlock(&g_p2p_mutex);
+    /* === PHASE 1: Profile the peer === */
+    PeerProfile local_profile = {
+        .nat_type = g_nat_type,
+        .has_ipv6 = g_has_ipv6,
+        .has_upnp = g_has_upnp
+    };
     
-    /* Start hole punching */
-    PLOG("Starting hole punch to %s at %s:%d", norm_id, ip, port);
-    p2p_hole_punch(ip, port);
+    PeerProfile remote_profile = {
+        .nat_type = remote_cap.nat_type,
+        .has_ipv6 = remote_cap.has_ipv6,
+        .has_upnp = remote_cap.has_upnp
+    };
     
-    /* TODO: ECDH handshake */
+    /* === PHASE 2: Filter strategies === */
+    StrategyList strategies = {0};
+    strategy_filter(&strategies, &local_profile, &remote_profile);
     
-    peer->state = P2P_STATE_ESTABLISHED;
-    PLOG("Connected to %s", norm_id);
+    PLOG("Selected %d strategies for parallel racing", strategies.count);
+    for (int i = 0; i < strategies.count; i++) {
+        PLOG("  Strategy %d: %s", i, strategy_name(strategies.strategies[i]));
+    }
     
-    return 0;
+    /* === PHASE 3: Parallel racing === */
+    ConnectionResult result = {0};
+    if (parallel_run(&strategies, peer, &result) == 0) {
+        PLOG("✅ Connected using strategy: %s", strategy_name(result.strategy));
+        
+        /* Update peer state */
+        peer->state = P2P_STATE_ESTABLISHED;
+        peer->is_secure = true;
+        peer->last_activity = time(NULL);
+        
+        /* Trigger event */
+        Event event = event_create(EVENT_ACCEPT_CONFIRM, norm_id);
+        event_queue_push(&event);
+        
+        return 0;
+    }
+    
+    PLOG("❌ All connection strategies failed for %s", norm_id);
+    peer->state = P2P_STATE_DISCONNECTED;
+    return -1;
 }
 
 int p2p_accept(const char* peer_id) {
@@ -212,7 +330,6 @@ int p2p_accept(const char* peer_id) {
     
     PLOG("Accepting connection from %s", norm_id);
     
-    /* Update state */
     pthread_mutex_lock(&g_p2p_mutex);
     
     P2PPeer* peer = find_peer(norm_id);
@@ -224,7 +341,6 @@ int p2p_accept(const char* peer_id) {
     
     pthread_mutex_unlock(&g_p2p_mutex);
     
-    /* Trigger event */
     Event event = event_create(EVENT_ACCEPT_CONFIRM, norm_id);
     event_queue_push(&event);
     
@@ -290,6 +406,22 @@ int p2p_send(const char* peer_id, const char* message) {
     return 0;
 }
 
+int p2p_send_secure(const char* peer_id, const unsigned char* data, size_t len) {
+    if (!peer_id || !data || len == 0) return -1;
+    
+    char norm_id[64];
+    normalize_id(peer_id, norm_id, sizeof(norm_id));
+    
+    P2PPeer* peer = find_peer(norm_id);
+    if (!peer || peer->state != P2P_STATE_ESTABLISHED) {
+        return -1;
+    }
+    
+    /* TODO: Implement AES-GCM encryption */
+    
+    return p2p_send(peer_id, (const char*)data);
+}
+
 int p2p_recv(const char* peer_id, char* message, int max_len) {
     if (!peer_id || !message || max_len <= 0) return -1;
     
@@ -297,15 +429,10 @@ int p2p_recv(const char* peer_id, char* message, int max_len) {
     normalize_id(peer_id, norm_id, sizeof(norm_id));
     
     P2PPeer* peer = find_peer(norm_id);
-    if (!peer) {
+    if (!peer || peer->state != P2P_STATE_ESTABLISHED) {
         return -1;
     }
     
-    if (peer->state != P2P_STATE_ESTABLISHED) {
-        return -1;
-    }
-    
-    /* Non-blocking receive */
     struct sockaddr_in from;
     socklen_t from_len = sizeof(from);
     
@@ -314,7 +441,7 @@ int p2p_recv(const char* peer_id, char* message, int max_len) {
     
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;  /* No data */
+            return 0;
         }
         return -1;
     }
@@ -329,53 +456,21 @@ int p2p_recv(const char* peer_id, char* message, int max_len) {
  * P2P HOLE PUNCHING
  * ============================================================================ */
 
-int p2p_hole_punch(const char* ip, int port) {
+int p2p_hole_punch(const char* ip, int port, NATType peer_nat) {
     if (!ip || port <= 0) return -1;
     
-    PLOG("Hole punching to %s:%d", ip, port);
+    PLOG("Hole punching to %s:%d (peer NAT: %d)", ip, port, peer_nat);
     
-    struct sockaddr_in target;
-    memset(&target, 0, sizeof(target));
-    target.sin_family = AF_INET;
-    target.sin_port = htons(port);
-    inet_pton(AF_INET, ip, &target.sin_addr);
+    /* Use multi-strategy hole punching */
+    int result = punch_multi_strategy(ip, port, g_nat_type, peer_nat);
     
-    /* Send multiple punch packets */
-    const char* punch_msg = "ORCA_PUNCH";
-    
-    for (int i = 0; i < 10; i++) {
-        sendto(g_p2p_socket, punch_msg, strlen(punch_msg), 0,
-               (struct sockaddr*)&target, sizeof(target));
-        usleep(10000);  /* 10ms */
+    if (result == 0) {
+        PLOG("Hole punch successful to %s:%d", ip, port);
+    } else {
+        PLOG("Hole punch failed to %s:%d", ip, port);
     }
     
-    /* Listen for response */
-    struct sockaddr_in from;
-    socklen_t from_len = sizeof(from);
-    char buffer[256];
-    
-    /* Set timeout */
-    struct timeval tv;
-    tv.tv_sec = 2;
-    tv.tv_usec = 0;
-    setsockopt(g_p2p_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    
-    int n = recvfrom(g_p2p_socket, buffer, sizeof(buffer) - 1, 0,
-                     (struct sockaddr*)&from, &from_len);
-    
-    /* Reset timeout */
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
-    setsockopt(g_p2p_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    
-    if (n > 0) {
-        buffer[n] = '\0';
-        PLOG("Punch response from %s:%d", ip, ntohs(from.sin_port));
-        return 0;
-    }
-    
-    PLOG("No punch response from %s:%d", ip, port);
-    return -1;
+    return result;
 }
 
 int p2p_punch_listen(char* ip_out, int* port_out) {
@@ -388,13 +483,12 @@ int p2p_punch_listen(char* ip_out, int* port_out) {
     int n = recvfrom(g_p2p_socket, buffer, sizeof(buffer) - 1, 0,
                      (struct sockaddr*)&from, &from_len);
     
-    if (n < 0) {
-        return -1;
-    }
+    if (n < 0) return -1;
     
     buffer[n] = '\0';
     
-    if (strcmp(buffer, "ORCA_PUNCH") == 0) {
+    if (strcmp(buffer, "ORCA_PUNCH") == 0 ||
+        strcmp(buffer, "ORCA_PUNCH_RESPONSE") == 0) {
         inet_ntop(AF_INET, &from.sin_addr, ip_out, INET_ADDRSTRLEN);
         *port_out = ntohs(from.sin_port);
         PLOG("Received punch from %s:%d", ip_out, *port_out);
@@ -402,6 +496,30 @@ int p2p_punch_listen(char* ip_out, int* port_out) {
     }
     
     return -1;
+}
+
+/* ============================================================================
+ * PEER CAPABILITIES
+ * ============================================================================ */
+
+int p2p_get_peer_capability(const char* peer_id, PeerCapability* cap) {
+    if (!peer_id || !cap) return -1;
+    
+    /* TODO: Get from DHT */
+    memset(cap, 0, sizeof(PeerCapability));
+    strcpy(cap->id, peer_id);
+    cap->nat_type = NAT_UNKNOWN;
+    cap->has_ipv6 = false;
+    cap->has_upnp = false;
+    
+    return 0;
+}
+
+int p2p_exchange_capabilities(const char* peer_id, PeerCapability* remote) {
+    if (!peer_id || !remote) return -1;
+    
+    /* TODO: Exchange capabilities via DHT */
+    return 0;
 }
 
 /* ============================================================================
@@ -423,8 +541,12 @@ P2PState p2p_get_state(const char* peer_id) {
     return peer ? peer->state : P2P_STATE_DISCONNECTED;
 }
 
+NATType p2p_get_nat_type(void) {
+    return g_nat_type;
+}
+
 /* ============================================================================
- * P2P BACKGROUND LISTENER
+ * P2P BACKGROUND LISTENER THREAD
  * ============================================================================ */
 
 static void* p2p_listener_thread(void* arg) {
@@ -438,7 +560,7 @@ static void* p2p_listener_thread(void* arg) {
     fd_set fds;
     struct timeval tv;
     
-    while (g_initialized) {
+    while (g_listener_running) {
         FD_ZERO(&fds);
         FD_SET(g_p2p_socket, &fds);
         
@@ -463,8 +585,6 @@ static void* p2p_listener_thread(void* arg) {
         inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
         int port = ntohs(from.sin_port);
         
-        PLOG("Received %d bytes from %s:%d", n, ip, port);
-        
         /* Check if this is a known peer */
         pthread_mutex_lock(&g_p2p_mutex);
         
@@ -478,11 +598,8 @@ static void* p2p_listener_thread(void* arg) {
         
         if (found < 0) {
             /* Unknown peer - could be new connection */
-            PLOG("Unknown peer %s:%d", ip, port);
-            
-            /* Check if this is a punch packet */
-            if (strcmp(buffer, "ORCA_PUNCH") == 0) {
-                PLOG("Punch from %s:%d", ip, port);
+            if (strcmp(buffer, "ORCA_PUNCH") == 0 ||
+                strcmp(buffer, "ORCA_PUNCH_RESPONSE") == 0) {
                 /* Respond to punch */
                 sendto(g_p2p_socket, "ORCA_PUNCH_RESPONSE", 18, 0,
                        (struct sockaddr*)&from, from_len);
@@ -491,8 +608,8 @@ static void* p2p_listener_thread(void* arg) {
             /* Known peer - process message */
             P2PPeer* peer = &g_peers[found];
             
-            if (strcmp(buffer, "ORCA_PUNCH") == 0) {
-                /* Respond to punch */
+            if (strcmp(buffer, "ORCA_PUNCH") == 0 ||
+                strcmp(buffer, "ORCA_PUNCH_RESPONSE") == 0) {
                 sendto(g_p2p_socket, "ORCA_PUNCH_RESPONSE", 18, 0,
                        (struct sockaddr*)&from, from_len);
             } else {
@@ -520,6 +637,9 @@ static void* p2p_listener_thread(void* arg) {
 void p2p_debug_print(void) {
     printf("\n=== P2P MANAGER DEBUG ===\n");
     printf("Socket: %d\n", g_p2p_socket);
+    printf("NAT Type: %d\n", g_nat_type);
+    printf("IPv6: %s\n", g_has_ipv6 ? "YES" : "NO");
+    printf("UPnP: %s\n", g_has_upnp ? "YES" : "NO");
     printf("Peers: %d\n", g_peer_count);
     for (int i = 0; i < g_peer_count; i++) {
         P2PPeer* p = &g_peers[i];
