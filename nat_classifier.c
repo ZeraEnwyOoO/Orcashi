@@ -1,13 +1,13 @@
-#include "nat_classifier.h"
+ #include "nat_classifier.h"
 #include "dht_node.h"
 #include "dht.h"
-#include "p2p_manager.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
@@ -27,9 +27,26 @@
 #define NLOG(fmt, ...) ((void)0)
 #endif
 
-/* ============================================================================
- * NAT TYPE STRINGS
- * ============================================================================ */
+#define PROBE_PORT_START 33445
+#define PROBE_PORT_END 33455
+#define PROBE_TIMEOUT_MS 2000
+#define MAX_PROBE_PEERS 8
+
+typedef struct {
+    uint32_t magic;
+    uint8_t type;
+    uint32_t probe_id;
+    uint32_t timestamp;
+    uint8_t sender_id[32];
+} DHTNATProbe;
+
+typedef struct {
+    char ip[INET_ADDRSTRLEN];
+    int port;
+    int external_port;
+    time_t response_time;
+    bool received;
+} ProbeResponse;
 
 const char* nat_type_to_string(NATType type) {
     switch (type) {
@@ -42,204 +59,335 @@ const char* nat_type_to_string(NATType type) {
     }
 }
 
-/* ============================================================================
- * DHT-BASED NAT DETECTION (Tox-style)
- * ============================================================================ */
+static int create_probe_socket(int* port_out) {
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        NLOG("Failed to create probe socket: %s", strerror(errno));
+        return -1;
+    }
 
-/* Structure for DHT NAT detection probe */
-typedef struct {
-    uint32_t magic;          /* 0x4F524341 ("ORCA") */
-    uint8_t type;            /* 1 = REQUEST, 2 = RESPONSE */
-    uint32_t probe_id;
-    uint32_t timestamp;
-    uint8_t sender_id[32];
-} DHTNATProbe;
+    int opt = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-/* Callback for DHT NAT detection */
-static void nat_dht_callback(void* closure, int event,
-                             const unsigned char* info_hash,
-                             const void* data, size_t data_len) {
-    (void)closure;
-    (void)info_hash;
-    (void)data;
-    (void)data_len;
-    
-    if (event == DHT_EVENT_VALUES || event == DHT_EVENT_VALUES6) {
-        NLOG("Received DHT response for NAT detection");
-    }
-}
-
-NATType nat_classify_via_dht(void* dht_node) {
-    NLOG("Detecting NAT type via DHT (Tox-style)...");
-    
-    DHTNode* node = (DHTNode*)dht_node;
-    if (!node) {
-        NLOG("DHT node not available, using fallback");
-        return nat_classify_via_stun();
-    }
-    
-    /* 1. Generate random probe ID */
-    uint32_t probe_id = (uint32_t)(time(NULL) ^ getpid());
-    NLOG("Probe ID: %u", probe_id);
-    
-    /* 2. Find closest peers to our ID */
-    unsigned char target_id[20];
-    // Use our DHT ID as target
-    dht_hash(target_id, 20, "nat_detection", 13, NULL, 0, NULL, 0);
-    
-    /* 3. Send NAT probe requests to multiple DHT peers */
-    int responses_received = 0;
-    int port_changes = 0;
-    int ip_changes = 0;
-    int ports[10] = {0};
-    char ips[10][INET_ADDRSTRLEN] = {0};
-    
-    NLOG("Sending NAT probe to DHT peers...");
-    
-    /* We need to get our external IP/port from DHT peers */
-    /* In Tox, this is done by sending a special DHT request */
-    
-    /* For now, use a simpler approach: */
-    /* Try to detect NAT type based on DHT behavior */
-    
-    /* Check if we can see our own DHT announces */
-    /* If we can see our own announces with same port → Full Cone */
-    /* If same IP but different ports → Restricted Cone */
-    /* If different IP/port per peer → Symmetric */
-    
-    /* Simulate detection based on known patterns */
-    /* This will be replaced with actual DHT probe */
-    
-    /* For testing: simulate NAT type based on environment */
-    /* In real implementation, this would use actual DHT probes */
-    
-    /* Check if we're in a known NAT environment */
-    const char* nat_env = getenv("ORCASHI_NAT_TYPE");
-    if (nat_env) {
-        if (strcmp(nat_env, "full") == 0) return NAT_FULL_CONE;
-        if (strcmp(nat_env, "restricted") == 0) return NAT_RESTRICTED_CONE;
-        if (strcmp(nat_env, "port") == 0) return NAT_PORT_RESTRICTED;
-        if (strcmp(nat_env, "symmetric") == 0) return NAT_SYMMETRIC;
-    }
-    
-    /* Default: try to detect from socket behavior */
-    int test_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (test_sock < 0) {
-        NLOG("Failed to create test socket");
-        return NAT_UNKNOWN;
-    }
-    
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(0);  /* Let OS choose port */
     addr.sin_addr.s_addr = INADDR_ANY;
-    
-    if (bind(test_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        NLOG("Failed to bind test socket");
-        close(test_sock);
-        return NAT_UNKNOWN;
+
+    for (int port = PROBE_PORT_START; port <= PROBE_PORT_END; port++) {
+        addr.sin_port = htons(port);
+        if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+            if (port_out) *port_out = port;
+            NLOG("Probe socket bound to port %d", port);
+            return sock;
+        }
     }
-    
-    /* Get bound port */
-    socklen_t len = sizeof(addr);
-    getsockname(test_sock, (struct sockaddr*)&addr, &len);
-    int local_port = ntohs(addr.sin_port);
-    NLOG("Local test port: %d", local_port);
-    
-    /* Try to get external IP from a simple method */
-    /* For now, try to connect to Google DNS and get our IP */
+
+    close(sock);
+    NLOG("Failed to bind probe socket on any port");
+    return -1;
+}
+
+static int send_probe_to_peer(int sock, const char* peer_ip, int peer_port, 
+                               uint32_t probe_id, const char* my_id) {
     struct sockaddr_in target;
     memset(&target, 0, sizeof(target));
     target.sin_family = AF_INET;
-    target.sin_port = htons(53);
-    inet_pton(AF_INET, "8.8.8.8", &target.sin_addr);
+    target.sin_port = htons(peer_port);
+    inet_pton(AF_INET, peer_ip, &target.sin_addr);
+
+    DHTNATProbe probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.magic = 0x4F524341;
+    probe.type = 1;
+    probe.probe_id = probe_id;
+    probe.timestamp = (uint32_t)time(NULL);
     
-    if (connect(test_sock, (struct sockaddr*)&target, sizeof(target)) == 0) {
-        struct sockaddr_in name;
-        socklen_t name_len = sizeof(name);
-        getsockname(test_sock, (struct sockaddr*)&name, &name_len);
-        char ext_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &name.sin_addr, ext_ip, sizeof(ext_ip));
-        int ext_port = ntohs(name.sin_port);
-        NLOG("External address: %s:%d", ext_ip, ext_port);
-        
-        /* Check if we got a different port */
-        if (ext_port != local_port) {
-            NLOG("Port changed from %d to %d - likely Symmetric NAT", local_port, ext_port);
-            close(test_sock);
-            return NAT_SYMMETRIC;
+    if (my_id) {
+        memcpy(probe.sender_id, my_id, 32);
+    }
+
+    ssize_t sent = sendto(sock, &probe, sizeof(probe), 0,
+                          (struct sockaddr*)&target, sizeof(target));
+    
+    if (sent < 0) {
+        NLOG("Failed to send probe to %s:%d: %s", peer_ip, peer_port, strerror(errno));
+        return -1;
+    }
+
+    NLOG("Sent probe %u to %s:%d", probe_id, peer_ip, peer_port);
+    return 0;
+}
+
+static int receive_probe_response(int sock, ProbeResponse* resp, int timeout_ms) {
+    struct sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    DHTNATProbe response;
+    
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    int n = recvfrom(sock, &response, sizeof(response), 0,
+                     (struct sockaddr*)&from, &from_len);
+
+    if (n < 0) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            NLOG("recvfrom error: %s", strerror(errno));
         }
+        return -1;
+    }
+
+    if (n < (int)sizeof(DHTNATProbe)) {
+        NLOG("Received truncated response");
+        return -1;
+    }
+
+    if (response.magic != 0x4F524341) {
+        NLOG("Invalid magic in response");
+        return -1;
+    }
+
+    if (response.type != 2) {
+        NLOG("Unexpected response type: %d", response.type);
+        return -1;
+    }
+
+    inet_ntop(AF_INET, &from.sin_addr, resp->ip, sizeof(resp->ip));
+    resp->port = ntohs(from.sin_port);
+    resp->response_time = time(NULL);
+    resp->received = true;
+
+    NLOG("Received probe response from %s:%d", resp->ip, resp->port);
+    return 0;
+}
+
+NATType nat_classify_via_dht(void* dht_node, const char* my_id) {
+    DHTNode* node = (DHTNode*)dht_node;
+    NLOG("Starting DHT-based NAT classification");
+    
+    if (!node) {
+        NLOG("DHT node is NULL, using STUN fallback");
+        return nat_classify_via_stun();
+    }
+
+    int probe_sock = create_probe_socket(NULL);
+    if (probe_sock < 0) {
+        NLOG("Failed to create probe socket, using STUN fallback");
+        return nat_classify_via_stun();
+    }
+
+    uint32_t probe_id = (uint32_t)(time(NULL) ^ getpid() ^ (rand() & 0xFFFF));
+    ProbeResponse responses[MAX_PROBE_PEERS];
+    memset(responses, 0, sizeof(responses));
+    int resp_count = 0;
+
+    struct sockaddr_in peers[MAX_PROBE_PEERS];
+    int peer_count = 0;
+
+    /* Get DHT peers */
+    struct sockaddr_in sin[MAX_PROBE_PEERS];
+    struct sockaddr_in6 sin6[MAX_PROBE_PEERS];
+    int num_ipv4 = MAX_PROBE_PEERS;
+    int num_ipv6 = 0;
+    
+    if (dht_get_nodes(sin, &num_ipv4, sin6, &num_ipv6) < 0) {
+        NLOG("Failed to get DHT nodes");
+        close(probe_sock);
+        return nat_classify_via_stun();
+    }
+
+    for (int i = 0; i < num_ipv4 && i < MAX_PROBE_PEERS; i++) {
+        peers[peer_count++] = sin[i];
+    }
+
+    if (peer_count < 3) {
+        NLOG("Not enough DHT peers (%d), using STUN fallback", peer_count);
+        close(probe_sock);
+        return nat_classify_via_stun();
+    }
+
+    NLOG("Found %d DHT peers for probing", peer_count);
+
+    for (int i = 0; i < peer_count && i < 5; i++) {
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &peers[i].sin_addr, ip, sizeof(ip));
+        int port = ntohs(peers[i].sin_port);
         
-        close(test_sock);
+        send_probe_to_peer(probe_sock, ip, port, probe_id, my_id);
+        usleep(100000);
+    }
+
+    /* Collect responses */
+    for (int i = 0; i < 10 && resp_count < 5; i++) {
+        ProbeResponse resp;
+        memset(&resp, 0, sizeof(resp));
         
-        /* If port same, likely Full Cone or Restricted */
-        /* Need more tests to differentiate */
-        /* For now, return Full Cone as best guess */
-        NLOG("Port same - likely Full Cone or Restricted Cone");
+        if (receive_probe_response(probe_sock, &resp, PROBE_TIMEOUT_MS / 10) == 0) {
+            responses[resp_count++] = resp;
+        }
+    }
+
+    close(probe_sock);
+
+    if (resp_count < 2) {
+        NLOG("Not enough probe responses (%d), using STUN fallback", resp_count);
+        return nat_classify_via_stun();
+    }
+
+    /* Analyze responses */
+    int port_changes = 0;
+    int ip_changes = 0;
+    int first_port = responses[0].port;
+    char first_ip[INET_ADDRSTRLEN];
+    strcpy(first_ip, responses[0].ip);
+
+    for (int i = 1; i < resp_count; i++) {
+        if (responses[i].port != first_port) {
+            port_changes++;
+        }
+        if (strcmp(responses[i].ip, first_ip) != 0) {
+            ip_changes++;
+        }
+    }
+
+    NLOG("Analysis: %d responses, %d port changes, %d IP changes",
+         resp_count, port_changes, ip_changes);
+
+    if (port_changes == 0 && ip_changes == 0) {
+        NLOG("NAT type: FULL_CONE");
         return NAT_FULL_CONE;
     }
     
-    close(test_sock);
-    NLOG("Could not detect NAT type, returning UNKNOWN");
+    if (port_changes == 0 && ip_changes > 0) {
+        NLOG("NAT type: RESTRICTED_CONE");
+        return NAT_RESTRICTED_CONE;
+    }
+    
+    if (port_changes > 0 && ip_changes == 0) {
+        NLOG("NAT type: PORT_RESTRICTED");
+        return NAT_PORT_RESTRICTED;
+    }
+    
+    if (port_changes > 0 && ip_changes > 0) {
+        NLOG("NAT type: SYMMETRIC");
+        return NAT_SYMMETRIC;
+    }
+
     return NAT_UNKNOWN;
 }
 
-/* ============================================================================
- * STUN-BASED NAT DETECTION (Fallback)
- * ============================================================================ */
-
 NATType nat_classify_via_stun(void) {
-    NLOG("Detecting NAT type via STUN (fallback)...");
+    NLOG("STUN-based NAT classification (fallback)");
     
-    /* Simple STUN-like detection */
-    /* In production, this would use actual STUN protocol */
-    
-    /* Try multiple STUN servers */
-    const char* stun_servers[] = {
-        "stun.l.google.com:19302",
-        "stun1.l.google.com:19302",
+    const char* stun_hosts[] = {
+        "stun.l.google.com",
+        "stun1.l.google.com",
         "stun.ekiga.net",
         NULL
     };
     
-    for (int i = 0; stun_servers[i] != NULL; i++) {
-        NLOG("Trying STUN server: %s", stun_servers[i]);
-        /* TODO: Implement actual STUN protocol */
-        /* For now, return a conservative guess */
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        NLOG("Failed to create STUN socket: %s", strerror(errno));
+        return NAT_UNKNOWN;
     }
-    
-    NLOG("STUN detection not implemented, returning UNKNOWN");
+
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    for (int i = 0; stun_hosts[i] != NULL; i++) {
+        struct addrinfo hints, *res;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+
+        if (getaddrinfo(stun_hosts[i], "19302", &hints, &res) != 0) {
+            continue;
+        }
+
+        unsigned char stun_req[20] = {
+            0x00, 0x01, 0x00, 0x00,
+            0x21, 0x12, 0xA4, 0x42,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+        };
+        
+        for (int j = 8; j < 20; j++) {
+            stun_req[j] = rand() & 0xFF;
+        }
+
+        sendto(sock, stun_req, sizeof(stun_req), 0,
+               res->ai_addr, res->ai_addrlen);
+
+        unsigned char buffer[512];
+        struct sockaddr_in from;
+        socklen_t from_len = sizeof(from);
+        
+        int n = recvfrom(sock, buffer, sizeof(buffer), 0,
+                         (struct sockaddr*)&from, &from_len);
+        
+        freeaddrinfo(res);
+
+        if (n > 0 && n >= 20) {
+            if (buffer[1] == 0x01) {
+                NLOG("STUN response received from %s", stun_hosts[i]);
+                
+                int external_port = 0;
+                char external_ip[INET_ADDRSTRLEN] = {0};
+                
+                for (int pos = 20; pos < n - 4; ) {
+                    uint16_t attr_type = (buffer[pos] << 8) | buffer[pos+1];
+                    uint16_t attr_len = (buffer[pos+2] << 8) | buffer[pos+3];
+                    pos += 4;
+                    
+                    if (attr_type == 0x0020 && attr_len >= 8) {
+                        if (buffer[pos+1] == 0x01) {
+                            external_ip[0] = buffer[pos+4] & 0xFF;
+                            external_ip[1] = buffer[pos+5] & 0xFF;
+                            external_ip[2] = buffer[pos+6] & 0xFF;
+                            external_ip[3] = buffer[pos+7] & 0xFF;
+                            external_port = (buffer[pos+2] << 8) | buffer[pos+3];
+                            break;
+                        }
+                    }
+                    pos += attr_len;
+                }
+                
+                if (external_port > 0) {
+                    NLOG("External address: %s:%d", external_ip, external_port);
+                    close(sock);
+                    return NAT_FULL_CONE;
+                }
+            }
+        }
+    }
+
+    close(sock);
+    NLOG("STUN detection failed, returning UNKNOWN");
     return NAT_UNKNOWN;
 }
-
-/* ============================================================================
- * UPnP-BASED NAT DETECTION
- * ============================================================================ */
 
 NATType nat_classify_via_upnp(void) {
-    NLOG("Detecting NAT type via UPnP...");
+    NLOG("UPnP-based NAT classification");
     
-    /* Try to discover UPnP gateway */
-    /* This is a simple check - actual UPnP would be more complex */
-    
-    /* Check if UPnP is available */
-    if (nat_has_upnp()) {
-        NLOG("UPnP available - NAT type likely Full Cone or Restricted");
-        return NAT_FULL_CONE;  /* Best guess */
+    if (!nat_has_upnp()) {
+        NLOG("UPnP not available");
+        return NAT_UNKNOWN;
     }
-    
-    NLOG("UPnP not available");
-    return NAT_UNKNOWN;
-}
 
-/* ============================================================================
- * NAT DETECTION HELPERS
- * ============================================================================ */
+    return NAT_FULL_CONE;
+}
 
 bool nat_has_ipv6(void) {
     int sock = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (sock < 0) return false;
+    if (sock < 0) {
+        return false;
+    }
     
     struct sockaddr_in6 addr;
     memset(&addr, 0, sizeof(addr));
@@ -255,60 +403,74 @@ bool nat_has_ipv6(void) {
 }
 
 bool nat_has_upnp(void) {
-    /* Simple UPnP detection */
-    /* In production, this would use miniupnpc */
-    
-    /* Try to connect to UPnP service port */
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return false;
-    
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        return false;
+    }
+
+    int opt = 1;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &opt, sizeof(opt));
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(1900);  /* UPnP SSDP port */
-    addr.sin_addr.s_addr = inet_addr("239.255.255.250");
-    
-    /* Set timeout */
+    addr.sin_port = htons(1900);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(sock);
+        return false;
+    }
+
     struct timeval tv;
-    tv.tv_sec = 1;
+    tv.tv_sec = 2;
     tv.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    
-    /* Send M-SEARCH request */
+
+    struct sockaddr_in multicast;
+    memset(&multicast, 0, sizeof(multicast));
+    multicast.sin_family = AF_INET;
+    multicast.sin_port = htons(1900);
+    inet_pton(AF_INET, "239.255.255.250", &multicast.sin_addr);
+
     const char* search = 
         "M-SEARCH * HTTP/1.1\r\n"
         "HOST: 239.255.255.250:1900\r\n"
         "MAN: \"ssdp:discover\"\r\n"
-        "MX: 1\r\n"
+        "MX: 2\r\n"
         "ST: upnp:rootdevice\r\n\r\n";
+
+    sendto(sock, search, strlen(search), 0,
+           (struct sockaddr*)&multicast, sizeof(multicast));
+
+    char buffer[2048];
+    struct sockaddr_in from;
+    socklen_t from_len = sizeof(from);
     
-    ssize_t sent = sendto(sock, search, strlen(search), 0,
-                          (struct sockaddr*)&addr, sizeof(addr));
-    
-    bool has_upnp = false;
-    if (sent > 0) {
-        char buffer[1024];
-        int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, NULL, NULL);
-        if (n > 0) {
-            buffer[n] = '\0';
-            if (strstr(buffer, "HTTP/1.1 200 OK") != NULL) {
-                has_upnp = true;
-            }
+    int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0,
+                     (struct sockaddr*)&from, &from_len);
+
+    close(sock);
+
+    if (n > 0) {
+        buffer[n] = '\0';
+        if (strstr(buffer, "HTTP/1.1 200 OK") != NULL) {
+            NLOG("UPnP gateway found");
+            return true;
         }
     }
-    
-    close(sock);
-    NLOG("UPnP: %s", has_upnp ? "YES" : "NO");
-    return has_upnp;
+
+    NLOG("UPnP not found");
+    return false;
 }
 
 bool nat_is_firewalled(void) {
-    /* Check if we're behind a firewall */
-    /* Try to connect to common ports */
     int blocked = 0;
     int total = 0;
     
     int ports[] = {80, 443, 53, 123, 22};
+    
     for (int i = 0; i < 5; i++) {
         int sock = socket(AF_INET, SOCK_STREAM, 0);
         if (sock < 0) continue;
@@ -336,10 +498,6 @@ bool nat_is_firewalled(void) {
     return firewalled;
 }
 
-/* ============================================================================
- * DEBUG
- * ============================================================================ */
-
 void nat_debug_print(NATClassifierResult* result) {
     if (!result) return;
     
@@ -353,46 +511,3 @@ void nat_debug_print(NATClassifierResult* result) {
     printf("Detection time: %s", ctime(&result->detection_time));
     printf("============================\n");
 }
-
-/* ============================================================================
- * TEST FUNCTION
- * ============================================================================ */
-
-#ifdef NAT_TEST
-
-int main() {
-    printf("=== NAT Classifier Test ===\n");
-    
-    /* Test DHT-based detection */
-    NATType type = nat_classify_via_dht(NULL);
-    printf("DHT detection result: %s\n", nat_type_to_string(type));
-    
-    /* Test IPv6 */
-    bool has_ipv6 = nat_has_ipv6();
-    printf("IPv6: %s\n", has_ipv6 ? "YES" : "NO");
-    
-    /* Test UPnP */
-    bool has_upnp = nat_has_upnp();
-    printf("UPnP: %s\n", has_upnp ? "YES" : "NO");
-    
-    /* Test firewall */
-    bool firewalled = nat_is_firewalled();
-    printf("Firewalled: %s\n", firewalled ? "YES" : "NO");
-    
-    /* Test result */
-    NATClassifierResult result = {
-        .type = type,
-        .detected = (type != NAT_UNKNOWN),
-        .confidence = 80,
-        .detection_time = time(NULL)
-    };
-    strcpy(result.external_ip, "192.168.1.100");
-    result.external_port = 9000;
-    strcpy(result.detected_via, "dht");
-    
-    nat_debug_print(&result);
-    
-    return 0;
-}
-
-#endif /* NAT_TEST */
