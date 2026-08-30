@@ -23,28 +23,27 @@ typedef struct {
     time_t detection_time;
     int confidence;
     char detected_via[64];
+    bool has_ipv6;
+    bool has_upnp;
+    bool is_firewalled;
+    char local_ip[INET_ADDRSTRLEN];
+    int local_port;
 } NATClassifierResult;
 
-/* DHT-based NAT detection (Tox style) */
 NATType nat_classify_via_dht(void* dht_node, const char* my_id);
-
-/* STUN-based NAT detection (fallback) */
 NATType nat_classify_via_stun(void);
-
-/* UPnP-based NAT detection */
 NATType nat_classify_via_upnp(void);
+NATType nat_classify_via_icmp(void);
+NATType nat_classify_combined(NATClassifierResult* result);
 
-/* IPv6 detection */
 bool nat_has_ipv6(void);
-
-/* UPnP availability */
 bool nat_has_upnp(void);
-
-/* Firewall detection */
 bool nat_is_firewalled(void);
+bool nat_can_punch(void);
+bool nat_is_symmetric(NATType type);
 
 const char* nat_type_to_string(NATType type);
-
+int nat_type_priority(NATType type);
 void nat_debug_print(NATClassifierResult* result);
 
 #endif
