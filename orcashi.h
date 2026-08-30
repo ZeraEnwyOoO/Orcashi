@@ -48,6 +48,17 @@
 #include "p2p_manager.h"
 #include "punch.h"
 
+/* P2P NAT Traversal Components */
+#include "nat_classifier.h"
+#include "strategy_selector.h"
+#include "parallel_runner.h"
+#include "ttl_punch.h"
+#include "simultaneous_open.h"
+#include "friend_relay.h"
+#include "turn_client.h"
+#include "upnp_client.h"
+#include "port_prediction.h"
+
 /* Crypto Layer */
 #include "orca_identity.h"
 #include "orca_crypto.h"
@@ -78,6 +89,11 @@ typedef struct {
     char public_ip[INET_ADDRSTRLEN];
     int p2p_port;
     int dht_port;
+    
+    /* NAT */
+    int nat_type;           /* NAT_UNKNOWN, NAT_FULL_CONE, etc. */
+    bool has_ipv6;
+    bool has_upnp;
     
     /* State */
     bool initialized;
@@ -204,6 +220,19 @@ int orcashi_get_mixed_id(Orcashi* orcashi, char* out, size_t size);
 int orcashi_connect_mixed_id(Orcashi* orcashi, const char* mixed_id);
 
 /* ============================================================================
+ * NAT TRAVERSAL FUNCTIONS
+ * ============================================================================ */
+
+/* Detect NAT type */
+int orcashi_detect_nat(Orcashi* orcashi);
+
+/* Get NAT type as string */
+const char* orcashi_nat_type_string(Orcashi* orcashi);
+
+/* Check if NAT traversal is possible */
+bool orcashi_can_traverse_nat(Orcashi* orcashi);
+
+/* ============================================================================
  * UTILITY FUNCTIONS
  * ============================================================================ */
 
@@ -241,5 +270,6 @@ void orcashi_set_on_call_received(Orcashi* orcashi,
 
 void orcashi_debug_print(Orcashi* orcashi);
 void orcashi_debug_dump_state(Orcashi* orcashi);
+void orcashi_debug_nat_info(Orcashi* orcashi);
 
 #endif /* ORCASHI_H */
