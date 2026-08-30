@@ -1,39 +1,59 @@
-
-#ifndef SIMULTANEOUS_OPEN_H
-#define SIMULTANEOUS_OPEN_H
+ #ifndef STRATEGY_SELECTOR_H
+#define STRATEGY_SELECTOR_H
 
 #include <stdbool.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <time.h>
+#include "nat_classifier.h"
 
-/* ============================================================================
- * SIMULTANEOUS OPEN CONFIGURATION
- * ============================================================================ */
+typedef enum {
+    STRATEGY_NONE = 0,
+    STRATEGY_IPV6_DIRECT,
+    STRATEGY_UPNP,
+    STRATEGY_UDP_PUNCH,
+    STRATEGY_TTL_PUNCH,
+    STRATEGY_SIMULTANEOUS_OPEN,
+    STRATEGY_PORT_PREDICTION,
+    STRATEGY_TCP_PUNCH,
+    STRATEGY_FRIEND_RELAY,
+    STRATEGY_TURN_RELAY,
+    STRATEGY_MANUAL_PORT
+} StrategyType;
 
-#define SIM_OPEN_RETRY 5
-#define SIM_OPEN_TIMEOUT 2
-#define SIM_OPEN_BACKOFF 100  /* ms */
+typedef struct {
+    StrategyType type;
+    const char* name;
+    int priority;
+    int max_wait_ms;
+    bool requires_peer;
+    bool requires_server;
+} StrategyInfo;
 
-/* ============================================================================
- * SIMULTANEOUS OPEN FUNCTIONS
- * ============================================================================ */
+typedef struct {
+    NATType nat_type;
+    bool has_ipv6;
+    bool has_upnp;
+    bool has_relay;
+    bool is_relay;
+    bool is_firewalled;
+    char ip[INET_ADDRSTRLEN];
+    int port;
+    char ipv6[INET6_ADDRSTRLEN];
+    int ipv6_port;
+} PeerProfile;
 
-/* Punch using simultaneous open technique */
-int simultaneous_open_punch(void* punch_state, const char* target_ip, int target_port);
+#define MAX_STRATEGIES 16
 
-/* Synchronized punch with timestamp */
-int simultaneous_open_sync(const char* target_ip, int target_port, 
-                           time_t sync_time, char* peer_ip, int* peer_port);
+typedef struct {
+    StrategyType strategies[MAX_STRATEGIES];
+    int count;
+} StrategyList;
 
-/* ============================================================================
- * SIMULTANEOUS OPEN UTILITIES
- * ============================================================================ */
+int strategy_filter(StrategyList* list, const PeerProfile* local, const PeerProfile* remote);
+const char* strategy_name(StrategyType type);
+StrategyInfo strategy_get_info(StrategyType type);
+bool strategy_is_applicable(StrategyType type, const PeerProfile* local, const PeerProfile* remote);
+int strategy_get_priority(StrategyType type);
+void strategy_sort_by_priority(StrategyList* list);
+void strategy_debug_print(const StrategyList* list);
+const char* strategy_type_to_string(StrategyType type);
 
-/* Check if simultaneous open is supported */
-bool simultaneous_open_supported(void);
-
-/* Get synchronization timestamp */
-time_t simultaneous_get_sync_time(void);
-
-#endif /* SIMULTANEOUS_OPEN_H */
+#endif
