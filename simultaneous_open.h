@@ -1,59 +1,55 @@
- #ifndef STRATEGY_SELECTOR_H
-#define STRATEGY_SELECTOR_H
+ #ifndef SIMULTANEOUS_OPEN_H
+#define SIMULTANEOUS_OPEN_H
 
 #include <stdbool.h>
-#include "nat_classifier.h"
+#include <stdint.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <time.h>
+
+#define SIM_OPEN_MAX_RETRY 5
+#define SIM_OPEN_TIMEOUT_MS 3000
+#define SIM_OPEN_PORT_RANGE 10
+#define SIM_OPEN_SYNC_DELAY_MS 50
 
 typedef enum {
-    STRATEGY_NONE = 0,
-    STRATEGY_IPV6_DIRECT,
-    STRATEGY_UPNP,
-    STRATEGY_UDP_PUNCH,
-    STRATEGY_TTL_PUNCH,
-    STRATEGY_SIMULTANEOUS_OPEN,
-    STRATEGY_PORT_PREDICTION,
-    STRATEGY_TCP_PUNCH,
-    STRATEGY_FRIEND_RELAY,
-    STRATEGY_TURN_RELAY,
-    STRATEGY_MANUAL_PORT
-} StrategyType;
+    SIM_OPEN_STATE_IDLE = 0,
+    SIM_OPEN_STATE_CONNECTING,
+    SIM_OPEN_STATE_SYNCING,
+    SIM_OPEN_STATE_ESTABLISHED,
+    SIM_OPEN_STATE_FAILED
+} SimOpenState;
 
 typedef struct {
-    StrategyType type;
-    const char* name;
-    int priority;
-    int max_wait_ms;
-    bool requires_peer;
-    bool requires_server;
-} StrategyInfo;
+    char target_ip[INET_ADDRSTRLEN];
+    int target_port;
+    int local_port;
+    int socket_fd;
+    SimOpenState state;
+    uint32_t sync_token;
+    time_t start_time;
+    time_t last_activity;
+    int retry_count;
+    bool is_initiator;
+    struct sockaddr_in peer_addr;
+    char peer_ip[INET_ADDRSTRLEN];
+    int peer_port;
+} SimOpenSession;
 
-typedef struct {
-    NATType nat_type;
-    bool has_ipv6;
-    bool has_upnp;
-    bool has_relay;
-    bool is_relay;
-    bool is_firewalled;
-    char ip[INET_ADDRSTRLEN];
-    int port;
-    char ipv6[INET6_ADDRSTRLEN];
-    int ipv6_port;
-} PeerProfile;
+int simultaneous_open_init(SimOpenSession* session, const char* target_ip, int target_port);
+void simultaneous_open_cleanup(SimOpenSession* session);
 
-#define MAX_STRATEGIES 16
+int simultaneous_open_punch(void* punch_state, const char* target_ip, int target_port);
+int simultaneous_open_connect(SimOpenSession* session);
+int simultaneous_open_accept(SimOpenSession* session);
+int simultaneous_open_send(SimOpenSession* session, const uint8_t* data, size_t len);
+int simultaneous_open_recv(SimOpenSession* session, uint8_t* buffer, size_t max_len);
+int simultaneous_open_close(SimOpenSession* session);
 
-typedef struct {
-    StrategyType strategies[MAX_STRATEGIES];
-    int count;
-} StrategyList;
+bool simultaneous_open_is_connected(SimOpenSession* session);
+SimOpenState simultaneous_open_get_state(SimOpenSession* session);
+int simultaneous_open_get_peer(SimOpenSession* session, char* ip_out, int* port_out);
 
-int strategy_filter(StrategyList* list, const PeerProfile* local, const PeerProfile* remote);
-const char* strategy_name(StrategyType type);
-StrategyInfo strategy_get_info(StrategyType type);
-bool strategy_is_applicable(StrategyType type, const PeerProfile* local, const PeerProfile* remote);
-int strategy_get_priority(StrategyType type);
-void strategy_sort_by_priority(StrategyList* list);
-void strategy_debug_print(const StrategyList* list);
-const char* strategy_type_to_string(StrategyType type);
+void simultaneous_open_debug_print(SimOpenSession* session);
 
 #endif
