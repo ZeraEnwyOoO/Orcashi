@@ -1,4 +1,4 @@
-#ifndef TURN_CLIENT_H
+ #ifndef TURN_CLIENT_H
 #define TURN_CLIENT_H
 
 #include <stdbool.h>
@@ -12,6 +12,7 @@
 #define TURN_DEFAULT_PORT 3478
 #define TURN_TIMEOUT_MS 5000
 #define TURN_KEEPALIVE_INTERVAL 30
+#define TURN_MAX_SESSIONS 16
 
 typedef enum {
     TURN_STATE_IDLE = 0,
@@ -31,6 +32,7 @@ typedef struct {
     char realm[128];
     char nonce[256];
     bool use_auth;
+    uint32_t lifetime;
 } TURNServerConfig;
 
 typedef struct {
@@ -41,6 +43,7 @@ typedef struct {
     int external_port;
     uint32_t allocation_id;
     uint32_t session_id;
+    uint32_t transaction_id;
     TURNState state;
     int socket_fd;
     time_t last_activity;
@@ -50,24 +53,25 @@ typedef struct {
     int retry_count;
     uint8_t shared_secret[32];
     TURNServerConfig server;
+    uint8_t integrity_key[32];
 } TURNSession;
 
 typedef struct {
-    TURNSession sessions[TURN_SERVER_MAX];
+    TURNSession sessions[TURN_MAX_SESSIONS];
     int count;
     pthread_mutex_t mutex;
     bool initialized;
     TURNServerConfig servers[TURN_SERVER_MAX];
     int server_count;
+    int udp_socket;
 } TURNManager;
 
-/* TURN manager functions */
 int turn_manager_init(TURNManager* mgr);
 void turn_manager_cleanup(TURNManager* mgr);
 int turn_manager_add_server(TURNManager* mgr, const char* host, int port,
                              const char* username, const char* password);
+int turn_manager_set_server_lifetime(TURNManager* mgr, const char* host, uint32_t lifetime);
 
-/* TURN session functions */
 int turn_connect(TURNManager* mgr, const char* peer_id, const char* server_host);
 int turn_allocate(TURNManager* mgr, const char* peer_id);
 int turn_send(TURNManager* mgr, const char* peer_id, const uint8_t* data, size_t len);
@@ -75,13 +79,11 @@ int turn_recv(TURNManager* mgr, const char* peer_id, uint8_t* buffer, size_t max
 int turn_disconnect(TURNManager* mgr, const char* peer_id);
 int turn_refresh_allocation(TURNManager* mgr, const char* peer_id);
 
-/* TURN status functions */
 bool turn_is_connected(TURNManager* mgr, const char* peer_id);
 TURNState turn_get_state(TURNManager* mgr, const char* peer_id);
 int turn_get_external_address(TURNManager* mgr, const char* peer_id,
                                char* ip_out, int* port_out);
 
-/* TURN debug */
 void turn_debug_print(TURNManager* mgr);
 
 #endif
