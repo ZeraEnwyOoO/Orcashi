@@ -15,6 +15,7 @@
 #include "turn_client.h"
 #include "upnp_client.h"
 #include "port_prediction.h"
+#include "punch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <fcntl.h>
+#include <netdb.h>
 
 #define P2P_DEBUG 1
 
@@ -43,7 +45,6 @@
 #define PLOG(fmt, ...) ((void)0)
 #endif
 
-#define P2P_BUFFER_SIZE 8192
 #define P2P_MAX_PEERS 256
 #define P2P_HANDSHAKE_TIMEOUT 5
 #define P2P_KEEPALIVE_INTERVAL 30
@@ -206,6 +207,14 @@ int p2p_init(void) {
     if (g_initialized) return 0;
     
     PLOG("Initializing P2P manager");
+    
+    char* local_ip = orcashi_get_local_ip();
+    if (local_ip) {
+        strcpy(g_local_ip, local_ip);
+        free(local_ip);
+    } else {
+        strcpy(g_local_ip, "127.0.0.1");
+    }
     
     g_p2p_socket = create_udp_socket(P2P_PORT);
     if (g_p2p_socket < 0) {
@@ -872,7 +881,7 @@ void* listener_thread(void* arg) {
     
     PLOG("Listener thread started");
     
-    uint8_t buffer[P2P_BUFFER_SIZE];
+    uint8_t buffer[4096];
     struct sockaddr_in from;
     socklen_t from_len = sizeof(from);
     fd_set fds;
@@ -1141,6 +1150,7 @@ void p2p_debug_print(void) {
     printf("\n=== P2P MANAGER DEBUG ===\n");
     printf("Socket: %d\n", g_p2p_socket);
     printf("Port: %d\n", g_p2p_port);
+    printf("Local IP: %s\n", g_local_ip);
     printf("NAT Type: %d\n", g_nat_type);
     printf("IPv6: %s\n", g_has_ipv6 ? "YES" : "NO");
     printf("UPnP: %s\n", g_has_upnp ? "YES" : "NO");
