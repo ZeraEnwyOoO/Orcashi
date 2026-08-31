@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <time.h>
+#include <ctype.h>   
 
 #define DAEMON_SOCKET "/tmp/.orcashi/socket"
 #define DAEMON_PID_FILE "/tmp/.orcashi/daemon.pid"
