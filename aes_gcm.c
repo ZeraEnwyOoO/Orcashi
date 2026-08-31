@@ -26,15 +26,6 @@ static int openssl_aes_init(void) {
     return 0;
 }
 
-static void zeroize(void* ptr, size_t len) {
-    if (ptr && len > 0) {
-        volatile char* vptr = (volatile char*)ptr;
-        for (size_t i = 0; i < len; i++) {
-            vptr[i] = 0;
-        }
-    }
-}
-
 int orca_aes_gcm_key_generate(unsigned char* key_out) {
     if (!key_out) {
         set_aes_error("NULL pointer in orca_aes_gcm_key_generate");
@@ -456,7 +447,6 @@ int orca_aes_gcm_derive_key_from_shared_secret(const unsigned char* shared_secre
     openssl_aes_init();
     
     /* Use PBKDF2-HMAC-SHA256 to derive key from shared secret */
-    /* This is simpler and more portable than HKDF */
     int iterations = 100000;
     
     /* Create a combined salt from provided salt and info */
