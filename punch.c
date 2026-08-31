@@ -438,14 +438,18 @@ int punch_try_simultaneous(PunchState* p, const char* target_ip, int target_port
     return simultaneous_open_punch(p, target_ip, target_port);
 }
 
+/* ============================================================================
+ * PUNCH_TRY_PORT_PREDICTION - FIXED: Use port_predictor_punch
+ * ============================================================================ */
+
 int punch_try_port_prediction(PunchState* p, const char* target_ip, int target_port) {
     if (!p || !target_ip) return -1;
     p->last_technique = PUNCH_TECH_PORT_PREDICTION;
     
     DLOG("Trying port prediction to %s:%d", target_ip, target_port);
     
-    /* Use port_prediction module */
-    return port_prediction_punch(p, target_ip, target_port);
+    /* Use port_predictor_punch from port_prediction.c */
+    return port_predictor_punch(p, target_ip, target_port);
 }
 
 int punch_try_tcp(PunchState* p, const char* target_ip, int target_port) {
