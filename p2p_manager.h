@@ -7,19 +7,13 @@
 #include <time.h>
 #include <pthread.h>
 
+#include "nat_classifier.h"
+
 #define P2P_PORT 9000
 #define P2P_BUFFER_SIZE 4096
 #define P2P_MAX_PEERS 256
 #define P2P_CONNECTION_TIMEOUT 5
 #define P2P_MAX_RETRY 3
-
-typedef enum {
-    NAT_UNKNOWN = 0,
-    NAT_FULL_CONE,
-    NAT_RESTRICTED_CONE,
-    NAT_PORT_RESTRICTED,
-    NAT_SYMMETRIC
-} NATType;
 
 typedef enum {
     P2P_STATE_DISCONNECTED = 0,
