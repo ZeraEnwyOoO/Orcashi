@@ -1,3 +1,5 @@
+ 
+ 
  // orca_identity.h - Full version with 3-digit secure identity support
 #ifndef ORCA_IDENTITY_H
 #define ORCA_IDENTITY_H
@@ -49,6 +51,13 @@ typedef struct {
 } OrcaIdentityStore;
 
 /* ============================================================================
+ * ZEROIZE - Secure memory erasure (exported for other files)
+ * ============================================================================ */
+
+/* Zeroize memory (secure erase) - for cleaning sensitive data like passcodes */
+void zeroize(void* ptr, size_t len);
+
+/* ============================================================================
  * IDENTITY CREATION
  * ============================================================================ */
 
@@ -58,7 +67,7 @@ int orca_identity_create(const char* name, const char* passcode,
 int orca_identity_create_normal(const char* id, const char* ip,
                                 OrcaIdentity* identity_out);
 
-/* ===== NEW: 3-digit secure identity with RSA keypair =====
+/* ===== 3-digit secure identity with RSA keypair =====
  *
  * Creates a secure identity with:
  *   - RSA 2048-bit keypair
@@ -188,9 +197,6 @@ int orca_identity_debug_verify_storage(void);
 /* ============================================================================
  * INTERNAL HELPERS (exported for use by main.c)
  * ============================================================================ */
-
-/* Zeroize memory (secure erase) - for passcode cleanup */
-void zeroize(void* ptr, size_t len);
 
 /* Read entire file content into memory (caller must free) */
 char* read_file_content(const char* path);
