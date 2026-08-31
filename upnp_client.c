@@ -1,4 +1,5 @@
  #include "upnp_client.h"
+#include "orca_crypto.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,7 @@
 #include <time.h>
 #include <sys/select.h>
 #include <ctype.h>
+#include <fcntl.h>
 
 #define UPNP_DEBUG 1
 
