@@ -7,10 +7,54 @@
 #include <signal.h>
 #include <errno.h>
 #include <time.h>
-#include <ctype.h>   
+#include <ctype.h>
+#include <termios.h>
+#include <unistd.h>
+#include <pthread.h>
 
 #define DAEMON_SOCKET "/tmp/.orcashi/socket"
 #define DAEMON_PID_FILE "/tmp/.orcashi/daemon.pid"
+
+/* ============================================================================
+ * GETPASS - Hidden password input (like sudo)
+ * ============================================================================ */
+
+static char* get_hidden_input(const char* prompt) {
+    static char password[128];
+    struct termios old, new;
+    int i = 0;
+    char c;
+    
+    printf("%s", prompt);
+    fflush(stdout);
+    
+    tcgetattr(STDIN_FILENO, &old);
+    new = old;
+    new.c_lflag &= ~ECHO;
+    tcsetattr(STDIN_FILENO, TCSANOW, &new);
+    
+    while (i < (int)(sizeof(password) - 1) && read(STDIN_FILENO, &c, 1) > 0) {
+        if (c == '\n' || c == '\r') {
+            break;
+        }
+        if (c == '\b' || c == 127) {
+            if (i > 0) i--;
+            continue;
+        }
+        password[i++] = c;
+    }
+    password[i] = '\0';
+    
+    tcsetattr(STDIN_FILENO, TCSANOW, &old);
+    printf("\n");
+    fflush(stdout);
+    
+    return password;
+}
+
+/* ============================================================================
+ * COMMAND DISPATCHER
+ * ============================================================================ */
 
 int command_dispatch(int argc, char* argv[]) {
     if (argc < 2) {
@@ -162,6 +206,10 @@ int command_send_to_daemon(const char* cmd, char* response, size_t response_size
     return 0;
 }
 
+/* ============================================================================
+ * COMMAND: REGISTER
+ * ============================================================================ */
+
 int cmd_register(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
@@ -179,38 +227,18 @@ int cmd_register(int argc, char* argv[]) {
     }
     
     char id[64];
-    printf("Enter 3-digit ID (e.g., 075): ");
-    fflush(stdout);
-    
-    char input[64];
-    if (!fgets(input, sizeof(input), stdin)) {
-        return 1;
-    }
-    input[strcspn(input, "\n")] = '\0';
-    
-    if (strlen(input) != 3 || !isdigit(input[0]) || !isdigit(input[1]) || !isdigit(input[2])) {
-        printf("ERROR: Invalid ID. Must be 3 digits.\n");
-        return 1;
-    }
-    
-    snprintf(id, sizeof(id), "<%s>", input);
-    
-    char passcode[128];
-    printf("Enter passcode (min 8 chars): ");
-    fflush(stdout);
-    
-    if (!fgets(passcode, sizeof(passcode), stdin)) {
-        return 1;
-    }
-    passcode[strcspn(passcode, "\n")] = '\0';
-    
-    if (strlen(passcode) < 8) {
-        printf("ERROR: Passcode must be at least 8 characters.\n");
-        return 1;
-    }
-    
     char name[128];
-    printf("Enter display name (optional): ");
+    
+    /* Step 1: Auto-generate random ID */
+    srand(time(NULL) ^ getpid() ^ (unsigned long)pthread_self());
+    int num = (rand() % 999) + 1;
+    snprintf(id, sizeof(id), "<%03d>", num);
+    
+    printf("Your auto-generated ID: %s\n", id);
+    printf("\n");
+    
+    /* Step 2: Display name */
+    printf("Enter display name (optional, press Enter for default): ");
     fflush(stdout);
     
     if (!fgets(name, sizeof(name), stdin)) {
@@ -220,6 +248,28 @@ int cmd_register(int argc, char* argv[]) {
     if (strlen(name) == 0) {
         strcpy(name, "orcashi");
     }
+    
+    printf("\n");
+    printf("Now set your passcode (this will be hidden)\n");
+    printf("(min 8 characters)\n");
+    printf("\n");
+    
+    /* Step 3: Password (hidden) */
+    const char* passcode = get_hidden_input("Enter passcode: ");
+    if (strlen(passcode) < 8) {
+        printf("ERROR: Passcode must be at least 8 characters.\n");
+        return 1;
+    }
+    
+    /* Step 4: Confirm password (hidden) */
+    const char* passcode2 = get_hidden_input("Confirm passcode: ");
+    if (strcmp(passcode, passcode2) != 0) {
+        printf("ERROR: Passcodes do not match.\n");
+        return 1;
+    }
+    
+    printf("\n");
+    printf("Creating identity...\n");
     
     OrcaIdentity identity;
     if (orca_identity_create_secure_3digit(id, passcode, name, "user", &identity) < 0) {
@@ -232,9 +282,18 @@ int cmd_register(int argc, char* argv[]) {
         return 1;
     }
     
-    if (orca_identity_set_default(id) < 0) {
-        printf("WARNING: Failed to set default identity.\n");
+    /* Set default identity */
+    char metadata[256];
+    snprintf(metadata, sizeof(metadata), "{\"default_id\":\"%s\"}", identity.id);
+    FILE* f = fopen(ORCA_METADATA_FILE, "w");
+    if (f) {
+        fprintf(f, "%s", metadata);
+        fclose(f);
     }
+    
+    /* Zeroize passcode (security) */
+    zeroize((void*)passcode, strlen(passcode));
+    zeroize((void*)passcode2, strlen(passcode2));
     
     printf("\n");
     printf("+-----------------------------------------------------------+\n");
@@ -245,11 +304,21 @@ int cmd_register(int argc, char* argv[]) {
     printf("|  Mode      : SECURE\n");
     printf("+-----------------------------------------------------------+\n");
     printf("\n");
-    printf("Use './orcashi listen' to announce to DHT\n");
+    printf("Registration successful!\n");
+    printf("\n");
+    printf("Next steps:\n");
+    printf("  ./orcashi listen    - Announce to DHT network\n");
+    printf("  ./orcashi add <id>  - Add a friend\n");
+    printf("  ./orcashi chat <id> - Start chatting\n");
+    printf("\n");
     printf("Share your ID with friends: %s\n", identity.id);
     
     return 0;
 }
+
+/* ============================================================================
+ * COMMAND: IDENTITY
+ * ============================================================================ */
 
 int cmd_identity(int argc, char* argv[]) {
     (void)argc;
@@ -285,6 +354,10 @@ int cmd_identity(int argc, char* argv[]) {
     return 0;
 }
 
+/* ============================================================================
+ * COMMAND: LISTEN
+ * ============================================================================ */
+
 int cmd_listen(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
@@ -307,6 +380,10 @@ int cmd_listen(int argc, char* argv[]) {
     
     return 0;
 }
+
+/* ============================================================================
+ * COMMAND: SEARCH
+ * ============================================================================ */
 
 int cmd_search(int argc, char* argv[]) {
     if (argc < 3) {
@@ -338,6 +415,10 @@ int cmd_search(int argc, char* argv[]) {
     return 1;
 }
 
+/* ============================================================================
+ * COMMAND: ADD
+ * ============================================================================ */
+
 int cmd_add(int argc, char* argv[]) {
     if (argc < 3) {
         fprintf(stderr, "ERROR: Usage: ./orcashi add <id>\n");
@@ -361,6 +442,10 @@ int cmd_add(int argc, char* argv[]) {
     return 0;
 }
 
+/* ============================================================================
+ * COMMAND: ACCEPT
+ * ============================================================================ */
+
 int cmd_accept(int argc, char* argv[]) {
     if (argc < 3) {
         fprintf(stderr, "ERROR: Usage: ./orcashi accept <id>\n");
@@ -381,6 +466,10 @@ int cmd_accept(int argc, char* argv[]) {
     printf("Accepted request from %s\n", peer_id);
     return 0;
 }
+
+/* ============================================================================
+ * COMMAND: REJECT
+ * ============================================================================ */
 
 int cmd_reject(int argc, char* argv[]) {
     if (argc < 3) {
@@ -403,6 +492,10 @@ int cmd_reject(int argc, char* argv[]) {
     return 0;
 }
 
+/* ============================================================================
+ * COMMAND: PEERS
+ * ============================================================================ */
+
 int cmd_peers(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
@@ -416,6 +509,10 @@ int cmd_peers(int argc, char* argv[]) {
     printf("No daemon running. Use './orcashi listen' first.\n");
     return 1;
 }
+
+/* ============================================================================
+ * COMMAND: CHAT
+ * ============================================================================ */
 
 int cmd_chat(int argc, char* argv[]) {
     if (argc < 3) {
@@ -462,6 +559,10 @@ int cmd_chat(int argc, char* argv[]) {
     return 0;
 }
 
+/* ============================================================================
+ * COMMAND: GHOST
+ * ============================================================================ */
+
 int cmd_ghost(int argc, char* argv[]) {
     if (argc < 4) {
         fprintf(stderr, "ERROR: Usage: ./orcashi ghost <id> <message>\n");
@@ -492,6 +593,10 @@ int cmd_ghost(int argc, char* argv[]) {
     return 0;
 }
 
+/* ============================================================================
+ * COMMAND: STATUS
+ * ============================================================================ */
+
 int cmd_status(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
@@ -511,6 +616,10 @@ int cmd_status(int argc, char* argv[]) {
     printf("Daemon is running (PID: %d)\n", command_get_daemon_pid());
     return 0;
 }
+
+/* ============================================================================
+ * COMMAND: STOP
+ * ============================================================================ */
 
 int cmd_stop(int argc, char* argv[]) {
     (void)argc;
@@ -537,6 +646,10 @@ int cmd_stop(int argc, char* argv[]) {
     
     return 0;
 }
+
+/* ============================================================================
+ * COMMAND: HELP
+ * ============================================================================ */
 
 void command_show_help(void) {
     printf("\n");
