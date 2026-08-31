@@ -24,15 +24,6 @@ static int openssl_ecdh_init(void) {
     return 0;
 }
 
-static void zeroize(void* ptr, size_t len) {
-    if (ptr && len > 0) {
-        volatile char* vptr = (volatile char*)ptr;
-        for (size_t i = 0; i < len; i++) {
-            vptr[i] = 0;
-        }
-    }
-}
-
 int orca_ecdh_generate_keypair(OrcaECDHKeypair* keypair_out) {
     if (!keypair_out) {
         set_ecdh_error("NULL pointer in orca_ecdh_generate_keypair");
