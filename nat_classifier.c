@@ -17,6 +17,7 @@
 #include <netdb.h>
 #include <time.h>
 #include <ifaddrs.h>
+#include <fcntl.h>
 
 #define NAT_DEBUG 1
 
