@@ -1,6 +1,7 @@
  #include "commands.h"
 #include "mixed_id.h"
 #include "orca_identity.h"
+#include "daemon.h"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <signal.h>
