@@ -68,13 +68,32 @@ typedef struct {
     int len;
 } OrcaSignature;
 
+/* ============================================================================
+ * ZEROIZE - Secure memory erasure
+ * ============================================================================ */
+
+/* Zeroize memory (secure erase) - for cleaning sensitive data */
+void zeroize(void* ptr, size_t len);
+
+/* ============================================================================
+ * HASH FUNCTIONS
+ * ============================================================================ */
+
 int orca_hash(const unsigned char* data, size_t len, unsigned char* out);
 int orca_hash_string(const char* str, unsigned char* out);
 char* orca_hash_to_hex(const unsigned char* hash, char* out);
 char* orca_hash_to_id(const unsigned char* hash, const char* prefix, char* out);
 
+/* ============================================================================
+ * BASE64 FUNCTIONS
+ * ============================================================================ */
+
 char* orca_base64_encode(const unsigned char* data, int len);
 unsigned char* orca_base64_decode(const char* data, int* out_len);
+
+/* ============================================================================
+ * RSA FUNCTIONS
+ * ============================================================================ */
 
 int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out);
 int orca_rsa_sign(const unsigned char* data, size_t data_len,
@@ -86,6 +105,10 @@ bool orca_rsa_verify(const unsigned char* data, size_t data_len,
 bool orca_rsa_verify_string(const char* str, const char* signature,
                             const char* public_key_pem);
 int orca_rsa_public_key_from_pem(const char* pem, unsigned char* out, int* out_len);
+
+/* ============================================================================
+ * AES-256-CBC FUNCTIONS
+ * ============================================================================ */
 
 int orca_aes_cbc_encrypt(const unsigned char* data, size_t data_len,
                          const unsigned char* key,
@@ -102,6 +125,10 @@ int orca_aes_cbc_encrypt_string(const char* str, const char* key_hex,
 int orca_aes_cbc_decrypt_string(const char* ciphertext_b64, const char* iv_hex,
                                 const char* key_hex, char** plaintext_out);
 
+/* ============================================================================
+ * X25519 ECDH FUNCTIONS
+ * ============================================================================ */
+
 int orca_x25519_generate_keypair(unsigned char* public_key_out,
                                  unsigned char* private_key_out);
 int orca_x25519_compute_shared_secret(const unsigned char* private_key,
@@ -109,6 +136,10 @@ int orca_x25519_compute_shared_secret(const unsigned char* private_key,
                                       unsigned char* shared_secret_out);
 char* orca_x25519_public_key_to_hex(const unsigned char* public_key, char* out);
 int orca_x25519_hex_to_public_key(const char* hex, unsigned char* public_key_out);
+
+/* ============================================================================
+ * PBKDF2 FUNCTIONS
+ * ============================================================================ */
 
 int orca_derive_key_from_passcode(const char* passcode,
                                   const unsigned char* salt,
@@ -121,6 +152,10 @@ int orca_derive_key_from_passcode_hex(const char* passcode,
                                       char* key_hex_out);
 int orca_generate_salt(unsigned char* salt_out);
 int orca_generate_salt_hex(char* salt_hex_out);
+
+/* ============================================================================
+ * UTILITY FUNCTIONS
+ * ============================================================================ */
 
 int orca_random_bytes(unsigned char* buf, size_t len);
 int orca_hex_to_bytes(const char* hex, unsigned char* bytes_out, size_t bytes_len);
