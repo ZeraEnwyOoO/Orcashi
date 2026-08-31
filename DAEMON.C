@@ -1,9 +1,11 @@
-#include "daemon.h"
+ #include "daemon.h"
 #include "state_manager.h"
 #include "p2p_manager.h"
 #include "dht_node.h"
 #include "mixed_id.h"
 #include "orca_identity.h"
+#include "event_loop.h"
+#include "logger.h"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
@@ -16,9 +18,20 @@
 #include <errno.h>
 #include <pthread.h>
 
-/* ============================================================================
- * GLOBAL STATE
- * ============================================================================ */
+#define DAEMON_DEBUG 1
+
+#if DAEMON_DEBUG
+#define DLOG(fmt, ...) \
+    do { \
+        time_t now = time(NULL); \
+        struct tm* tm = localtime(&now); \
+        fprintf(stderr, "[DAEMON] %02d:%02d:%02d " fmt "\n", \
+                tm->tm_hour, tm->tm_min, tm->tm_sec, ##__VA_ARGS__); \
+        fflush(stderr); \
+    } while(0)
+#else
+#define DLOG(fmt, ...) ((void)0)
+#endif
 
 static DaemonStatus g_status = {0};
 static int g_ipc_socket = -1;
@@ -27,10 +40,7 @@ static bool g_running = false;
 static pthread_t g_dht_thread = 0;
 static pthread_t g_p2p_thread = 0;
 static pthread_t g_event_thread = 0;
-
-/* ============================================================================
- * LOGGING
- * ============================================================================ */
+static pthread_t g_ipc_thread = 0;
 
 void daemon_log(const char* format, ...) {
     va_list args;
@@ -49,10 +59,6 @@ void daemon_log(const char* format, ...) {
     
     va_end(args);
 }
-
-/* ============================================================================
- * PID MANAGEMENT
- * ============================================================================ */
 
 int daemon_write_pid(void) {
     FILE* f = fopen(DAEMON_PID_FILE, "w");
@@ -82,10 +88,6 @@ void daemon_remove_pid(void) {
     unlink(DAEMON_PID_FILE);
 }
 
-/* ============================================================================
- * DAEMON STATE
- * ============================================================================ */
-
 bool daemon_is_running(void) {
     int pid = daemon_read_pid();
     if (pid <= 0) return false;
@@ -98,10 +100,6 @@ DaemonStatus daemon_get_status(void) {
     return g_status;
 }
 
-/* ============================================================================
- * SIGNAL HANDLER
- * ============================================================================ */
-
 void daemon_signal_handler(int sig) {
     (void)sig;
     daemon_log("Received signal %d, shutting down...", sig);
@@ -111,13 +109,9 @@ void daemon_signal_handler(int sig) {
 int daemon_setup_signals(void) {
     signal(SIGINT, daemon_signal_handler);
     signal(SIGTERM, daemon_signal_handler);
-    signal(SIGPIPE, SIG_IGN);  /* Ignore broken pipe */
+    signal(SIGPIPE, SIG_IGN);
     return 0;
 }
-
-/* ============================================================================
- * IPC SOCKET
- * ============================================================================ */
 
 int daemon_ipc_init(void) {
     unlink(DAEMON_SOCKET);
@@ -140,7 +134,7 @@ int daemon_ipc_init(void) {
         return -1;
     }
     
-    if (listen(g_ipc_socket, 5) < 0) {
+    if (listen(g_ipc_socket, 10) < 0) {
         daemon_log("Failed to listen on IPC socket: %s", strerror(errno));
         close(g_ipc_socket);
         g_ipc_socket = -1;
@@ -166,30 +160,60 @@ void daemon_ipc_handle(int client_fd) {
     }
     buffer[n] = '\0';
     
-    daemon_log("IPC command: %s", buffer);
-    
-    char response[4096];
+    char response[8192];
     response[0] = '\0';
     
     int ret = daemon_handle_command(buffer, response, sizeof(response));
     if (ret == 0 && strlen(response) == 0) {
-        snprintf(response, sizeof(response), "[OK] Command executed.\n");
+        snprintf(response, sizeof(response), "OK\n");
     } else if (ret < 0) {
-        snprintf(response, sizeof(response), "[ERROR] Command failed.\n");
+        if (strlen(response) == 0) {
+            snprintf(response, sizeof(response), "ERROR: Command failed\n");
+        }
     }
     
     daemon_ipc_send_response(client_fd, response);
     close(client_fd);
 }
 
-/* ============================================================================
- * COMMAND HANDLER
- * ============================================================================ */
+void* daemon_ipc_thread(void* arg) {
+    (void)arg;
+    
+    daemon_log("IPC thread started");
+    
+    fd_set fds;
+    struct timeval tv;
+    
+    while (g_running) {
+        FD_ZERO(&fds);
+        FD_SET(g_ipc_socket, &fds);
+        
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        
+        int ret = select(g_ipc_socket + 1, &fds, NULL, NULL, &tv);
+        if (ret < 0) {
+            if (g_running) {
+                daemon_log("select() error: %s", strerror(errno));
+            }
+            break;
+        }
+        
+        if (ret > 0) {
+            int client_fd = accept(g_ipc_socket, NULL, NULL);
+            if (client_fd >= 0) {
+                daemon_ipc_handle(client_fd);
+            }
+        }
+    }
+    
+    daemon_log("IPC thread stopped");
+    return NULL;
+}
 
 int daemon_handle_command(const char* cmd, char* response, size_t response_size) {
     if (!cmd || !response) return -1;
     
-    /* Parse command and arguments */
     char cmd_copy[512];
     strncpy(cmd_copy, cmd, sizeof(cmd_copy) - 1);
     cmd_copy[sizeof(cmd_copy) - 1] = '\0';
@@ -203,7 +227,6 @@ int daemon_handle_command(const char* cmd, char* response, size_t response_size)
     
     daemon_log("Handling command: %s", cmd_name);
     
-    /* Dispatch commands */
     if (strcmp(cmd_name, "identity") == 0) {
         return daemon_cmd_identity(response, response_size);
     }
@@ -238,35 +261,27 @@ int daemon_handle_command(const char* cmd, char* response, size_t response_size)
         return daemon_cmd_stop(response, response_size);
     }
     else {
-        snprintf(response, response_size, "[ERROR] Unknown command: %s\n", cmd_name);
+        snprintf(response, response_size, "ERROR: Unknown command: %s\n", cmd_name);
         return -1;
     }
 }
 
-/* ============================================================================
- * COMMAND: identity
- * ============================================================================ */
-
 int daemon_cmd_identity(char* response, size_t size) {
     OrcaIdentity identity;
     if (orca_identity_load(&identity, NULL) < 0) {
-        snprintf(response, size, "[ERROR] No identity found.\n");
+        snprintf(response, size, "ERROR: No identity found\n");
         return -1;
     }
     
     char mixed_id[64];
-    mixed_id_encode(identity.id, "0.0.0.0", 9000, mixed_id);
+    mixed_id_encode(identity.id, "0.0.0.0", 9000, mixed_id, sizeof(mixed_id));
     
     snprintf(response, size,
-             "============================================================\n"
-             "  ORCASHI IDENTITY\n"
-             "============================================================\n"
-             "  ID        : %s\n"
-             "  Name      : %s\n"
-             "  Mode      : %s\n"
-             "  Created   : %s"
-             "  Mixed ID  : %s\n"
-             "============================================================\n",
+             "ID        : %s\n"
+             "Name      : %s\n"
+             "Mode      : %s\n"
+             "Created   : %s"
+             "Mixed ID  : %s\n",
              identity.id,
              identity.name,
              identity.mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL",
@@ -276,38 +291,31 @@ int daemon_cmd_identity(char* response, size_t size) {
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: listen
- * ============================================================================ */
-
 int daemon_cmd_listen(char* response, size_t size) {
     if (g_dht) {
-        snprintf(response, size, "[DHT] Already announced.\n");
+        snprintf(response, size, "DHT already announced\n");
         return 0;
     }
     
-    /* Load identity */
     OrcaIdentity identity;
     if (orca_identity_load(&identity, NULL) < 0) {
-        snprintf(response, size, "[ERROR] No identity found. Register first.\n");
+        snprintf(response, size, "ERROR: No identity found. Register first.\n");
         return -1;
     }
     
-    /* Start DHT */
     g_dht = dht_node_create();
     if (!g_dht) {
-        snprintf(response, size, "[ERROR] Failed to create DHT node.\n");
+        snprintf(response, size, "ERROR: Failed to create DHT node\n");
         return -1;
     }
     
     if (dht_node_start(g_dht, DHT_PORT) < 0) {
-        snprintf(response, size, "[ERROR] Failed to start DHT node.\n");
+        snprintf(response, size, "ERROR: Failed to start DHT node\n");
         dht_node_destroy(g_dht);
         g_dht = NULL;
         return -1;
     }
     
-    /* Announce to DHT */
     if (identity.mode == ORCA_IDENTITY_MODE_SECURE) {
         dht_node_announce_secure(g_dht, identity.id, P2P_PORT,
                                  identity.public_key, identity.signature);
@@ -315,27 +323,28 @@ int daemon_cmd_listen(char* response, size_t size) {
         dht_node_announce(g_dht, identity.id, P2P_PORT);
     }
     
+    g_status.dht_connected = true;
+    g_status.p2p_ready = true;
+    
+    p2p_init();
+    
     snprintf(response, size,
-             "[DHT] Announced ID %s at port %d\n"
-             "[P2P] Listening on UDP port %d\n"
-             "[ORCA] Daemon is ready.\n",
+             "DHT announced ID %s on port %d\n"
+             "P2P listening on UDP port %d\n"
+             "Daemon is ready\n",
              identity.id, P2P_PORT, P2P_PORT);
     
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: search
- * ============================================================================ */
-
 int daemon_cmd_search(const char* args, char* response, size_t size) {
     if (!args) {
-        snprintf(response, size, "[ERROR] Usage: search <id>\n");
+        snprintf(response, size, "ERROR: Usage: search <id>\n");
         return -1;
     }
     
     if (!g_dht) {
-        snprintf(response, size, "[ERROR] Daemon not listening. Use './orcashi listen' first.\n");
+        snprintf(response, size, "ERROR: Daemon not listening. Use 'listen' first.\n");
         return -1;
     }
     
@@ -350,28 +359,30 @@ int daemon_cmd_search(const char* args, char* response, size_t size) {
     
     if (dht_node_lookup(g_dht, peer_id, 10, dht_ip, &dht_port)) {
         snprintf(response, size,
-                 "[DHT] Found peer %s\n"
+                 "Found peer %s\n"
                  "  IP  : %s\n"
                  "  Port: %d\n"
                  "  Status: ONLINE\n",
                  peer_id, dht_ip, dht_port);
+        
+        state_set_ip(peer_id, dht_ip);
+        state_set_port(peer_id, dht_port);
+        state_set_online(peer_id, true);
     } else {
         snprintf(response, size,
-                 "[DHT] Peer %s not found\n"
+                 "Peer %s not found\n"
                  "  Status: OFFLINE\n",
                  peer_id);
+        
+        state_set_online(peer_id, false);
     }
     
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: add
- * ============================================================================ */
 
 int daemon_cmd_add(const char* args, char* response, size_t size) {
     if (!args) {
-        snprintf(response, size, "[ERROR] Usage: add <id>\n");
+        snprintf(response, size, "ERROR: Usage: add <id>\n");
         return -1;
     }
     
@@ -379,28 +390,46 @@ int daemon_cmd_add(const char* args, char* response, size_t size) {
     strncpy(peer_id, args, sizeof(peer_id) - 1);
     peer_id[sizeof(peer_id) - 1] = '\0';
     
-    /* Send ADD_REQUEST via P2P */
-    /* TODO: Implement P2P add */
+    Peer* peer = state_get_peer(peer_id);
+    if (!peer) {
+        state_add_peer(peer_id);
+        peer = state_get_peer(peer_id);
+    }
     
-    /* Update state */
+    if (!peer) {
+        snprintf(response, size, "ERROR: Failed to add peer\n");
+        return -1;
+    }
+    
+    if (peer->state == PEER_FRIEND) {
+        snprintf(response, size, "Already friends with %s\n", peer_id);
+        return 0;
+    }
+    
     state_update_peer(peer_id, PEER_REQUEST_SENT);
     
+    if (strlen(peer->ip) > 0 && peer->port > 0) {
+        int ret = p2p_connect(peer_id);
+        if (ret == 0) {
+            snprintf(response, size,
+                     "Request sent to %s\n"
+                     "Connection established\n",
+                     peer_id);
+            return 0;
+        }
+    }
+    
     snprintf(response, size,
-             "[ORCA] Sending request to %s...\n"
-             "[ORCA] Request sent.\n"
-             "[ORCA] Done.\n",
+             "Request sent to %s\n"
+             "Waiting for peer to come online\n",
              peer_id);
     
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: accept
- * ============================================================================ */
 
 int daemon_cmd_accept(const char* args, char* response, size_t size) {
     if (!args) {
-        snprintf(response, size, "[ERROR] Usage: accept <id>\n");
+        snprintf(response, size, "ERROR: Usage: accept <id>\n");
         return -1;
     }
     
@@ -408,27 +437,36 @@ int daemon_cmd_accept(const char* args, char* response, size_t size) {
     strncpy(peer_id, args, sizeof(peer_id) - 1);
     peer_id[sizeof(peer_id) - 1] = '\0';
     
-    /* Send ACCEPT_CONFIRM via P2P */
-    /* TODO: Implement P2P accept */
+    Peer* peer = state_get_peer(peer_id);
+    if (!peer) {
+        snprintf(response, size, "ERROR: Peer %s not found\n", peer_id);
+        return -1;
+    }
     
-    /* Update state */
+    if (peer->state != PEER_REQUEST_RECEIVED) {
+        snprintf(response, size, "ERROR: No pending request from %s\n", peer_id);
+        return -1;
+    }
+    
     state_update_peer(peer_id, PEER_FRIEND);
     
+    if (strlen(peer->ip) > 0 && peer->port > 0) {
+        p2p_accept(peer_id);
+    }
+    
+    int ghost_count = state_deliver_ghost_messages(peer_id);
+    
     snprintf(response, size,
-             "[ORCA] Accepted request from %s\n"
-             "[ORCA] Done.\n",
-             peer_id);
+             "Accepted request from %s\n"
+             "Delivered %d ghost messages\n",
+             peer_id, ghost_count);
     
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: reject
- * ============================================================================ */
 
 int daemon_cmd_reject(const char* args, char* response, size_t size) {
     if (!args) {
-        snprintf(response, size, "[ERROR] Usage: reject <id>\n");
+        snprintf(response, size, "ERROR: Usage: reject <id>\n");
         return -1;
     }
     
@@ -436,36 +474,29 @@ int daemon_cmd_reject(const char* args, char* response, size_t size) {
     strncpy(peer_id, args, sizeof(peer_id) - 1);
     peer_id[sizeof(peer_id) - 1] = '\0';
     
-    /* Send REJECT via P2P */
-    /* TODO: Implement P2P reject */
+    Peer* peer = state_get_peer(peer_id);
+    if (!peer) {
+        snprintf(response, size, "ERROR: Peer %s not found\n", peer_id);
+        return -1;
+    }
     
-    /* Update state */
+    if (peer->state != PEER_REQUEST_RECEIVED) {
+        snprintf(response, size, "ERROR: No pending request from %s\n", peer_id);
+        return -1;
+    }
+    
     state_remove_peer(peer_id);
     
-    snprintf(response, size,
-             "[ORCA] Rejected request from %s\n"
-             "[ORCA] Done.\n",
-             peer_id);
-    
+    snprintf(response, size, "Rejected request from %s\n", peer_id);
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: peers
- * ============================================================================ */
 
 int daemon_cmd_peers(char* response, size_t size) {
     PeerState peers[128];
     int count = state_get_peers(peers, 128);
     
     if (count == 0) {
-        snprintf(response, size,
-                 "============================================================\n"
-                 "  ORCASHI PEERS\n"
-                 "============================================================\n"
-                 "  No peers yet.\n"
-                 "  Use './orcashi search <id>' to find peers.\n"
-                 "============================================================\n");
+        snprintf(response, size, "No peers\n");
         return 0;
     }
     
@@ -473,38 +504,16 @@ int daemon_cmd_peers(char* response, size_t size) {
     int pos = 0;
     
     pos += snprintf(buffer + pos, sizeof(buffer) - pos,
-                    "============================================================\n"
-                    "  ORCASHI PEERS\n"
-                    "============================================================\n");
+                    "PEERS (%d):\n", count);
     
-    /* Pending requests */
-    int pending = state_get_pending(peers, 128);
-    if (pending > 0) {
+    for (int i = 0; i < count; i++) {
         pos += snprintf(buffer + pos, sizeof(buffer) - pos,
-                        "\nPENDING REQUESTS: %d\n", pending);
-        for (int i = 0; i < pending; i++) {
-            pos += snprintf(buffer + pos, sizeof(buffer) - pos,
-                            "  %s | REQUEST SENT | WAITING\n",
-                            peers[i].id);
-        }
+                        "  %s | %s | %s:%d\n",
+                        peers[i].id,
+                        state_to_string(peers[i].state),
+                        peers[i].ip,
+                        peers[i].port);
     }
-    
-    /* Friends */
-    int friends = state_get_friends(peers, 128);
-    if (friends > 0) {
-        pos += snprintf(buffer + pos, sizeof(buffer) - pos,
-                        "\nFRIEND LIST: %d\n", friends);
-        for (int i = 0; i < friends; i++) {
-            pos += snprintf(buffer + pos, sizeof(buffer) - pos,
-                            "  %d. %s | %s\n",
-                            i + 1,
-                            peers[i].id,
-                            peers[i].online ? "online" : "offline");
-        }
-    }
-    
-    pos += snprintf(buffer + pos, sizeof(buffer) - pos,
-                    "\n============================================================\n");
     
     strncpy(response, buffer, size);
     response[size - 1] = '\0';
@@ -512,23 +521,18 @@ int daemon_cmd_peers(char* response, size_t size) {
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: chat_send
- * ============================================================================ */
-
 int daemon_cmd_chat_send(const char* args, char* response, size_t size) {
     if (!args) {
-        snprintf(response, size, "[ERROR] Usage: chat_send <id> <message>\n");
+        snprintf(response, size, "ERROR: Usage: chat_send <id> <message>\n");
         return -1;
     }
     
     char peer_id[64];
     char message[4096];
     
-    /* Parse: <id> <message> */
     char* msg_start = strchr(args, ' ');
     if (!msg_start) {
-        snprintf(response, size, "[ERROR] Invalid chat_send command\n");
+        snprintf(response, size, "ERROR: Invalid chat_send command\n");
         return -1;
     }
     
@@ -538,30 +542,34 @@ int daemon_cmd_chat_send(const char* args, char* response, size_t size) {
     
     strcpy(message, msg_start + 1);
     
-    /* Send message via P2P */
-    /* TODO: Implement P2P send */
+    if (!p2p_is_connected(peer_id)) {
+        snprintf(response, size, "ERROR: Peer %s is not connected\n", peer_id);
+        return -1;
+    }
     
-    snprintf(response, size, "[OK] Message sent to %s\n", peer_id);
+    int ret = p2p_send(peer_id, message);
+    if (ret == 0) {
+        state_add_message(peer_id, message);
+        snprintf(response, size, "Message sent to %s\n", peer_id);
+    } else {
+        snprintf(response, size, "ERROR: Failed to send message to %s\n", peer_id);
+    }
+    
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: ghost
- * ============================================================================ */
-
 int daemon_cmd_ghost(const char* args, char* response, size_t size) {
     if (!args) {
-        snprintf(response, size, "[ERROR] Usage: ghost <id> <message>\n");
+        snprintf(response, size, "ERROR: Usage: ghost <id> <message>\n");
         return -1;
     }
     
     char peer_id[64];
     char message[4096];
     
-    /* Parse: <id> <message> */
     char* msg_start = strchr(args, ' ');
     if (!msg_start) {
-        snprintf(response, size, "[ERROR] Invalid ghost command\n");
+        snprintf(response, size, "ERROR: Invalid ghost command\n");
         return -1;
     }
     
@@ -571,54 +579,37 @@ int daemon_cmd_ghost(const char* args, char* response, size_t size) {
     
     strcpy(message, msg_start + 1);
     
-    /* Store ghost message */
     state_add_ghost_message(peer_id, message);
     
     snprintf(response, size,
-             "[ORCA] Peer %s is offline/busy.\n"
-             "[ORCA] Sending ghost message...\n"
-             "[ORCA] Message stored in ghost room.\n"
-             "[ORCA] Done.\n",
+             "Ghost message stored for %s\n"
+             "Will be delivered when peer comes online\n",
              peer_id);
     
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: status
- * ============================================================================ */
-
 int daemon_cmd_status(char* response, size_t size) {
     snprintf(response, size,
-             "[ORCA] Daemon is running (PID: %d)\n"
-             "[ORCA] Online since: %s"
-             "[ORCA] DHT: %s\n"
-             "[ORCA] P2P: %s\n"
-             "[ORCA] Peers: %d\n"
-             "[ORCA] Pending requests: %d\n",
+             "Daemon running (PID: %d)\n"
+             "Uptime: %ld seconds\n"
+             "DHT: %s\n"
+             "P2P: %s\n"
+             "Peers: %d\n",
              getpid(),
-             ctime(&g_status.start_time),
+             (long)(time(NULL) - g_status.start_time),
              g_status.dht_connected ? "Connected" : "Disconnected",
              g_status.p2p_ready ? "Ready" : "Not ready",
-             state_get_count(),
-             state_get_pending_count());
+             state_get_count());
     
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: stop
- * ============================================================================ */
-
 int daemon_cmd_stop(char* response, size_t size) {
-    snprintf(response, size, "[ORCA] Shutting down...\n");
+    snprintf(response, size, "Shutting down...\n");
     g_running = false;
     return 0;
 }
-
-/* ============================================================================
- * DAEMON THREADS
- * ============================================================================ */
 
 void* daemon_dht_thread(void* arg) {
     (void)arg;
@@ -639,12 +630,55 @@ void* daemon_p2p_thread(void* arg) {
     (void)arg;
     daemon_log("P2P thread started");
     
-    /* TODO: Initialize P2P UDP listener */
-    /* TODO: Handle incoming messages */
-    
     while (g_running) {
-        /* Process P2P events */
-        sleep(1);
+        fd_set fds;
+        struct timeval tv;
+        
+        FD_ZERO(&fds);
+        if (g_p2p_socket >= 0) {
+            FD_SET(g_p2p_socket, &fds);
+        }
+        
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        
+        int max_fd = g_p2p_socket;
+        if (max_fd < 0) {
+            sleep(1);
+            continue;
+        }
+        
+        int ret = select(max_fd + 1, &fds, NULL, NULL, &tv);
+        if (ret < 0) {
+            if (g_running) {
+                daemon_log("P2P select error: %s", strerror(errno));
+            }
+            break;
+        }
+        
+        if (ret > 0 && g_p2p_socket >= 0 && FD_ISSET(g_p2p_socket, &fds)) {
+            char buffer[4096];
+            struct sockaddr_in from;
+            socklen_t from_len = sizeof(from);
+            
+            int n = recvfrom(g_p2p_socket, buffer, sizeof(buffer) - 1, 0,
+                             (struct sockaddr*)&from, &from_len);
+            
+            if (n > 0) {
+                buffer[n] = '\0';
+                char ip[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+                int port = ntohs(from.sin_port);
+                
+                daemon_log("Received %d bytes from %s:%d", n, ip, port);
+                
+                Event event = event_create(EVENT_MESSAGE_RECEIVED, ip);
+                strcpy(event.ip, ip);
+                event.port = port;
+                strcpy(event.message, buffer);
+                event_queue_push(&event);
+            }
+        }
     }
     
     daemon_log("P2P thread stopped");
@@ -656,35 +690,39 @@ void* daemon_event_thread(void* arg) {
     daemon_log("Event thread started");
     
     while (g_running) {
-        /* Process events */
-        /* TODO: Check DHT for new peers */
-        /* TODO: Check P2P for messages */
-        /* TODO: Update state */
-        /* TODO: Deliver ghost messages */
-        sleep(1);
+        Event event;
+        int ret = event_queue_pop(&event, 100);
+        if (ret == 0) {
+            event_process(&event);
+            event_free(&event);
+        }
+        
+        state_save();
     }
     
     daemon_log("Event thread stopped");
     return NULL;
 }
 
-/* ============================================================================
- * DAEMON INIT / RUN / CLEANUP
- * ============================================================================ */
-
 int daemon_init(void) {
     daemon_log("Initializing daemon...");
     
-    /* Setup signals */
     daemon_setup_signals();
     
-    /* Create home directory */
     mkdir(DAEMON_HOME, 0700);
     
-    /* Initialize state manager */
+    logger_init(DAEMON_LOG_FILE);
+    logger_set_level(LOG_LEVEL_INFO);
+    
     state_init();
     
-    /* Initialize IPC */
+    orca_init_crypto();
+    orca_identity_storage_init();
+    
+    p2p_init();
+    
+    event_loop_init();
+    
     if (daemon_ipc_init() < 0) {
         return -1;
     }
@@ -701,39 +739,15 @@ int daemon_init(void) {
 int daemon_run(void) {
     daemon_log("Daemon running...");
     
-    /* Write PID */
     daemon_write_pid();
     
-    /* Create threads */
     pthread_create(&g_dht_thread, NULL, daemon_dht_thread, NULL);
     pthread_create(&g_p2p_thread, NULL, daemon_p2p_thread, NULL);
     pthread_create(&g_event_thread, NULL, daemon_event_thread, NULL);
-    
-    /* Main IPC loop */
-    fd_set fds;
-    struct timeval tv;
+    pthread_create(&g_ipc_thread, NULL, daemon_ipc_thread, NULL);
     
     while (g_running) {
-        FD_ZERO(&fds);
-        FD_SET(g_ipc_socket, &fds);
-        
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-        
-        int ret = select(g_ipc_socket + 1, &fds, NULL, NULL, &tv);
-        if (ret < 0) {
-            if (g_running) {
-                daemon_log("select() error: %s", strerror(errno));
-            }
-            break;
-        }
-        
-        if (ret > 0) {
-            int client_fd = accept(g_ipc_socket, NULL, NULL);
-            if (client_fd >= 0) {
-                daemon_ipc_handle(client_fd);
-            }
-        }
+        sleep(1);
     }
     
     daemon_log("Daemon main loop exiting...");
@@ -745,7 +759,6 @@ void daemon_cleanup(void) {
     
     g_running = false;
     
-    /* Wait for threads */
     if (g_dht_thread) {
         pthread_join(g_dht_thread, NULL);
         g_dht_thread = 0;
@@ -758,31 +771,33 @@ void daemon_cleanup(void) {
         pthread_join(g_event_thread, NULL);
         g_event_thread = 0;
     }
+    if (g_ipc_thread) {
+        pthread_join(g_ipc_thread, NULL);
+        g_ipc_thread = 0;
+    }
     
-    /* Cleanup DHT */
     if (g_dht) {
         dht_node_stop(g_dht);
         dht_node_destroy(g_dht);
         g_dht = NULL;
     }
     
-    /* Cleanup IPC */
+    p2p_cleanup();
+    state_save();
+    event_loop_stop();
+    logger_close();
+    
     if (g_ipc_socket >= 0) {
         close(g_ipc_socket);
         g_ipc_socket = -1;
         unlink(DAEMON_SOCKET);
     }
     
-    /* Remove PID */
     daemon_remove_pid();
     
     g_status.state = DAEMON_STATE_STOPPED;
     daemon_log("Daemon cleaned up");
 }
-
-/* ============================================================================
- * DAEMON START / STOP
- * ============================================================================ */
 
 int daemon_start(void) {
     if (daemon_is_running()) {
@@ -796,18 +811,15 @@ int daemon_start(void) {
     }
     
     if (pid > 0) {
-        /* Parent */
-        printf("[ORCA] Daemon started (PID: %d)\n", pid);
-        printf("[ORCA] Use './orcashi status' to check\n");
-        printf("[ORCA] Use './orcashi stop' to stop\n");
+        printf("Daemon started (PID: %d)\n", pid);
+        printf("Use './orcashi status' to check\n");
+        printf("Use './orcashi stop' to stop\n");
         return 0;
     }
     
-    /* Child - become daemon */
     setsid();
     umask(0);
     
-    /* Close stdin/stdout/stderr */
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
@@ -816,7 +828,6 @@ int daemon_start(void) {
     dup2(0, STDOUT_FILENO);
     dup2(0, STDERR_FILENO);
     
-    /* Run daemon */
     if (daemon_init() < 0) {
         return -1;
     }
@@ -835,7 +846,6 @@ int daemon_stop(void) {
     int pid = daemon_read_pid();
     if (pid > 0) {
         kill(pid, SIGTERM);
-        /* Wait for daemon to exit */
         for (int i = 0; i < 10; i++) {
             if (!daemon_is_running()) break;
             sleep(1);
