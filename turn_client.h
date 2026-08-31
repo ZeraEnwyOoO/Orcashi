@@ -54,6 +54,8 @@ typedef struct {
     uint8_t shared_secret[32];
     TURNServerConfig server;
     uint8_t integrity_key[32];
+    char ip[INET_ADDRSTRLEN];      /* បន្ថែមនេះ */
+    int port;                       /* បន្ថែមនេះ */
 } TURNSession;
 
 typedef struct {
