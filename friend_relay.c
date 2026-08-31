@@ -8,6 +8,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include "orca_identity.h" 
+#include "aes_gcm.h"    
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <netinet/in.h>
