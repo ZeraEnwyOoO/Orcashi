@@ -13,7 +13,9 @@
 #include "friend_relay.h"
 #include "turn_client.h"
 #include "upnp_client.h"
+#include "punch.h"
 #include "port_prediction.h"
+#include "orca_identity.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
