@@ -4,7 +4,8 @@
 #include <stdbool.h>
 #include <time.h>
 #include <pthread.h>
-
+#include <netinet/in.h>
+#include <arpa/inet.h>
 /* ============================================================================
  * PEER STATES
  * ============================================================================ */
