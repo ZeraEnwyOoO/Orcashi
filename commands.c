@@ -1,5 +1,6 @@
-#include "command.h"
+ #include "commands.h"
 #include "mixed_id.h"
+#include "orca_identity.h"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <signal.h>
@@ -8,10 +9,6 @@
 
 #define DAEMON_SOCKET "/tmp/.orcashi/socket"
 #define DAEMON_PID_FILE "/tmp/.orcashi/daemon.pid"
-
-/* ============================================================================
- * COMMAND DISPATCHER
- * ============================================================================ */
 
 int command_dispatch(int argc, char* argv[]) {
     if (argc < 2) {
@@ -51,15 +48,11 @@ int command_dispatch(int argc, char* argv[]) {
             command_show_help();
             return 0;
         default:
-            fprintf(stderr, "[ERROR] Unknown command: %s\n", cmd);
+            fprintf(stderr, "ERROR: Unknown command: %s\n", cmd);
             fprintf(stderr, "Type './orcashi help' for usage.\n");
             return 1;
     }
 }
-
-/* ============================================================================
- * COMMAND PARSING
- * ============================================================================ */
 
 CommandType command_parse_type(const char* cmd) {
     if (!cmd) return CMD_UNKNOWN;
@@ -102,10 +95,6 @@ const char* command_get_name(CommandType type) {
     }
 }
 
-/* ============================================================================
- * DAEMON HELPERS
- * ============================================================================ */
-
 bool command_daemon_is_running(void) {
     int pid = command_get_daemon_pid();
     if (pid <= 0) return false;
@@ -132,13 +121,13 @@ int command_get_daemon_pid(void) {
 
 int command_send_to_daemon(const char* cmd, char* response, size_t response_size) {
     if (!command_daemon_is_running()) {
-        snprintf(response, response_size, "[ERROR] Daemon is not running. Use './orcashi listen' first.");
+        snprintf(response, response_size, "ERROR: Daemon is not running. Use './orcashi listen' first.");
         return -1;
     }
     
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock < 0) {
-        snprintf(response, response_size, "[ERROR] Failed to create socket: %s", strerror(errno));
+        snprintf(response, response_size, "ERROR: Failed to create socket: %s", strerror(errno));
         return -1;
     }
     
@@ -149,22 +138,20 @@ int command_send_to_daemon(const char* cmd, char* response, size_t response_size
     
     if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         close(sock);
-        snprintf(response, response_size, "[ERROR] Failed to connect to daemon: %s", strerror(errno));
+        snprintf(response, response_size, "ERROR: Failed to connect to daemon: %s", strerror(errno));
         return -1;
     }
     
-    // Send command
     if (write(sock, cmd, strlen(cmd)) < 0) {
         close(sock);
-        snprintf(response, response_size, "[ERROR] Failed to send command: %s", strerror(errno));
+        snprintf(response, response_size, "ERROR: Failed to send command: %s", strerror(errno));
         return -1;
     }
     
-    // Read response
     int n = read(sock, response, response_size - 1);
     if (n < 0) {
         close(sock);
-        snprintf(response, response_size, "[ERROR] Failed to read response: %s", strerror(errno));
+        snprintf(response, response_size, "ERROR: Failed to read response: %s", strerror(errno));
         return -1;
     }
     response[n] = '\0';
@@ -172,10 +159,6 @@ int command_send_to_daemon(const char* cmd, char* response, size_t response_size
     close(sock);
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: register
- * ============================================================================ */
 
 int cmd_register(int argc, char* argv[]) {
     (void)argc;
@@ -187,123 +170,158 @@ int cmd_register(int argc, char* argv[]) {
     printf("+-----------------------------------------------------------+\n");
     printf("\n");
     
-    // Check if identity already exists
-    // TODO: Check via daemon or directly
+    if (orca_identity_exists(NULL)) {
+        printf("Identity already exists.\n");
+        printf("Use './orcashi identity' to view.\n");
+        return 0;
+    }
     
     char id[64];
-    printf("Generating ID...\n");
-    // TODO: Generate ID via identity system
-    
-    char ip[INET_ADDRSTRLEN];
-    printf("Enter your IP address (or press Enter for auto-detect): ");
+    printf("Enter 3-digit ID (e.g., 075): ");
     fflush(stdout);
     
     char input[64];
-    if (fgets(input, sizeof(input), stdin)) {
-        input[strcspn(input, "\n")] = '\0';
-        if (strlen(input) > 0) {
-            strcpy(ip, input);
-        } else {
-            // Auto-detect
-            strcpy(ip, "127.0.0.1"); // TODO: Get real IP
-        }
+    if (!fgets(input, sizeof(input), stdin)) {
+        return 1;
     }
+    input[strcspn(input, "\n")] = '\0';
+    
+    if (strlen(input) != 3 || !isdigit(input[0]) || !isdigit(input[1]) || !isdigit(input[2])) {
+        printf("ERROR: Invalid ID. Must be 3 digits.\n");
+        return 1;
+    }
+    
+    snprintf(id, sizeof(id), "<%s>", input);
     
     char passcode[128];
     printf("Enter passcode (min 8 chars): ");
     fflush(stdout);
-    // TODO: Read passcode securely
     
-    // TODO: Create identity via daemon
+    if (!fgets(passcode, sizeof(passcode), stdin)) {
+        return 1;
+    }
+    passcode[strcspn(passcode, "\n")] = '\0';
     
-    // Generate Mixed ID
-    char mixed_id[64];
-    mixed_id_encode(id, ip, 9000, mixed_id);
+    if (strlen(passcode) < 8) {
+        printf("ERROR: Passcode must be at least 8 characters.\n");
+        return 1;
+    }
+    
+    char name[128];
+    printf("Enter display name (optional): ");
+    fflush(stdout);
+    
+    if (!fgets(name, sizeof(name), stdin)) {
+        strcpy(name, "orcashi");
+    }
+    name[strcspn(name, "\n")] = '\0';
+    if (strlen(name) == 0) {
+        strcpy(name, "orcashi");
+    }
+    
+    OrcaIdentity identity;
+    if (orca_identity_create_secure_3digit(id, passcode, name, "user", &identity) < 0) {
+        printf("ERROR: Failed to create identity: %s\n", orca_get_last_error());
+        return 1;
+    }
+    
+    if (orca_identity_save(&identity) < 0) {
+        printf("ERROR: Failed to save identity.\n");
+        return 1;
+    }
+    
+    if (orca_identity_set_default(id) < 0) {
+        printf("WARNING: Failed to set default identity.\n");
+    }
     
     printf("\n");
     printf("+-----------------------------------------------------------+\n");
     printf("|                    REGISTRATION COMPLETE                   |\n");
     printf("+-----------------------------------------------------------+\n");
-    printf("|  ID        : %s\n", id);
-    printf("|  IP        : %s\n", ip);
-    printf("|  Mixed ID  : %s\n", mixed_id);
+    printf("|  ID        : %s\n", identity.id);
+    printf("|  Name      : %s\n", identity.name);
+    printf("|  Mode      : SECURE\n");
     printf("+-----------------------------------------------------------+\n");
     printf("\n");
-    printf("[ORCA] Use './orcashi listen' to announce to DHT\n");
-    printf("[ORCA] Share your Mixed ID for direct connections\n");
+    printf("Use './orcashi listen' to announce to DHT\n");
+    printf("Share your ID with friends: %s\n", identity.id);
     
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: identity
- * ============================================================================ */
 
 int cmd_identity(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
     
-    char response[1024];
+    char response[4096];
     if (command_send_to_daemon("identity", response, sizeof(response)) == 0) {
         printf("%s", response);
-    } else {
-        // TODO: Read identity directly from files
-        printf("[ORCA] Identity info:\n");
-        printf("  Not implemented yet.\n");
+        return 0;
     }
+    
+    OrcaIdentity identity;
+    if (orca_identity_load(&identity, NULL) < 0) {
+        printf("ERROR: No identity found. Use './orcashi register' first.\n");
+        return 1;
+    }
+    
+    char mixed_id[64];
+    mixed_id_encode(identity.id, "0.0.0.0", 9000, mixed_id, sizeof(mixed_id));
+    
+    printf("\n");
+    printf("+-----------------------------------------------------------+\n");
+    printf("|                    ORCASHI IDENTITY                       |\n");
+    printf("+-----------------------------------------------------------+\n");
+    printf("|  ID        : %s\n", identity.id);
+    printf("|  Name      : %s\n", identity.name);
+    printf("|  Mode      : %s\n", identity.mode == ORCA_IDENTITY_MODE_SECURE ? "SECURE" : "NORMAL");
+    printf("|  Created   : %s", ctime(&identity.created_at));
+    printf("|  Mixed ID  : %s\n", mixed_id);
+    printf("+-----------------------------------------------------------+\n");
+    printf("\n");
     
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: listen
- * ============================================================================ */
 
 int cmd_listen(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
     
     if (command_daemon_is_running()) {
-        printf("[ORCA] Daemon is already running (PID: %d)\n", command_get_daemon_pid());
+        printf("Daemon is already running (PID: %d)\n", command_get_daemon_pid());
         return 0;
     }
     
-    printf("[ORCA] Starting background daemon...\n");
+    printf("Starting background daemon...\n");
     
-    // TODO: Start daemon process
-    // This will fork and run event_loop
+    if (daemon_start() < 0) {
+        printf("ERROR: Failed to start daemon.\n");
+        return 1;
+    }
     
-    printf("[ORCA] Daemon started (PID: %d)\n", command_get_daemon_pid());
-    printf("[ORCA] Use './orcashi status' to check\n");
-    printf("[ORCA] Use './orcashi stop' to stop\n");
+    printf("Daemon started (PID: %d)\n", command_get_daemon_pid());
+    printf("Use './orcashi status' to check\n");
+    printf("Use './orcashi stop' to stop\n");
     
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: search
- * ============================================================================ */
-
 int cmd_search(int argc, char* argv[]) {
     if (argc < 3) {
-        fprintf(stderr, "[ERROR] Usage: ./orcashi search <id>\n");
+        fprintf(stderr, "ERROR: Usage: ./orcashi search <id>\n");
         return 1;
     }
     
     char* peer_id = argv[2];
     
-    // Check if Mixed ID
     char id[64], ip[INET_ADDRSTRLEN];
     int port;
     if (mixed_id_decode(peer_id, id, ip, &port) == 0) {
-        printf("[ORCA] Mixed ID detected: ID=%s, IP=%s, Port=%d\n", id, ip, port);
-        printf("[ORCA] Direct connect to %s:%d\n", ip, port);
-        // TODO: Add peer directly
+        printf("Mixed ID detected: ID=%s, IP=%s, Port=%d\n", id, ip, port);
         return 0;
     }
     
-    // Search via DHT
-    printf("[DHT] Searching for %s...\n", peer_id);
+    printf("Searching for %s...\n", peer_id);
     
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "search %s", peer_id);
@@ -311,33 +329,16 @@ int cmd_search(int argc, char* argv[]) {
     char response[1024];
     if (command_send_to_daemon(cmd, response, sizeof(response)) == 0) {
         printf("%s", response);
-        
-        // Ask user if they want to send request
-        printf("\nDo you want to send a friend request to %s? (y/n): ", peer_id);
-        fflush(stdout);
-        
-        char answer[16];
-        if (fgets(answer, sizeof(answer), stdin)) {
-            answer[strcspn(answer, "\n")] = '\0';
-            if (strcmp(answer, "y") == 0 || strcmp(answer, "Y") == 0) {
-                snprintf(cmd, sizeof(cmd), "add %s", peer_id);
-                command_send_to_daemon(cmd, response, sizeof(response));
-                printf("[ORCA] Request sent to %s\n", peer_id);
-                printf("[ORCA] Done.\n");
-            }
-        }
+        return 0;
     }
     
-    return 0;
+    printf("Search failed. Make sure daemon is running.\n");
+    return 1;
 }
-
-/* ============================================================================
- * COMMAND: add
- * ============================================================================ */
 
 int cmd_add(int argc, char* argv[]) {
     if (argc < 3) {
-        fprintf(stderr, "[ERROR] Usage: ./orcashi add <id>\n");
+        fprintf(stderr, "ERROR: Usage: ./orcashi add <id>\n");
         return 1;
     }
     
@@ -349,22 +350,18 @@ int cmd_add(int argc, char* argv[]) {
     char response[1024];
     if (command_send_to_daemon(cmd, response, sizeof(response)) == 0) {
         printf("%s", response);
-    } else {
-        printf("[ORCA] Sending request to %s...\n", peer_id);
-        printf("[ORCA] Request sent.\n");
-        printf("[ORCA] Done.\n");
+        return 0;
     }
+    
+    printf("Sending request to %s...\n", peer_id);
+    printf("Done.\n");
     
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: accept
- * ============================================================================ */
-
 int cmd_accept(int argc, char* argv[]) {
     if (argc < 3) {
-        fprintf(stderr, "[ERROR] Usage: ./orcashi accept <id>\n");
+        fprintf(stderr, "ERROR: Usage: ./orcashi accept <id>\n");
         return 1;
     }
     
@@ -376,18 +373,16 @@ int cmd_accept(int argc, char* argv[]) {
     char response[1024];
     if (command_send_to_daemon(cmd, response, sizeof(response)) == 0) {
         printf("%s", response);
+        return 0;
     }
     
+    printf("Accepted request from %s\n", peer_id);
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: reject
- * ============================================================================ */
-
 int cmd_reject(int argc, char* argv[]) {
     if (argc < 3) {
-        fprintf(stderr, "[ERROR] Usage: ./orcashi reject <id>\n");
+        fprintf(stderr, "ERROR: Usage: ./orcashi reject <id>\n");
         return 1;
     }
     
@@ -399,14 +394,12 @@ int cmd_reject(int argc, char* argv[]) {
     char response[1024];
     if (command_send_to_daemon(cmd, response, sizeof(response)) == 0) {
         printf("%s", response);
+        return 0;
     }
     
+    printf("Rejected request from %s\n", peer_id);
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: peers
- * ============================================================================ */
 
 int cmd_peers(int argc, char* argv[]) {
     (void)argc;
@@ -415,20 +408,16 @@ int cmd_peers(int argc, char* argv[]) {
     char response[4096];
     if (command_send_to_daemon("peers", response, sizeof(response)) == 0) {
         printf("%s", response);
-    } else {
-        printf("[ORCA] No daemon running. Use './orcashi listen' first.\n");
+        return 0;
     }
     
-    return 0;
+    printf("No daemon running. Use './orcashi listen' first.\n");
+    return 1;
 }
-
-/* ============================================================================
- * COMMAND: chat
- * ============================================================================ */
 
 int cmd_chat(int argc, char* argv[]) {
     if (argc < 3) {
-        fprintf(stderr, "[ERROR] Usage: ./orcashi chat <id>\n");
+        fprintf(stderr, "ERROR: Usage: ./orcashi chat <id>\n");
         return 1;
     }
     
@@ -439,15 +428,12 @@ int cmd_chat(int argc, char* argv[]) {
     printf("  ORCASHI CHAT\n");
     printf("============================================================\n");
     printf("  Peer: %s\n", peer_id);
-    printf("  Status: Connecting...\n");
     printf("============================================================\n");
     printf("  Type /exit to quit\n");
     printf("  Type /status to check\n");
     printf("============================================================\n");
     printf("\n");
     
-    // TODO: Start chat session via daemon
-    // For now, simple echo chat
     char input[4096];
     char response[4096];
     
@@ -460,35 +446,29 @@ int cmd_chat(int argc, char* argv[]) {
         
         if (strcmp(input, "/exit") == 0) break;
         if (strcmp(input, "/status") == 0) {
-            printf("[CHAT] Status: Connected to %s\n", peer_id);
+            printf("Status: Connected to %s\n", peer_id);
             continue;
         }
         
-        // Send message via daemon
         char cmd[512];
         snprintf(cmd, sizeof(cmd), "chat_send %s %s", peer_id, input);
         command_send_to_daemon(cmd, response, sizeof(response));
         printf("[you] %s\n", input);
     }
     
-    printf("\n[CHAT] Session ended.\n");
+    printf("\nChat session ended.\n");
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: ghost
- * ============================================================================ */
-
 int cmd_ghost(int argc, char* argv[]) {
     if (argc < 4) {
-        fprintf(stderr, "[ERROR] Usage: ./orcashi ghost <id> <message>\n");
+        fprintf(stderr, "ERROR: Usage: ./orcashi ghost <id> <message>\n");
         return 1;
     }
     
     char* peer_id = argv[2];
     char* message = argv[3];
     
-    // Combine remaining arguments as message
     for (int i = 4; i < argc; i++) {
         strcat(message, " ");
         strcat(message, argv[i]);
@@ -500,74 +480,66 @@ int cmd_ghost(int argc, char* argv[]) {
     char response[1024];
     if (command_send_to_daemon(cmd, response, sizeof(response)) == 0) {
         printf("%s", response);
-    } else {
-        printf("[ORCA] Sending ghost message to %s...\n", peer_id);
-        printf("[ORCA] Message stored.\n");
-        printf("[ORCA] Done.\n");
+        return 0;
     }
+    
+    printf("Sending ghost message to %s...\n", peer_id);
+    printf("Message stored.\n");
+    printf("Done.\n");
     
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: status
- * ============================================================================ */
 
 int cmd_status(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
     
     if (!command_daemon_is_running()) {
-        printf("[ORCA] Daemon is NOT running.\n");
-        printf("[ORCA] Use './orcashi listen' to start.\n");
+        printf("Daemon is NOT running.\n");
+        printf("Use './orcashi listen' to start.\n");
         return 0;
     }
     
     char response[1024];
     if (command_send_to_daemon("status", response, sizeof(response)) == 0) {
         printf("%s", response);
+        return 0;
     }
     
+    printf("Daemon is running (PID: %d)\n", command_get_daemon_pid());
     return 0;
 }
-
-/* ============================================================================
- * COMMAND: stop
- * ============================================================================ */
 
 int cmd_stop(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
     
     if (!command_daemon_is_running()) {
-        printf("[ORCA] Daemon is not running.\n");
+        printf("Daemon is not running.\n");
         return 0;
     }
     
     int pid = command_get_daemon_pid();
-    printf("[ORCA] Stopping daemon (PID: %d)...\n", pid);
+    printf("Stopping daemon (PID: %d)...\n", pid);
     
     char response[1024];
     if (command_send_to_daemon("stop", response, sizeof(response)) == 0) {
         printf("%s", response);
-    } else {
-        // Kill daemon
-        kill(pid, SIGTERM);
-        unlink(DAEMON_PID_FILE);
-        unlink(DAEMON_SOCKET);
-        printf("[ORCA] Daemon stopped.\n");
+        return 0;
     }
+    
+    kill(pid, SIGTERM);
+    unlink(DAEMON_PID_FILE);
+    unlink(DAEMON_SOCKET);
+    printf("Daemon stopped.\n");
     
     return 0;
 }
 
-/* ============================================================================
- * COMMAND: help
- * ============================================================================ */
-
 void command_show_help(void) {
     printf("\n");
     printf("ORCASHI v5 - Real P2P, Async UX\n");
+    printf("\n");
     printf("Usage:\n");
     printf("  ./orcashi register          - Register identity\n");
     printf("  ./orcashi identity          - Show your identity\n");
