@@ -5,6 +5,7 @@
 #include "orca_crypto.h"
 #include "ecdh.h"
 #include "aes_gcm.h"
+#include "orcashi.h"
 #include "nat_classifier.h"
 #include "strategy_selector.h"
 #include "parallel_runner.h"
