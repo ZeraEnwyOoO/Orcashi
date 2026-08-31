@@ -32,7 +32,23 @@ static int openssl_init(void) {
     return 0;
 }
 
-// ===== HASH FUNCTIONS =====
+/* ============================================================================
+ * ZEROIZE - Secure memory erasure
+ * ============================================================================ */
+
+void zeroize(void* ptr, size_t len) {
+    if (ptr && len > 0) {
+        volatile char* vptr = (volatile char*)ptr;
+        for (size_t i = 0; i < len; i++) {
+            vptr[i] = 0;
+        }
+    }
+}
+
+/* ============================================================================
+ * HASH FUNCTIONS
+ * ============================================================================ */
+
 int orca_hash(const unsigned char* data, size_t len, unsigned char* out) {
     if (!data || !out) {
         set_error("NULL pointer in orca_hash");
@@ -99,7 +115,10 @@ char* orca_hash_to_id(const unsigned char* hash, const char* prefix, char* out) 
     return out;
 }
 
-// ===== BASE64 FUNCTIONS =====
+/* ============================================================================
+ * BASE64 FUNCTIONS
+ * ============================================================================ */
+
 char* orca_base64_encode(const unsigned char* data, int len) {
     if (!data || len <= 0) {
         set_error("Invalid input to orca_base64_encode");
@@ -153,7 +172,10 @@ unsigned char* orca_base64_decode(const char* data, int* out_len) {
     return buffer;
 }
 
-// ===== RSA FUNCTIONS - FIXED =====
+/* ============================================================================
+ * RSA FUNCTIONS - FIXED: Using EVP_PKEY API (OpenSSL 3.0 compatible)
+ * ============================================================================ */
+
 int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     if (!public_key_out || !private_key_out) {
         set_error("NULL pointer in orca_rsa_generate_keypair");
@@ -162,46 +184,36 @@ int orca_rsa_generate_keypair(char** public_key_out, char** private_key_out) {
     
     openssl_init();
     
-    printf("[RSA DEBUG] Generating RSA 2048-bit keypair...\n");
+    printf("[RSA DEBUG] Generating RSA 2048-bit keypair using EVP_PKEY...\n");
     
-    /* Use RSA_generate_key_ex directly (more reliable) */
-    RSA* rsa = RSA_new();
-    if (!rsa) {
-        set_error("Failed to create RSA structure");
+    /* Use EVP_PKEY API (OpenSSL 3.0 compatible) */
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    if (!ctx) {
+        set_error("Failed to create EVP context");
         return -1;
     }
     
-    BIGNUM* e = BN_new();
-    if (!e) {
-        RSA_free(rsa);
-        set_error("Failed to create BIGNUM");
+    if (EVP_PKEY_keygen_init(ctx) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        set_error("Failed to init keygen");
         return -1;
     }
-    BN_set_word(e, RSA_F4);
     
-    if (RSA_generate_key_ex(rsa, ORCA_RSA_KEY_BITS, e, NULL) != 1) {
-        BN_free(e);
-        RSA_free(rsa);
+    if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, ORCA_RSA_KEY_BITS) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        set_error("Failed to set RSA bits");
+        return -1;
+    }
+    
+    EVP_PKEY* pkey = NULL;
+    if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
         set_error("Failed to generate RSA key");
         return -1;
     }
-    BN_free(e);
+    EVP_PKEY_CTX_free(ctx);
     
-    /* Write private key as EVP_PKEY format */
-    EVP_PKEY* pkey = EVP_PKEY_new();
-    if (!pkey) {
-        RSA_free(rsa);
-        set_error("Failed to create EVP_PKEY");
-        return -1;
-    }
-    
-    if (EVP_PKEY_assign_RSA(pkey, rsa) <= 0) {
-        EVP_PKEY_free(pkey);
-        RSA_free(rsa);
-        set_error("Failed to assign RSA to EVP_PKEY");
-        return -1;
-    }
-    
+    /* Write private key */
     BIO* bio = BIO_new(BIO_s_mem());
     if (!bio) {
         EVP_PKEY_free(pkey);
@@ -294,9 +306,7 @@ int orca_rsa_sign(const unsigned char* data, size_t data_len,
     openssl_init();
     
     printf("[RSA DEBUG] Signing data length: %zu\n", data_len);
-    printf("[RSA DEBUG] Private key length: %zu\n", strlen(private_key_pem));
     
-    /* Use EVP_PKEY API for consistency with keypair generation */
     BIO* bio = BIO_new_mem_buf(private_key_pem, strlen(private_key_pem));
     if (!bio) {
         set_error("Failed to create BIO for private key");
@@ -367,7 +377,6 @@ int orca_rsa_sign(const unsigned char* data, size_t data_len,
     }
     
     printf("[RSA DEBUG] Signature created, length: %zu\n", strlen(*signature_out));
-    printf("[RSA DEBUG] Signature (first 50): %.50s...\n", *signature_out);
     
     return 0;
 }
@@ -392,19 +401,13 @@ bool orca_rsa_verify(const unsigned char* data, size_t data_len,
     
     openssl_init();
     
-    printf("[RSA DEBUG] Verifying data length: %zu\n", data_len);
-    printf("[RSA DEBUG] Signature length: %zu\n", strlen(signature));
-    printf("[RSA DEBUG] Public key length: %zu\n", strlen(public_key_pem));
-    
     int sig_len;
     unsigned char* sig = orca_base64_decode(signature, &sig_len);
     if (!sig) {
         set_error("Failed to decode signature");
         return false;
     }
-    printf("[RSA DEBUG] Decoded signature length: %d\n", sig_len);
     
-    /* Use EVP_PKEY API for consistency with keypair generation */
     BIO* bio = BIO_new_mem_buf(public_key_pem, strlen(public_key_pem));
     if (!bio) {
         free(sig);
@@ -480,7 +483,10 @@ int orca_rsa_public_key_from_pem(const char* pem, unsigned char* out, int* out_l
     return 0;
 }
 
-// ===== AES-256-CBC FUNCTIONS =====
+/* ============================================================================
+ * AES-256-CBC FUNCTIONS
+ * ============================================================================ */
+
 int orca_aes_cbc_encrypt(const unsigned char* data, size_t data_len,
                          const unsigned char* key,
                          unsigned char* iv_out,
@@ -673,7 +679,10 @@ int orca_aes_cbc_decrypt_string(const char* ciphertext_b64, const char* iv_hex,
     return 0;
 }
 
-// ===== X25519 ECDH FUNCTIONS =====
+/* ============================================================================
+ * X25519 ECDH FUNCTIONS
+ * ============================================================================ */
+
 int orca_x25519_generate_keypair(unsigned char* public_key_out,
                                  unsigned char* private_key_out) {
     if (!public_key_out || !private_key_out) {
@@ -798,7 +807,10 @@ int orca_x25519_hex_to_public_key(const char* hex, unsigned char* public_key_out
     return orca_hex_to_bytes(hex, public_key_out, 32);
 }
 
-// ===== PBKDF2 FUNCTIONS =====
+/* ============================================================================
+ * PBKDF2 FUNCTIONS
+ * ============================================================================ */
+
 int orca_derive_key_from_passcode(const char* passcode,
                                   const unsigned char* salt,
                                   int salt_len,
@@ -876,7 +888,10 @@ int orca_generate_salt_hex(char* salt_hex_out) {
     return 0;
 }
 
-// ===== UTILITY FUNCTIONS =====
+/* ============================================================================
+ * UTILITY FUNCTIONS
+ * ============================================================================ */
+
 int orca_random_bytes(unsigned char* buf, size_t len) {
     if (!buf || len == 0) {
         set_error("Invalid parameters in orca_random_bytes");
@@ -919,7 +934,6 @@ int orca_hex_to_bytes(const char* hex, unsigned char* bytes_out, size_t bytes_le
     return 0;
 }
 
-//skibidi
 char* orca_bytes_to_hex(const unsigned char* bytes, size_t bytes_len, char* hex_out) {
     if (!bytes || !hex_out) return NULL;
     
