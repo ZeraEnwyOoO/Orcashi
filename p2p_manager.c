@@ -3,9 +3,10 @@
 #include "state_manager.h"
 #include "event_loop.h"
 #include "orca_crypto.h"
+#include "orca_identity.h"
+#include "orcashi.h"
 #include "ecdh.h"
 #include "aes_gcm.h"
-#include "orcashi.h"
 #include "nat_classifier.h"
 #include "strategy_selector.h"
 #include "parallel_runner.h"
@@ -14,9 +15,8 @@
 #include "friend_relay.h"
 #include "turn_client.h"
 #include "upnp_client.h"
-#include "punch.h"
 #include "port_prediction.h"
-#include "orca_identity.h"
+#include "punch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,11 +45,12 @@
 #define PLOG(fmt, ...) ((void)0)
 #endif
 
-#define P2P_BUFFER_SIZE 8192
 #define P2P_MAX_PEERS 256
 #define P2P_HANDSHAKE_TIMEOUT 5
 #define P2P_KEEPALIVE_INTERVAL 30
 #define P2P_RETRY_INTERVAL 3
+
+int g_p2p_socket = -1;
 
 typedef enum {
     P2P_MSG_TYPE_HANDSHAKE = 1,
@@ -75,7 +76,6 @@ typedef struct {
 #define P2P_MAGIC 0x4F524341
 #define P2P_PROTOCOL_VERSION 1
 
-static int g_p2p_socket = -1;
 static P2PPeer g_peers[P2P_MAX_PEERS];
 static int g_peer_count = 0;
 static pthread_mutex_t g_p2p_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -809,6 +809,7 @@ int handle_accept_confirm(P2PPeer* peer, const P2PMessage* msg) {
 }
 
 int handle_reject_confirm(P2PPeer* peer, const P2PMessage* msg) {
+    (void)peer;
     char* from_id = (char*)msg->payload;
     from_id[msg->payload_len] = '\0';
     
@@ -880,7 +881,7 @@ void* listener_thread(void* arg) {
     
     PLOG("Listener thread started");
     
-    uint8_t buffer[P2P_BUFFER_SIZE];
+    uint8_t buffer[4096];
     struct sockaddr_in from;
     socklen_t from_len = sizeof(from);
     fd_set fds;
@@ -929,11 +930,9 @@ void* listener_thread(void* arg) {
             continue;
         }
         
-        char peer_id[64];
-        int found = 0;
-        
         pthread_mutex_lock(&g_p2p_mutex);
         
+        int found = 0;
         for (int i = 0; i < g_peer_count; i++) {
             if (g_peers[i].port == port && 
                 strcmp(g_peers[i].ip, ip) == 0) {
