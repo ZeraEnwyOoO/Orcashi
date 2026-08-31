@@ -9,7 +9,7 @@
 #include <fcntl.h>
 #include <errno.h>
 
-#include "command.h"
+#include "commands.h"
 #include "daemon.h"
 #include "state_manager.h"
 #include "p2p_manager.h"
