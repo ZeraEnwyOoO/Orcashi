@@ -18,6 +18,8 @@
 #include <errno.h>
 #include <pthread.h>
 
+extern int g_p2p_socket;
+
 #define DAEMON_DEBUG 1
 
 #if DAEMON_DEBUG
@@ -368,6 +370,7 @@ int daemon_cmd_search(const char* args, char* response, size_t size) {
         state_set_ip(peer_id, dht_ip);
         state_set_port(peer_id, dht_port);
         state_set_online(peer_id, true);
+        return 0;
     } else {
         snprintf(response, size,
                  "Peer %s not found\n"
@@ -375,9 +378,8 @@ int daemon_cmd_search(const char* args, char* response, size_t size) {
                  peer_id);
         
         state_set_online(peer_id, false);
+        return 1;
     }
-    
-    return 0;
 }
 
 int daemon_cmd_add(const char* args, char* response, size_t size) {
@@ -423,7 +425,6 @@ int daemon_cmd_add(const char* args, char* response, size_t size) {
              "Request sent to %s\n"
              "Waiting for peer to come online\n",
              peer_id);
-    
     return 0;
 }
 
@@ -450,17 +451,25 @@ int daemon_cmd_accept(const char* args, char* response, size_t size) {
     
     state_update_peer(peer_id, PEER_FRIEND);
     
+    int ret = 0;
     if (strlen(peer->ip) > 0 && peer->port > 0) {
-        p2p_accept(peer_id);
+        ret = p2p_accept(peer_id);
     }
     
     int ghost_count = state_deliver_ghost_messages(peer_id);
     
-    snprintf(response, size,
-             "Accepted request from %s\n"
-             "Delivered %d ghost messages\n",
-             peer_id, ghost_count);
-    
+    if (ret == 0) {
+        snprintf(response, size,
+                 "Accepted request from %s\n"
+                 "Delivered %d ghost messages\n",
+                 peer_id, ghost_count);
+    } else {
+        snprintf(response, size,
+                 "Accepted request from %s\n"
+                 "Peer is offline, will connect when online\n"
+                 "Delivered %d ghost messages\n",
+                 peer_id, ghost_count);
+    }
     return 0;
 }
 
@@ -486,13 +495,12 @@ int daemon_cmd_reject(const char* args, char* response, size_t size) {
     }
     
     state_remove_peer(peer_id);
-    
     snprintf(response, size, "Rejected request from %s\n", peer_id);
     return 0;
 }
 
 int daemon_cmd_peers(char* response, size_t size) {
-    PeerState peers[128];
+    Peer peers[128];
     int count = state_get_peers(peers, 128);
     
     if (count == 0) {
@@ -551,11 +559,11 @@ int daemon_cmd_chat_send(const char* args, char* response, size_t size) {
     if (ret == 0) {
         state_add_message(peer_id, message);
         snprintf(response, size, "Message sent to %s\n", peer_id);
+        return 0;
     } else {
         snprintf(response, size, "ERROR: Failed to send message to %s\n", peer_id);
+        return -1;
     }
-    
-    return 0;
 }
 
 int daemon_cmd_ghost(const char* args, char* response, size_t size) {
@@ -585,7 +593,6 @@ int daemon_cmd_ghost(const char* args, char* response, size_t size) {
              "Ghost message stored for %s\n"
              "Will be delivered when peer comes online\n",
              peer_id);
-    
     return 0;
 }
 
@@ -601,7 +608,6 @@ int daemon_cmd_status(char* response, size_t size) {
              g_status.dht_connected ? "Connected" : "Disconnected",
              g_status.p2p_ready ? "Ready" : "Not ready",
              state_get_count());
-    
     return 0;
 }
 
