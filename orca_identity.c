@@ -589,7 +589,9 @@ int orca_identity_set_default(const char* id) {
         return -1;
     }
     
-    if (!orca_identity_exists(id)) {
+    /* Check if identity file exists */
+    struct stat st;
+    if (stat(ORCA_IDENTITY_FILE, &st) != 0) {
         set_identity_error("Identity does not exist");
         return -1;
     }
