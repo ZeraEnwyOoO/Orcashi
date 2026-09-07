@@ -1,4 +1,4 @@
- #include "commands.h"
+#include "commands.h"
 #include "mixed_id.h"
 #include "orca_identity.h"
 #include "daemon.h"
@@ -90,6 +90,8 @@ int command_dispatch(int argc, char* argv[]) {
             return cmd_status(argc, argv);
         case CMD_STOP:
             return cmd_stop(argc, argv);
+        case CMD_RESET:
+            return cmd_reset(argc, argv);
         case CMD_HELP:
             command_show_help();
             return 0;
@@ -115,6 +117,7 @@ CommandType command_parse_type(const char* cmd) {
     if (strcmp(cmd, "ghost") == 0) return CMD_GHOST;
     if (strcmp(cmd, "status") == 0) return CMD_STATUS;
     if (strcmp(cmd, "stop") == 0) return CMD_STOP;
+    if (strcmp(cmd, "reset") == 0) return CMD_RESET;
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
         return CMD_HELP;
     }
@@ -136,6 +139,7 @@ const char* command_get_name(CommandType type) {
         case CMD_GHOST: return "ghost";
         case CMD_STATUS: return "status";
         case CMD_STOP: return "stop";
+        case CMD_RESET: return "reset";
         case CMD_HELP: return "help";
         default: return "unknown";
     }
@@ -207,7 +211,7 @@ int command_send_to_daemon(const char* cmd, char* response, size_t response_size
 }
 
 /* ============================================================================
- * COMMAND: REGISTER
+ * COMMAND: REGISTER (STRICT - One registration only, strong password)
  * ============================================================================ */
 
 int cmd_register(int argc, char* argv[]) {
@@ -216,25 +220,29 @@ int cmd_register(int argc, char* argv[]) {
     
     printf("\n");
     printf("+-----------------------------------------------------------+\n");
-    printf("|              ORCASHI REGISTRATION                          |\n");
+    printf("|              ORCASHI REGISTRATION (STRICT)                |\n");
     printf("+-----------------------------------------------------------+\n");
     printf("\n");
     
+    /* STRICT RULE 1: One registration only */
     if (orca_identity_exists(NULL)) {
-        printf("Identity already exists.\n");
-        printf("Use './orcashi identity' to view.\n");
-        return 0;
+        printf("ERROR: Identity already exists!\n");
+        printf("Orcashi allows only ONE registration per device.\n");
+        printf("Use './orcashi identity' to view your identity.\n");
+        printf("Use './orcashi reset --force' to reset (WARNING: irreversible).\n");
+        return 1;
     }
     
     char id[64];
     char name[128];
     
-    /* Step 1: Auto-generate random ID */
+    /* Step 1: Auto-generate random ID (STRICT RULE 3: Permanent ID) */
     srand(time(NULL) ^ getpid() ^ (unsigned long)pthread_self());
     int num = (rand() % 999) + 1;
     snprintf(id, sizeof(id), "<%03d>", num);
     
     printf("Your auto-generated ID: %s\n", id);
+    printf("(This ID is permanent and cannot be changed)\n");
     printf("\n");
     
     /* Step 2: Display name */
@@ -250,14 +258,34 @@ int cmd_register(int argc, char* argv[]) {
     }
     
     printf("\n");
-    printf("Now set your passcode (this will be hidden)\n");
-    printf("(min 8 characters)\n");
+    printf("STRICT PASSWORD POLICY:\n");
+    printf("  - Minimum 12 characters\n");
+    printf("  - At least 1 uppercase letter\n");
+    printf("  - At least 1 lowercase letter\n");
+    printf("  - At least 1 number\n");
+    printf("  - At least 1 special character (!@#$%%^&*)\n");
     printf("\n");
     
     /* Step 3: Password (hidden) */
     const char* passcode = get_hidden_input("Enter passcode: ");
-    if (strlen(passcode) < 8) {
-        printf("ERROR: Passcode must be at least 8 characters.\n");
+    
+    /* STRICT RULE 2: Strong password validation */
+    if (strlen(passcode) < 12) {
+        printf("ERROR: Passcode must be at least 12 characters.\n");
+        return 1;
+    }
+    
+    int has_upper = 0, has_lower = 0, has_digit = 0, has_special = 0;
+    const char* special_chars = "!@#$%^&*()_+-=[]{}|;:,.<>?";
+    for (size_t i = 0; i < strlen(passcode); i++) {
+        if (isupper(passcode[i])) has_upper = 1;
+        else if (islower(passcode[i])) has_lower = 1;
+        else if (isdigit(passcode[i])) has_digit = 1;
+        else if (strchr(special_chars, passcode[i])) has_special = 1;
+    }
+    
+    if (!has_upper || !has_lower || !has_digit || !has_special) {
+        printf("ERROR: Passcode must contain uppercase, lowercase, number, and special character.\n");
         return 1;
     }
     
@@ -297,14 +325,18 @@ int cmd_register(int argc, char* argv[]) {
     
     printf("\n");
     printf("+-----------------------------------------------------------+\n");
-    printf("|                    REGISTRATION COMPLETE                   |\n");
+    printf("|              REGISTRATION COMPLETE (STRICT)               |\n");
     printf("+-----------------------------------------------------------+\n");
     printf("|  ID        : %s\n", identity.id);
     printf("|  Name      : %s\n", identity.name);
     printf("|  Mode      : SECURE\n");
     printf("+-----------------------------------------------------------+\n");
     printf("\n");
-    printf("Registration successful!\n");
+    printf("IMPORTANT NOTICE:\n");
+    printf("  - This is your ONLY registration.\n");
+    printf("  - Your ID is PERMANENT and cannot be changed.\n");
+    printf("  - Keep your passcode SAFE. It cannot be recovered.\n");
+    printf("  - To reset: ./orcashi reset --force (IRREVERSIBLE)\n");
     printf("\n");
     printf("Next steps:\n");
     printf("  ./orcashi listen    - Announce to DHT network\n");
@@ -317,18 +349,92 @@ int cmd_register(int argc, char* argv[]) {
 }
 
 /* ============================================================================
+ * COMMAND: RESET (STRICT - requires --force and confirmation)
+ * ============================================================================ */
+
+int cmd_reset(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    
+    printf("\n");
+    printf("+-----------------------------------------------------------+\n");
+    printf("|              ORCASHI RESET (WARNING)                      |\n");
+    printf("+-----------------------------------------------------------+\n");
+    printf("\n");
+    
+    if (!orca_identity_exists(NULL)) {
+        printf("No identity found. Nothing to reset.\n");
+        return 0;
+    }
+    
+    /* Check for --force flag */
+    int force = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--force") == 0 || strcmp(argv[i], "-f") == 0) {
+            force = 1;
+            break;
+        }
+    }
+    
+    if (!force) {
+        printf("ERROR: Reset requires --force flag.\n");
+        printf("Usage: ./orcashi reset --force\n");
+        printf("WARNING: This will permanently delete your identity!\n");
+        return 1;
+    }
+    
+    printf("WARNING: This will permanently delete your identity!\n");
+    printf("Type your identity ID to confirm: ");
+    fflush(stdout);
+    
+    char confirm[64];
+    if (!fgets(confirm, sizeof(confirm), stdin)) {
+        printf("Cancelled\n");
+        return 1;
+    }
+    confirm[strcspn(confirm, "\n")] = '\0';
+    
+    OrcaIdentity identity;
+    if (orca_identity_load(&identity, NULL) < 0) {
+        printf("ERROR: Failed to load identity.\n");
+        return 1;
+    }
+    
+    if (strcmp(confirm, identity.id) != 0) {
+        printf("ERROR: ID mismatch. Reset cancelled.\n");
+        return 1;
+    }
+    
+    /* Double confirm */
+    printf("Type 'yes' to confirm deletion: ");
+    fflush(stdout);
+    
+    char yes[16];
+    if (!fgets(yes, sizeof(yes), stdin)) {
+        printf("Cancelled\n");
+        return 1;
+    }
+    yes[strcspn(yes, "\n")] = '\0';
+    
+    if (strcmp(yes, "yes") != 0) {
+        printf("Reset cancelled.\n");
+        return 1;
+    }
+    
+    orca_identity_reset(true);
+    printf("Identity reset successfully.\n");
+    printf("You can now register again with './orcashi register'\n");
+    
+    return 0;
+}
+
+/* ============================================================================
  * COMMAND: IDENTITY
  * ============================================================================ */
 
 int cmd_identity(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
-    
-    char response[4096];
-    if (command_send_to_daemon("identity", response, sizeof(response)) == 0) {
-        printf("%s", response);
-        return 0;
-    }
     
     OrcaIdentity identity;
     if (orca_identity_load(&identity, NULL) < 0) {
@@ -656,7 +762,7 @@ void command_show_help(void) {
     printf("ORCASHI v5 - Real P2P, Async UX\n");
     printf("\n");
     printf("Usage:\n");
-    printf("  ./orcashi register          - Register identity\n");
+    printf("  ./orcashi register          - Register identity (STRICT - one time only)\n");
     printf("  ./orcashi identity          - Show your identity\n");
     printf("  ./orcashi listen            - Start background daemon\n");
     printf("  ./orcashi search <id>       - Search for peer\n");
@@ -668,9 +774,14 @@ void command_show_help(void) {
     printf("  ./orcashi ghost <id> <msg>  - Send ghost message\n");
     printf("  ./orcashi status            - Check daemon status\n");
     printf("  ./orcashi stop              - Stop daemon\n");
+    printf("  ./orcashi reset --force     - Reset identity (IRREVERSIBLE)\n");
     printf("  ./orcashi help              - Show this help\n");
     printf("\n");
-    printf("Commands return to shell immediately!\n");
-    printf("Background daemon handles everything.\n");
+    printf("STRICT RULES:\n");
+    printf("  - Only ONE registration per device\n");
+    printf("  - Password: 12+ chars, upper, lower, number, special\n");
+    printf("  - ID is PERMANENT and cannot be changed\n");
+    printf("  - Only ONE daemon can run at a time\n");
+    printf("  - Messages: max 4096 bytes, no empty messages\n");
     printf("\n");
 }
